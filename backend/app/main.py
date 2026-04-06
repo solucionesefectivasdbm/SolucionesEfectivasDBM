@@ -66,3 +66,53 @@ async def health_check():
 @app.get("/", tags=["Sistema"])
 async def root():
     return {"message": "Soluciones Efectivas API v1.0", "docs": "/docs"}
+
+
+@app.on_event("startup")
+async def startup_create_tables():
+    """Crea las tablas de la BD si no existen (primer despliegue)."""
+    from app.database import engine, Base
+    from app.models import cliente, credito, pago, gestor, receptor, audit_log, usuario
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
+@app.get("/setup-admin", tags=["Sistema"])
+async def setup_admin():
+    """
+    Crea el usuario admin inicial. Solo funciona si no existe.
+    ELIMINAR este endpoint después del primer uso.
+    """
+    import uuid
+    from sqlalchemy import select
+    from passlib.context import CryptContext
+    from app.database import AsyncSessionLocal
+    from app.models.usuario import Usuario, TipoUsuario
+
+    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+    async with AsyncSessionLocal() as db:
+        existe = (await db.execute(
+            select(Usuario).where(Usuario.username == "admin")
+        )).scalar_one_or_none()
+
+        if existe:
+            return {"message": "El usuario admin ya existe"}
+
+        admin = Usuario(
+            id=uuid.uuid4(),
+            username="admin",
+            password_hash=pwd_context.hash("Admin123"),
+            telefono="3000000000",
+            tipo_usuario=TipoUsuario.admin,
+            activo=True,
+            must_change_password=True,
+        )
+        db.add(admin)
+        await db.commit()
+        return {
+            "message": "Admin creado exitosamente",
+            "username": "admin",
+            "password": "Admin123",
+            "nota": "Cambie la contrasena en el primer ingreso. ELIMINE este endpoint."
+        }
