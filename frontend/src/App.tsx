@@ -1,0 +1,59 @@
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { useAuthStore } from '@/store/authStore'
+import Layout from '@/components/layout/Layout'
+import LoginPage from '@/pages/Login/LoginPage'
+import DashboardPage from '@/pages/Dashboard/DashboardPage'
+import PagosPage from '@/pages/Pagos/PagosPage'
+import CreditosPage from '@/pages/Creditos/CreditosPage'
+import ClientesPage from '@/pages/Clientes/ClientesPage'
+import UsuariosPage from '@/pages/Usuarios/UsuariosPage'
+import ReceptoresPage from '@/pages/Receptores/ReceptoresPage'
+import ReportesPage from '@/pages/Reportes/ReportesPage'
+import CambiarPasswordPage from '@/pages/CambiarPassword/CambiarPasswordPage'
+import GestoresPage from '@/pages/Gestores/GestoresPage'
+import AuditoriaPage from '@/pages/Auditoria/AuditoriaPage'
+
+function RequireAuth({ children }: { children: React.ReactNode }) {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
+  return isAuthenticated ? <>{children}</> : <Navigate to="/login" replace />
+}
+
+function RequireMustChange({ children }: { children: React.ReactNode }) {
+  const user = useAuthStore((s) => s.user)
+  if (user?.must_change_password) {
+    return <Navigate to="/cambiar-password" replace />
+  }
+  return <>{children}</>
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/cambiar-password" element={
+          <RequireAuth><CambiarPasswordPage /></RequireAuth>
+        } />
+        <Route path="/" element={
+          <RequireAuth>
+            <RequireMustChange>
+              <Layout />
+            </RequireMustChange>
+          </RequireAuth>
+        }>
+          <Route index element={<Navigate to="/dashboard" replace />} />
+          <Route path="dashboard" element={<DashboardPage />} />
+          <Route path="pagos" element={<PagosPage />} />
+          <Route path="creditos" element={<CreditosPage />} />
+          <Route path="clientes" element={<ClientesPage />} />
+          <Route path="usuarios" element={<UsuariosPage />} />
+          <Route path="receptores" element={<ReceptoresPage />} />
+          <Route path="reportes" element={<ReportesPage />} />
+          <Route path="gestores" element={<GestoresPage />} />
+          <Route path="auditoria" element={<AuditoriaPage />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      </Routes>
+    </BrowserRouter>
+  )
+}
