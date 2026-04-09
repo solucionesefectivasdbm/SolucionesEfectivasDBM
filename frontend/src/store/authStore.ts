@@ -48,7 +48,7 @@ export const usePermissions = () => {
     canDelete: role === 'admin',
     canValidarPago: role === 'admin' || role === 'recaudador',
     canRegistrarPago: role === 'admin' || role === 'registrador',
-    canVerReportes: role === 'admin' || role === 'registrador' || role === 'recaudador',
+    canVerReportes: role === 'admin',
     canGestionarUsuarios: role === 'admin',
     canGestionarReceptores: role === 'admin',
   }

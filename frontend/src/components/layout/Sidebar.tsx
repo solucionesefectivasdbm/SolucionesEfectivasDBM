@@ -31,7 +31,7 @@ export default function Sidebar() {
           </div>
           <div>
             <p className="text-white font-bold text-sm leading-tight">Soluciones</p>
-            <p className="text-accent font-bold text-sm leading-tight">Efectivas</p>
+            <p className="text-accent font-bold text-sm leading-tight">Efectivas DBM</p>
           </div>
         </div>
       </div>
