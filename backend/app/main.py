@@ -75,13 +75,18 @@ async def startup_create_tables():
     import logging
     logger = logging.getLogger("uvicorn")
 
+    import os
+    # Log directo del env var del sistema
+    raw_env = os.environ.get("DATABASE_URL", "NO DEFINIDA")
+    logger.info(f"ENV DATABASE_URL raw: {raw_env[:30]}..." if len(raw_env) > 30 else f"ENV DATABASE_URL raw: {raw_env}")
+
     from app.config import get_settings
     s = get_settings()
     # Log para diagnóstico (oculta password)
     db_url = s.database_url
     masked = db_url[:20] + "***" + db_url[-30:] if len(db_url) > 50 else "URL corta"
-    logger.info(f"DATABASE_URL detectada: {masked}")
-    logger.info(f"DATABASE_URL async: {s.database_url_async[:30]}...")
+    logger.info(f"Settings database_url: {masked}")
+    logger.info(f"Settings database_url_async: {s.database_url_async[:30]}...")
 
     from app.database import engine, Base
     from app.models import cliente, credito, pago, gestor, receptor, audit_log, usuario
