@@ -71,10 +71,32 @@ async def root():
 @app.on_event("startup")
 async def startup_create_tables():
     """Crea las tablas de la BD si no existen (primer despliegue)."""
+    import asyncio
+    import logging
+    logger = logging.getLogger("uvicorn")
+
+    from app.config import get_settings
+    s = get_settings()
+    # Log para diagnóstico (oculta password)
+    db_url = s.database_url
+    masked = db_url[:20] + "***" + db_url[-30:] if len(db_url) > 50 else "URL corta"
+    logger.info(f"DATABASE_URL detectada: {masked}")
+    logger.info(f"DATABASE_URL async: {s.database_url_async[:30]}...")
+
     from app.database import engine, Base
     from app.models import cliente, credito, pago, gestor, receptor, audit_log, usuario
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+
+    for intento in range(5):
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            logger.info("Tablas creadas/verificadas exitosamente")
+            return
+        except Exception as e:
+            logger.error(f"Intento {intento+1}/5 falló: {e}")
+            if intento < 4:
+                await asyncio.sleep(3)
+    logger.error("No se pudo conectar a la BD después de 5 intentos")
 
 
 @app.get("/setup-admin", tags=["Sistema"])
