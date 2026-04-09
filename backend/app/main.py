@@ -76,7 +76,9 @@ async def startup_create_tables():
     logger = logging.getLogger("uvicorn")
 
     import os
-    # Log directo del env var del sistema
+    # Listar TODAS las env vars para diagnóstico
+    env_keys = sorted(os.environ.keys())
+    logger.info(f"ENV VARS disponibles: {env_keys}")
     raw_env = os.environ.get("DATABASE_URL", "NO DEFINIDA")
     logger.info(f"ENV DATABASE_URL raw: {raw_env[:30]}..." if len(raw_env) > 30 else f"ENV DATABASE_URL raw: {raw_env}")
 
