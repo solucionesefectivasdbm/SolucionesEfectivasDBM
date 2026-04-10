@@ -12,8 +12,12 @@ TZ_BOGOTA = timezone(timedelta(hours=-5))
 
 
 def ahora_bogota() -> datetime:
-    """Retorna el datetime actual en hora de Bogotá."""
-    return datetime.now(TZ_BOGOTA)
+    """Retorna el datetime actual en hora de Bogotá (naive, sin tzinfo).
+
+    Se retorna sin tzinfo porque asyncpg rechaza datetimes con zona horaria
+    cuando la columna es TIMESTAMP WITHOUT TIME ZONE.
+    """
+    return datetime.now(TZ_BOGOTA).replace(tzinfo=None)
 
 
 def hoy_bogota() -> date:
