@@ -172,4 +172,8 @@ async def logout(
     if refresh_token:
         _revoked_refresh_tokens.add(refresh_token)
 
-    response.delete_cookie("refresh_token")
+    response.delete_cookie(
+        "refresh_token",
+        samesite="none" if settings.is_production else "lax",
+        secure=settings.is_production,
+    )

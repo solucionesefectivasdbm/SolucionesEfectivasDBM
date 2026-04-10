@@ -1,6 +1,8 @@
+import { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
 import ErrorBoundary from '@/components/ErrorBoundary'
+import { LoadingPage } from '@/components/ui'
 import Layout from '@/components/layout/Layout'
 import LoginPage from '@/pages/Login/LoginPage'
 import DashboardPage from '@/pages/Dashboard/DashboardPage'
@@ -28,6 +30,15 @@ function RequireMustChange({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
+  const initializing = useAuthStore((s) => s.initializing)
+  const init = useAuthStore((s) => s.init)
+
+  // Al montar la app, intentar restaurar sesión con la cookie de refresh
+  useEffect(() => { init() }, [init])
+
+  // Mientras intenta restaurar sesión, mostrar spinner (evita flash a /login)
+  if (initializing) return <LoadingPage />
+
   return (
     <ErrorBoundary>
     <BrowserRouter>
