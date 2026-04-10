@@ -2,6 +2,7 @@
 import math
 import uuid
 from datetime import datetime, timezone
+from app.utils.fechas import ahora_bogota
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
@@ -138,7 +139,7 @@ async def eliminar_receptor(
     if not receptor:
         raise HTTPException(status_code=404, detail="Receptor no encontrado")
 
-    receptor.deleted_at = datetime.utcnow()
+    receptor.deleted_at = ahora_bogota()
     await audit_service.registrar_eliminacion(
         db=db, entidad="receptores", entidad_id=receptor.id,
         usuario_id=current_user.id, ip_origen=get_client_ip(request),

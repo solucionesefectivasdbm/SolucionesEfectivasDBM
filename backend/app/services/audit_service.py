@@ -10,6 +10,7 @@ REGLA CRÍTICA: nunca loguear el valor real de password_hash.
 """
 import uuid
 from datetime import datetime
+from app.utils.fechas import ahora_bogota
 
 from typing import Optional
 
@@ -60,7 +61,7 @@ async def registrar_cambio(
         valor_anterior=str(valor_anterior) if valor_anterior is not None else None,
         valor_nuevo=str(valor_nuevo) if valor_nuevo is not None else None,
         usuario_id=usuario_id,
-        fecha_accion=datetime.utcnow(),
+        fecha_accion=ahora_bogota(),
         ip_origen=ip_origen,
     )
     db.add(log)

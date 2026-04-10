@@ -13,6 +13,7 @@ Este es el router más complejo. Maneja:
 import math
 import uuid
 from datetime import date, datetime, timezone
+from app.utils.fechas import hoy_bogota
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -166,7 +167,7 @@ async def registrar_pago(
         pago=pago,
         credito=credito,
         request=body,
-        fecha_hoy=date.today(),
+        fecha_hoy=hoy_bogota(),
     )
 
     if not result.requiere_decision:
@@ -215,7 +216,7 @@ async def confirmar_excedente(
         credito=credito,
         request=montos,
         destino=DestinoExcedente(body.destino_excedente),
-        fecha_hoy=date.today(),
+        fecha_hoy=hoy_bogota(),
     )
 
     await audit_service.registrar_actualizacion_campos(
@@ -359,7 +360,7 @@ async def alertas_proximos_vencer(
     db: AsyncSession = Depends(get_db),
 ):
     """Pagos cuya fecha_maxima está dentro de los próximos N días."""
-    hoy = date.today()
+    hoy = hoy_bogota()
     from datetime import timedelta
     limite = hoy + timedelta(days=dias)
 
@@ -392,7 +393,7 @@ async def alertas_vencidos(
     db: AsyncSession = Depends(get_db),
 ):
     """Pagos vencidos (fecha_maxima < hoy y pagado=False)."""
-    hoy = date.today()
+    hoy = hoy_bogota()
 
     query = (
         select(Pago)

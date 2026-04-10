@@ -5,10 +5,26 @@ DECISIÓN TÉCNICA: Usamos timedelta simple (no relativedelta de dateutil)
 porque los requerimientos definen períodos fijos en días (30, 14, 7, 1),
 no "1 mes calendario". Esto es intencional: evita ambigüedad en meses
 cortos (febrero) y garantiza consistencia en todos los cálculos.
+
+Zona horaria: todas las funciones de "ahora" usan America/Bogota (UTC-5).
+Railway y la BD corren en UTC, pero el negocio opera en hora colombiana.
 """
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from app.models.credito import Periodicidad
+
+# Zona horaria de Colombia (UTC-5, sin horario de verano)
+TZ_BOGOTA = timezone(timedelta(hours=-5))
+
+
+def ahora_bogota() -> datetime:
+    """Retorna el datetime actual en hora de Bogotá."""
+    return datetime.now(TZ_BOGOTA)
+
+
+def hoy_bogota() -> date:
+    """Retorna la fecha (date) actual en hora de Bogotá."""
+    return ahora_bogota().date()
 
 
 def siguiente_fecha_maxima(fecha_anterior: date, periodicidad: Periodicidad) -> date:

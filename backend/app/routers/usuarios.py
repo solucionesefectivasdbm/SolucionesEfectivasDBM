@@ -6,6 +6,7 @@ Cualquier usuario puede cambiar su propia contraseña.
 import math
 import uuid
 from datetime import datetime, timezone
+from app.utils.fechas import ahora_bogota
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from passlib.context import CryptContext
@@ -167,7 +168,7 @@ async def eliminar_usuario(
     if not usuario:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado")
 
-    usuario.deleted_at = datetime.utcnow()
+    usuario.deleted_at = ahora_bogota()
     usuario.activo = False
 
     await audit_service.registrar_eliminacion(
