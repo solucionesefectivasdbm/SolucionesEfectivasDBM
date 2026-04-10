@@ -203,8 +203,9 @@ async def fix_fechas():
         ))
         resultados["audit_log.fecha_accion"] = f"{r.rowcount} filas corregidas"
 
-        # 2. created_at y updated_at en todas las tablas con AuditMixin
-        tablas = ["users", "receptores", "cuentas_bancarias", "gestores",
+        # 2. created_at y updated_at en tablas con AuditMixin
+        #    (cuentas_bancarias y audit_log NO tienen AuditMixin)
+        tablas = ["users", "receptores", "gestores",
                   "clientes", "creditos", "pagos"]
         for tabla in tablas:
             r1 = await db.execute(text(
