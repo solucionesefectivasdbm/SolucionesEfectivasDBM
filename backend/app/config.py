@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     # JWT
     secret_key: str = "cambia_esto_en_produccion"
-    access_token_expire_minutes: int = 15
+    access_token_expire_minutes: int = 60
     refresh_token_expire_days: int = 7
 
     # CORS (separar multiples origenes con coma)
