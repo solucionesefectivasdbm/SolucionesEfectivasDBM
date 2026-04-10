@@ -2,6 +2,7 @@
 import math
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
@@ -18,6 +19,7 @@ from app.models.usuario import TipoUsuario, Usuario
 from app.schemas.common import PaginatedResponse
 from app.schemas.credito import CreditoCreate, CreditoResponse, CreditoUpdate
 from app.schemas.pago import PagoResponse
+from app.services.credito_service import _periodos_por_mes
 from app.services import audit_service
 from app.services.credito_service import (
     crear_primera_cuota,
@@ -96,7 +98,7 @@ async def crear_credito(
         fecha_inicial_pago=body.fecha_inicial_pago,
         periodicidad=body.periodicidad,
         saldo_capital=body.capital_prestado,
-        saldo_intereses=body.capital_prestado * body.tasa_interes_mensual,
+        saldo_intereses=body.capital_prestado * body.tasa_interes_mensual * (Decimal(body.numero_cuotas) / Decimal(_periodos_por_mes(body.periodicidad))) if body.numero_cuotas else body.capital_prestado * body.tasa_interes_mensual,
         abono_minimo=body.abono_minimo,
         numero_cuotas=body.numero_cuotas,
         calcular_interes_dias_corridos=body.calcular_interes_dias_corridos,

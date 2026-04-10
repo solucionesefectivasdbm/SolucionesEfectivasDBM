@@ -28,19 +28,32 @@ from app.utils.fechas import (
 from app.utils.momentos import get_momento
 
 
+def _periodos_por_mes(periodicidad: Periodicidad) -> int:
+    """Cuántos pagos caen en un mes según la periodicidad."""
+    return {
+        Periodicidad.diario: 30,
+        Periodicidad.semanal: 4,
+        Periodicidad.quincenal: 2,
+        Periodicidad.mensual: 1,
+    }[periodicidad]
+
+
 def calcular_cuota_fija(
     capital: Decimal,
     tasa_mensual: Decimal,
     num_cuotas: int,
+    periodicidad: Periodicidad,
 ) -> Decimal:
     """
     Calcula el monto fijo de cuota usando interés simple.
 
-    Fórmula: cuota = (capital + capital * tasa * num_cuotas) / num_cuotas
-    Cada cuota lleva la misma porción de capital e interés.
+    El interés mensual se divide entre los pagos del mes según periodicidad.
+    Ejemplo quincenal: 2 pagos/mes → cada pago lleva la mitad del interés mensual.
     """
     n = Decimal(num_cuotas)
-    interes_total = capital * tasa_mensual * n
+    ppm = Decimal(_periodos_por_mes(periodicidad))
+    num_meses = n / ppm
+    interes_total = capital * tasa_mensual * num_meses
     cuota = (capital + interes_total) / n
     return cuota.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
@@ -48,13 +61,15 @@ def calcular_cuota_fija(
 def calcular_interes_cuota_fija(
     capital_total: Decimal,
     tasa_mensual: Decimal,
-    num_cuotas: int,
+    periodicidad: Periodicidad,
 ) -> Decimal:
     """
     Calcula el interés por cuota para cuota fija (interés simple).
-    interes_por_cuota = capital * tasa * num_cuotas / num_cuotas = capital * tasa
+    El interés mensual se divide entre los pagos del mes.
+    Quincenal: interes_cuota = capital * tasa / 2
     """
-    return (capital_total * tasa_mensual).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    ppm = Decimal(_periodos_por_mes(periodicidad))
+    return (capital_total * tasa_mensual / ppm).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def calcular_capital_cuota_fija(
@@ -127,7 +142,7 @@ async def _primera_cuota_fija(
         )
     else:
         interes = calcular_interes_cuota_fija(
-            credito.capital_prestado, credito.tasa_interes_mensual, credito.numero_cuotas,
+            credito.capital_prestado, credito.tasa_interes_mensual, credito.periodicidad,
         )
 
     cuota_monto = (capital_por_cuota + interes).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -228,7 +243,7 @@ def _siguiente_cuota_fija(
         credito.capital_prestado, credito.numero_cuotas,
     )
     interes = calcular_interes_cuota_fija(
-        credito.capital_prestado, credito.tasa_interes_mensual, credito.numero_cuotas,
+        credito.capital_prestado, credito.tasa_interes_mensual, credito.periodicidad,
     )
     cuota_base = (capital_por_cuota + interes).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 

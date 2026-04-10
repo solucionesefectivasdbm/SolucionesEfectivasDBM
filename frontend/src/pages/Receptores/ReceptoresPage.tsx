@@ -21,7 +21,7 @@ export default function ReceptoresPage() {
   const [editandoCuenta, setEditandoCuenta] = useState<CuentaBancaria | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
-  const { register, handleSubmit, reset } = useForm<any>()
+  const { register, handleSubmit, reset, formState: { errors } } = useForm<any>()
   const { register: regC, handleSubmit: handleC, reset: resetC } = useForm<any>()
 
   const cargar = useCallback(async () => {
@@ -40,7 +40,11 @@ export default function ReceptoresPage() {
       if (editando) { await receptoresApi.actualizar(editando.id, data); toast.success('Receptor actualizado') }
       else { await receptoresApi.crear(data); toast.success('Receptor creado') }
       setModalForm(false); cargar()
-    } catch (e: any) { toast.error(e.response?.data?.detail || 'Error') }
+    } catch (e: any) {
+      const detail = e.response?.data?.detail
+      const msg = Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error'
+      toast.error(msg)
+    }
     finally { setSubmitting(false) }
   }
 
@@ -50,7 +54,11 @@ export default function ReceptoresPage() {
     try {
       await receptoresApi.eliminar(seleccionado.id)
       toast.success('Receptor eliminado'); setModalEliminar(false); cargar()
-    } catch (e: any) { toast.error(e.response?.data?.detail || 'Error') }
+    } catch (e: any) {
+      const detail = e.response?.data?.detail
+      const msg = Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error'
+      toast.error(msg)
+    }
     finally { setSubmitting(false) }
   }
 
@@ -69,7 +77,11 @@ export default function ReceptoresPage() {
       const res = await receptoresApi.obtener(seleccionado.id)
       setSeleccionado(res.data)
       cargar()
-    } catch (e: any) { toast.error(e.response?.data?.detail || 'Error') }
+    } catch (e: any) {
+      const detail = e.response?.data?.detail
+      const msg = Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error'
+      toast.error(msg)
+    }
     finally { setSubmitting(false) }
   }
 
@@ -136,8 +148,8 @@ export default function ReceptoresPage() {
       <Modal isOpen={modalForm} onClose={() => setModalForm(false)} title={editando ? 'Editar Receptor' : 'Nuevo Receptor'}>
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           <FormField label="Nombre" required><input {...register('nombre', { required: true })} className="input" /></FormField>
-          <FormField label="Cédula" required><input {...register('cedula', { required: true })} className="input" /></FormField>
-          <FormField label="Teléfono" required><input {...register('telefono', { required: true })} className="input" /></FormField>
+          <FormField label="Cédula" required><input {...register('cedula', { required: true, pattern: { value: /^\d{6,10}$/, message: 'Cédula: 6 a 10 dígitos numéricos' } })} className="input" inputMode="numeric" placeholder="Ej: 1234567890" /></FormField>
+          <FormField label="Teléfono" required><input {...register('telefono', { required: true, pattern: { value: /^\d{7,10}$/, message: 'Teléfono: 7 a 10 dígitos numéricos' } })} className="input" inputMode="numeric" placeholder="Ej: 3001234567" /></FormField>
           <div className="flex gap-3 justify-end">
             <button type="button" onClick={() => setModalForm(false)} className="btn-ghost">Cancelar</button>
             <button type="submit" disabled={submitting} className="btn-primary">
