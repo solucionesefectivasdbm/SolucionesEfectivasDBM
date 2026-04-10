@@ -64,7 +64,7 @@ async def generar_reporte(
     anio: int = Query(...),
     mes: int = Query(..., ge=1, le=12),
     momento: str = Query(...),
-    current_user: Usuario = Depends(require_role("admin", "registrador", "recaudador")),
+    current_user: Usuario = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ):
     fecha_inicio, fecha_fin = get_periodo_momento(anio, mes, momento)
