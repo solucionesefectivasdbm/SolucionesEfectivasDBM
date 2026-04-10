@@ -181,3 +181,57 @@ async def fix_intereses():
     }
 
 
+@app.get("/fix-fechas", tags=["Sistema"])
+async def fix_fechas():
+    """
+    Corrige timestamps que se guardaron en UTC a hora de Bogotá (UTC-5).
+    Resta 5 horas a: audit_log.fecha_accion, y created_at/updated_at de
+    todas las tablas principales.
+    ELIMINAR este endpoint después del primer uso.
+    """
+    from datetime import timedelta
+    from sqlalchemy import text
+    from app.database import AsyncSessionLocal
+
+    OFFSET = timedelta(hours=5)  # UTC → Bogotá = restar 5h
+    resultados = {}
+
+    async with AsyncSessionLocal() as db:
+        # 1. audit_log.fecha_accion
+        r = await db.execute(text(
+            "UPDATE audit_log SET fecha_accion = fecha_accion - interval '5 hours'"
+        ))
+        resultados["audit_log.fecha_accion"] = f"{r.rowcount} filas corregidas"
+
+        # 2. created_at y updated_at en todas las tablas con AuditMixin
+        tablas = ["users", "receptores", "cuentas_bancarias", "gestores",
+                  "clientes", "creditos", "pagos"]
+        for tabla in tablas:
+            r1 = await db.execute(text(
+                f"UPDATE {tabla} SET created_at = created_at - interval '5 hours'"
+            ))
+            r2 = await db.execute(text(
+                f"UPDATE {tabla} SET updated_at = updated_at - interval '5 hours'"
+            ))
+            # deleted_at (solo si existe y no es null)
+            r3 = await db.execute(text(
+                f"UPDATE {tabla} SET deleted_at = deleted_at - interval '5 hours' "
+                f"WHERE deleted_at IS NOT NULL"
+            ))
+            resultados[tabla] = {
+                "created_at": f"{r1.rowcount} filas",
+                "updated_at": f"{r2.rowcount} filas",
+                "deleted_at": f"{r3.rowcount} filas",
+            }
+
+        # 3. pagos.fecha_pago_real — es tipo date, si se registró entre
+        #    7PM-11:59PM Colombia quedó con fecha del día siguiente.
+        #    No podemos saber cuáles con certeza, así que lo dejamos como está.
+        #    (Solo afectaría pagos registrados en ese horario)
+
+        await db.commit()
+
+    return {
+        "message": "Fechas corregidas de UTC a hora de Bogotá (UTC-5).",
+        "detalle": resultados,
+    }

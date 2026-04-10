@@ -12,19 +12,7 @@ Railway y la BD corren en UTC, pero el negocio opera en hora colombiana.
 from datetime import date, datetime, timedelta, timezone
 
 from app.models.credito import Periodicidad
-
-# Zona horaria de Colombia (UTC-5, sin horario de verano)
-TZ_BOGOTA = timezone(timedelta(hours=-5))
-
-
-def ahora_bogota() -> datetime:
-    """Retorna el datetime actual en hora de Bogotá."""
-    return datetime.now(TZ_BOGOTA)
-
-
-def hoy_bogota() -> date:
-    """Retorna la fecha (date) actual en hora de Bogotá."""
-    return ahora_bogota().date()
+from app.utils.tz import TZ_BOGOTA, ahora_bogota, hoy_bogota  # re-exportar
 
 
 def siguiente_fecha_maxima(fecha_anterior: date, periodicidad: Periodicidad) -> date:
