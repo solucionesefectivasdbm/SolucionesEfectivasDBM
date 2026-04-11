@@ -67,6 +67,7 @@ export const creditosApi = {
   crear: (data: object) => api.post<Credito>('/creditos', data),
   obtener: (id: string) => api.get<Credito>(`/creditos/${id}`),
   actualizar: (id: string, data: object) => api.patch<Credito>(`/creditos/${id}`, data),
+  eliminar: (id: string) => api.delete(`/creditos/${id}`),
   historialCuotas: (id: string) => api.get<Pago[]>(`/creditos/${id}/cuotas`),
 }
 

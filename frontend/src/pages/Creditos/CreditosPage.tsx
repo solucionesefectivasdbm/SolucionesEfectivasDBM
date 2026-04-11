@@ -5,7 +5,7 @@ import { LoadingPage, EmptyState, Paginacion, FormField } from '@/components/ui'
 import Modal from '@/components/ui/Modal'
 import { usePermissions } from '@/store/authStore'
 import type { Credito, Pago, Cliente } from '@/types'
-import { Plus, Eye, Pencil, Search } from 'lucide-react'
+import { Plus, Eye, Pencil, Search, Trash2 } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -104,6 +104,18 @@ export default function CreditosPage() {
     } finally { setSubmitting(false) }
   }
 
+  const onEliminar = async (c: Credito) => {
+    if (!confirm(`¿Eliminar el crédito ${c.numero_credito_cliente}? Esta acción no se puede deshacer.`)) return
+    try {
+      await creditosApi.eliminar(c.id)
+      toast.success('Crédito eliminado')
+      cargar()
+    } catch (e: any) {
+      const detail = e.response?.data?.detail
+      toast.error(Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error al eliminar')
+    }
+  }
+
   const TIPO_LABELS: Record<string, string> = { cuota_fija: 'Cuota Fija', abono_capital: 'Abono Capital' }
   const PERIOD_LABELS: Record<string, string> = { mensual: 'Mensual', quincenal: 'Quincenal', semanal: 'Semanal', diario: 'Diario' }
 
@@ -180,10 +192,16 @@ export default function CreditosPage() {
                             <Eye size={13} />
                           </button>
                           {perms.isAdmin && c.activo && (
-                            <button onClick={() => { setCreditoActual(c); setModalEditar(true) }}
-                              className="p-1.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700" title="Editar">
-                              <Pencil size={13} />
-                            </button>
+                            <>
+                              <button onClick={() => { setCreditoActual(c); setModalEditar(true) }}
+                                className="p-1.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700" title="Editar">
+                                <Pencil size={13} />
+                              </button>
+                              <button onClick={() => onEliminar(c)}
+                                className="p-1.5 bg-red-100 text-red-600 rounded-lg hover:bg-red-200" title="Eliminar">
+                                <Trash2 size={13} />
+                              </button>
+                            </>
                           )}
                         </div>
                       </td>

@@ -26,6 +26,7 @@ from app.services.credito_service import (
     generar_numero_credito,
     recalcular_cuotas_futuras,
 )
+from app.utils.tz import ahora_bogota
 
 router = APIRouter(prefix="/creditos", tags=["Créditos"])
 
@@ -192,6 +193,65 @@ async def actualizar_credito(
         usuario_id=current_user.id, ip_origen=get_client_ip(request), cambios=cambios,
     )
     return CreditoResponse.model_validate(credito)
+
+
+@router.delete("/{credito_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def eliminar_credito(
+    credito_id: uuid.UUID,
+    request: Request,
+    current_user: Usuario = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Elimina (soft delete) un crédito si no tiene pagos validados
+    ni pagos con montos registrados (capital_pagado o interes_pagado > 0).
+    """
+    credito = (await db.execute(
+        select(Credito).where(Credito.id == credito_id, Credito.deleted_at == None)  # noqa: E711
+    )).scalar_one_or_none()
+    if not credito:
+        raise HTTPException(status_code=404, detail="Crédito no encontrado")
+
+    # Verificar que no haya pagos con montos registrados o validados
+    pagos_con_actividad = (await db.execute(
+        select(func.count(Pago.id)).where(
+            Pago.credito_id == credito_id,
+            Pago.deleted_at == None,  # noqa: E711
+            (
+                (Pago.pagado == True) |  # noqa: E712
+                (Pago.validado_recaudador == True) |  # noqa: E712
+                (Pago.capital_pagado > 0) |
+                (Pago.interes_pagado > 0)
+            ),
+        )
+    )).scalar()
+
+    if pagos_con_actividad > 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No se puede eliminar el crédito porque tiene pagos validados "
+                   "o con montos registrados.",
+        )
+
+    # Soft delete del crédito y sus cuotas pendientes
+    ahora = ahora_bogota()
+    credito.deleted_at = ahora
+    credito.activo = False
+
+    # Eliminar cuotas pendientes asociadas
+    cuotas_pendientes = (await db.execute(
+        select(Pago).where(
+            Pago.credito_id == credito_id,
+            Pago.deleted_at == None,  # noqa: E711
+        )
+    )).scalars().all()
+    for cuota in cuotas_pendientes:
+        cuota.deleted_at = ahora
+
+    await audit_service.registrar_eliminacion(
+        db=db, entidad="creditos", entidad_id=credito.id,
+        usuario_id=current_user.id, ip_origen=get_client_ip(request),
+    )
 
 
 @router.get("/{credito_id}/cuotas", response_model=list[PagoResponse])
