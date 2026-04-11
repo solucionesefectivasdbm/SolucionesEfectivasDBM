@@ -72,6 +72,41 @@ async def listar_creditos(
     )
 
 
+@router.get("/resumen-cartera")
+async def resumen_cartera(
+    current_user: Usuario = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Saldo total de la cartera: suma de saldo_capital + saldo_intereses de créditos activos."""
+    query = select(
+        func.coalesce(func.sum(Credito.saldo_capital), 0),
+        func.coalesce(func.sum(Credito.saldo_intereses), 0),
+    ).where(
+        Credito.activo == True,  # noqa: E712
+        Credito.deleted_at == None,  # noqa: E711
+    )
+
+    # Gestor: solo sus clientes
+    if current_user.tipo_usuario == TipoUsuario.gestor:
+        gestor = (await db.execute(
+            select(Gestor).where(Gestor.user_id == current_user.id)
+        )).scalar_one_or_none()
+        if gestor:
+            query = query.join(Cliente, Credito.cliente_id == Cliente.id).where(
+                Cliente.gestor_id == gestor.id
+            )
+
+    row = (await db.execute(query)).one()
+    total_capital = row[0]
+    total_intereses = row[1]
+
+    return {
+        "saldo_capital": float(total_capital),
+        "saldo_intereses": float(total_intereses),
+        "saldo_total": float(total_capital + total_intereses),
+    }
+
+
 @router.post("", response_model=CreditoResponse, status_code=status.HTTP_201_CREATED)
 async def crear_credito(
     body: CreditoCreate,

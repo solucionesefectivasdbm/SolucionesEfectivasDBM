@@ -64,6 +64,7 @@ export const clientesApi = {
 export const creditosApi = {
   listar: (params?: { page?: number; busqueda?: string; solo_activos?: boolean }) =>
     api.get<PaginatedResponse<Credito>>('/creditos', { params }),
+  resumenCartera: () => api.get<{ saldo_capital: number; saldo_intereses: number; saldo_total: number }>('/creditos/resumen-cartera'),
   crear: (data: object) => api.post<Credito>('/creditos', data),
   obtener: (id: string) => api.get<Credito>(`/creditos/${id}`),
   actualizar: (id: string, data: object) => api.patch<Credito>(`/creditos/${id}`, data),

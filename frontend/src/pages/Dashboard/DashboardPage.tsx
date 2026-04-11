@@ -13,20 +13,23 @@ export default function DashboardPage() {
   const [vencidos, setVencidos] = useState<AlertasVencidos | null>(null)
   const [totalClientes, setTotalClientes] = useState(0)
   const [totalCreditos, setTotalCreditos] = useState(0)
+  const [saldoCartera, setSaldoCartera] = useState(0)
 
   useEffect(() => {
     const cargar = async () => {
       try {
-        const [p, v, cl, cr] = await Promise.all([
+        const [p, v, cl, cr, cartera] = await Promise.all([
           pagosApi.alertasProximosVencer(),
           pagosApi.alertasVencidos(),
           clientesApi.listar({ page: 1 }),
           creditosApi.listar({ page: 1, solo_activos: true }),
+          creditosApi.resumenCartera(),
         ])
         setProximos(p.data)
         setVencidos(v.data)
         setTotalClientes(cl.data.total)
         setTotalCreditos(cr.data.total)
+        setSaldoCartera(cartera.data.saldo_total)
       } catch {}
       finally { setLoading(false) }
     }
@@ -51,7 +54,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <StatCard
           label="Clientes"
           value={totalClientes}
@@ -61,6 +64,12 @@ export default function DashboardPage() {
           label="Créditos Activos"
           value={totalCreditos}
           color="yellow"
+        />
+        <StatCard
+          label="Saldo Cartera"
+          value={formatCOP(saldoCartera)}
+          sub="capital + intereses"
+          color="blue"
         />
         <StatCard
           label="Pagos Próx. a Vencer"
