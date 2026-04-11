@@ -29,7 +29,7 @@ export default function DashboardPage() {
         setVencidos(v.data)
         setTotalClientes(cl.data.total)
         setTotalCreditos(cr.data.total)
-        setSaldoCartera(cartera.data.saldo_total)
+        setSaldoCartera(cartera.data.saldo_capital)
       } catch {}
       finally { setLoading(false) }
     }
@@ -68,7 +68,7 @@ export default function DashboardPage() {
         <StatCard
           label="Saldo Cartera"
           value={formatCOP(saldoCartera)}
-          sub="capital + intereses"
+          sub="capital activo"
           color="blue"
         />
         <StatCard
