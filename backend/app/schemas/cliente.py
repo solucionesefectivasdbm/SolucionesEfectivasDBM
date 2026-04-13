@@ -34,6 +34,7 @@ class ClienteCreate(ClienteBase):
 class ClienteUpdate(BaseModel):
     nombre: Optional[str] = None
     apellidos: Optional[str] = None
+    cedula: Optional[str] = None
     telefono: Optional[str] = None
     direccion: Optional[str] = None
     correo_electronico: Optional[str] = None

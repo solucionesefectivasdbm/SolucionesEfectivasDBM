@@ -71,8 +71,8 @@ export default function ClientesPage() {
     setSubmitting(true)
     try {
       if (editando) {
-        // Solo enviar campos editables (excluir cedula y gestor_id que no se editan)
-        const { cedula, gestor_id, ...updateData } = data
+        // Solo excluir gestor_id (no se edita desde aquí)
+        const { gestor_id, ...updateData } = data
         await clientesApi.actualizar(editando.id, updateData)
         toast.success('Cliente actualizado')
       } else {
