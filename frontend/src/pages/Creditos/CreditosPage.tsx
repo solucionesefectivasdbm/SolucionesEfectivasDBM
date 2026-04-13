@@ -35,6 +35,8 @@ export default function CreditosPage() {
   const [historial, setHistorial] = useState<Pago[]>([])
   const [submitting, setSubmitting] = useState(false)
   const [soloActivos, setSoloActivos] = useState(true)
+  const [busquedaCliente, setBusquedaCliente] = useState('')
+  const [clienteSeleccionado, setClienteSeleccionado] = useState<Cliente | null>(null)
 
   const { register, handleSubmit, watch, reset, formState: { errors } } = useForm<CreditoForm>()
   const { register: regEdit, handleSubmit: handleEdit } = useForm<EditForm>()
@@ -54,8 +56,9 @@ export default function CreditosPage() {
   useEffect(() => { cargar() }, [cargar])
 
   useEffect(() => {
-    clientesApi.listar({ page: 1 }).then(r => setClientes(r.data.items)).catch(() => {})
-  }, [])
+    clientesApi.listar({ page: 1, busqueda: busquedaCliente })
+      .then(r => setClientes(r.data.items)).catch(() => {})
+  }, [busquedaCliente])
 
   const abrirHistorial = async (c: Credito) => {
     setCreditoActual(c)
@@ -124,7 +127,7 @@ export default function CreditosPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-black text-primary-600">Créditos</h1>
         {perms.canCreate && (
-          <button onClick={() => { reset(); setModalCrear(true) }} className="btn-primary flex items-center gap-2">
+          <button onClick={() => { reset(); setClienteSeleccionado(null); setBusquedaCliente(''); setModalCrear(true) }} className="btn-primary flex items-center gap-2">
             <Plus size={16} /> Nuevo Crédito
           </button>
         )}
@@ -219,10 +222,29 @@ export default function CreditosPage() {
       <Modal isOpen={modalCrear} onClose={() => setModalCrear(false)} title="Nuevo Crédito" size="xl">
         <form onSubmit={handleSubmit(onCrear)} className="grid grid-cols-2 gap-4">
           <FormField label="Cliente" required error={errors.cliente_id?.message}>
-            <select {...register('cliente_id', { required: 'Requerido' })} className="input">
-              <option value="">-- Seleccionar --</option>
-              {clientes.map(c => <option key={c.id} value={c.id}>{c.nombre} {c.apellidos} — {c.cedula}</option>)}
-            </select>
+            <input type="hidden" {...register('cliente_id', { required: 'Requerido' })} />
+            <div className="relative">
+              <input
+                type="text"
+                className="input"
+                placeholder="Escriba para buscar cliente..."
+                value={clienteSeleccionado ? `${clienteSeleccionado.nombre} ${clienteSeleccionado.apellidos} — ${clienteSeleccionado.cedula}` : busquedaCliente}
+                onChange={e => { setBusquedaCliente(e.target.value); setClienteSeleccionado(null); reset({ ...watch(), cliente_id: '' }) }}
+                onFocus={() => { if (clienteSeleccionado) { setBusquedaCliente(''); setClienteSeleccionado(null); reset({ ...watch(), cliente_id: '' }) } }}
+              />
+              {!clienteSeleccionado && busquedaCliente && clientes.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                  {clientes.map(c => (
+                    <button key={c.id} type="button"
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-primary-50 border-b border-gray-50 last:border-0"
+                      onClick={() => { setClienteSeleccionado(c); setBusquedaCliente(''); reset({ ...watch(), cliente_id: c.id }) }}>
+                      <span className="font-medium">{c.nombre} {c.apellidos}</span>
+                      <span className="text-gray-400 ml-2">— {c.cedula}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </FormField>
           <FormField label="Tipo de crédito" required>
             <select {...register('tipo_credito', { required: 'Requerido' })} className="input">
