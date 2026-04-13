@@ -23,6 +23,7 @@ export default function ClientesPage() {
   const [pages, setPages] = useState(0)
   const [page, setPage] = useState(1)
   const [busqueda, setBusqueda] = useState('')
+  const [filtroGestor, setFiltroGestor] = useState('')
   const [loading, setLoading] = useState(true)
   const [modalForm, setModalForm] = useState(false)
   const [modalEliminar, setModalEliminar] = useState(false)
@@ -40,13 +41,13 @@ export default function ClientesPage() {
   const cargar = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await clientesApi.listar({ page, busqueda })
+      const res = await clientesApi.listar({ page, busqueda, gestor_id: filtroGestor || undefined })
       setClientes(res.data.items)
       setTotal(res.data.total)
       setPages(res.data.pages)
     } catch { toast.error('Error al cargar clientes') }
     finally { setLoading(false) }
-  }, [page, busqueda])
+  }, [page, busqueda, filtroGestor])
 
   useEffect(() => { cargar() }, [cargar])
 
@@ -132,12 +133,17 @@ export default function ClientesPage() {
         )}
       </div>
 
-      <div className="card">
-        <div className="relative">
+      <div className="card flex items-center gap-4 flex-wrap">
+        <div className="relative flex-1 min-w-[200px] max-w-sm">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-          <input className="input pl-9 max-w-sm" placeholder="Buscar por nombre..."
+          <input className="input pl-9" placeholder="Buscar por nombre..."
             value={busqueda} onChange={e => { setBusqueda(e.target.value); setPage(1) }} />
         </div>
+        <select className="input max-w-[220px]" value={filtroGestor}
+          onChange={e => { setFiltroGestor(e.target.value); setPage(1) }}>
+          <option value="">Todos los gestores</option>
+          {gestores.map(g => <option key={g.id} value={g.id}>{g.nombre} {g.apellidos}</option>)}
+        </select>
       </div>
 
       <div className="card p-0 overflow-hidden">
