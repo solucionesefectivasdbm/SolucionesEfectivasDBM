@@ -70,7 +70,9 @@ export default function ClientesPage() {
     setSubmitting(true)
     try {
       if (editando) {
-        await clientesApi.actualizar(editando.id, data)
+        // Solo enviar campos editables (excluir cedula y gestor_id que no se editan)
+        const { cedula, gestor_id, ...updateData } = data
+        await clientesApi.actualizar(editando.id, updateData)
         toast.success('Cliente actualizado')
       } else {
         await clientesApi.crear(data)
@@ -79,16 +81,20 @@ export default function ClientesPage() {
       setModalForm(false)
       cargar()
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'Error')
+      const detail = e.response?.data?.detail
+      toast.error(Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error')
     } finally { setSubmitting(false) }
   }
 
-  const abrirHistorial = async (c: Cliente) => {
+  const [soloActivosHistorial, setSoloActivosHistorial] = useState(true)
+
+  const abrirHistorial = async (c: Cliente, soloActivos = true) => {
     setClienteHistorial(c)
     setCreditoSeleccionado(null)
     setPagosCredito([])
+    setSoloActivosHistorial(soloActivos)
     try {
-      const res = await creditosApi.listar({ busqueda: c.cedula, page: 1 })
+      const res = await creditosApi.listar({ cliente_id: c.id, solo_activos: soloActivos, page: 1 })
       setCreditosCliente(res.data.items)
       setModalHistorial(true)
     } catch { toast.error('Error al cargar historial') }
@@ -256,89 +262,109 @@ export default function ClientesPage() {
         />
       </Modal>
 
-      {/* Modal Historial del cliente */}
+      {/* Modal Cartera del cliente */}
       <Modal isOpen={modalHistorial} onClose={() => { setModalHistorial(false); setCreditoSeleccionado(null) }}
-        title={`Historial — ${clienteHistorial?.nombre} ${clienteHistorial?.apellidos}`} size="xl">
+        title={`Cartera — ${clienteHistorial?.nombre} ${clienteHistorial?.apellidos}`} size="xl">
         <div className="space-y-4">
-          {/* Créditos del cliente */}
-          <h3 className="font-semibold text-primary-600">Créditos</h3>
+          {/* Resumen de cartera */}
+          <div className="bg-primary-50 border border-primary-200 rounded-lg p-4 flex items-center justify-between">
+            <div>
+              <p className="text-sm text-primary-700 font-medium">Saldo total de cartera</p>
+              <p className="text-xs text-gray-500">{creditosCliente.filter(c => c.activo).length} crédito(s) activo(s)</p>
+            </div>
+            <p className="text-2xl font-black text-primary-700">
+              {formatCOP(creditosCliente.filter(c => c.activo).reduce((sum, c) => sum + c.saldo_capital, 0))}
+            </p>
+          </div>
+
+          {/* Filtro activos/todos */}
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold text-primary-600">Créditos</h3>
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input type="checkbox" checked={soloActivosHistorial}
+                onChange={e => { if (clienteHistorial) abrirHistorial(clienteHistorial, e.target.checked) }}
+                className="w-4 h-4" />
+              Solo activos
+            </label>
+          </div>
+
           {creditosCliente.length === 0 ? (
             <p className="text-gray-400 text-sm text-center py-4">Sin créditos registrados</p>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr>
-                    <th className="table-header">Número</th>
-                    <th className="table-header">Tipo</th>
-                    <th className="table-header">Capital</th>
-                    <th className="table-header">Saldo</th>
-                    <th className="table-header">Tasa</th>
-                    <th className="table-header">Estado</th>
-                    <th className="table-header">Cuotas</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {creditosCliente.map((cr, i) => (
-                    <tr key={cr.id} className={`cursor-pointer hover:bg-primary-50 ${i % 2 === 0 ? 'bg-white' : 'bg-gray-50'} ${creditoSeleccionado?.id === cr.id ? 'bg-primary-100' : ''}`}
-                      onClick={() => verPagosCredito(cr)}>
-                      <td className="table-cell font-mono">{cr.numero_credito_cliente}</td>
-                      <td className="table-cell capitalize">{cr.tipo_credito.replace('_', ' ')}</td>
-                      <td className="table-cell">{formatCOP(cr.capital_prestado)}</td>
-                      <td className="table-cell">{formatCOP(cr.saldo_capital)}</td>
-                      <td className="table-cell">{formatPorcentaje(cr.tasa_interes_mensual)}</td>
-                      <td className="table-cell">
-                        {cr.activo ? <span className="badge-success">Activo</span> : <span className="badge-danger">Cerrado</span>}
-                      </td>
-                      <td className="table-cell text-center">
-                        <button className="text-primary-600 hover:underline text-xs font-medium">Ver cuotas</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+            <div className="space-y-2">
+              {creditosCliente.map((cr) => (
+                <div key={cr.id} className="border border-gray-200 rounded-lg overflow-hidden">
+                  {/* Cabecera del crédito (click para expandir) */}
+                  <button
+                    onClick={() => creditoSeleccionado?.id === cr.id ? setCreditoSeleccionado(null) : verPagosCredito(cr)}
+                    className={`w-full flex items-center justify-between p-3 text-left hover:bg-gray-50 transition-colors ${creditoSeleccionado?.id === cr.id ? 'bg-primary-50' : 'bg-white'}`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="font-mono text-xs font-semibold text-primary-600">{cr.numero_credito_cliente}</span>
+                      <span className="text-xs text-gray-500 capitalize">{cr.tipo_credito.replace('_', ' ')}</span>
+                      {cr.activo
+                        ? <span className="badge-success">Activo</span>
+                        : <span className="badge-danger">Cerrado</span>}
+                    </div>
+                    <div className="flex items-center gap-4 text-xs">
+                      <div className="text-right">
+                        <p className="text-gray-400">Capital</p>
+                        <p className="font-semibold">{formatCOP(cr.capital_prestado)}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-gray-400">Saldo</p>
+                        <p className={`font-bold ${cr.saldo_capital > 0 ? 'text-danger' : 'text-success'}`}>
+                          {formatCOP(cr.saldo_capital)}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-gray-400">Tasa</p>
+                        <p className="font-mono">{formatPorcentaje(cr.tasa_interes_mensual)}</p>
+                      </div>
+                      <span className={`text-lg transition-transform ${creditoSeleccionado?.id === cr.id ? 'rotate-180' : ''}`}>▾</span>
+                    </div>
+                  </button>
 
-          {/* Cuotas del crédito seleccionado */}
-          {creditoSeleccionado && (
-            <>
-              <h3 className="font-semibold text-primary-600 mt-4">
-                Cuotas — {creditoSeleccionado.numero_credito_cliente}
-              </h3>
-              <div className="overflow-x-auto max-h-64">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr>
-                      <th className="table-header">#</th>
-                      <th className="table-header">Tipo</th>
-                      <th className="table-header">Monto</th>
-                      <th className="table-header">Capital</th>
-                      <th className="table-header">Interés</th>
-                      <th className="table-header">Pagado</th>
-                      <th className="table-header">Fecha Máx.</th>
-                      <th className="table-header">Estado</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pagosCredito.map((p, i) => (
-                      <tr key={p.id} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                        <td className="table-cell font-mono">{p.numero_cuota}</td>
-                        <td className="table-cell capitalize">{p.tipo_cuota.replace('_', ' ')}</td>
-                        <td className="table-cell">{formatCOP(p.monto_a_pagar)}</td>
-                        <td className="table-cell">{formatCOP(p.capital_a_pagar)}</td>
-                        <td className="table-cell">{formatCOP(p.interes_a_pagar)}</td>
-                        <td className="table-cell">{formatCOP(p.capital_pagado + p.interes_pagado)}</td>
-                        <td className="table-cell">{formatFecha(p.fecha_maxima)}</td>
-                        <td className="table-cell">
-                          {p.pagado ? <span className="badge-success">Pagado</span> : <span className="badge-warning">Pendiente</span>}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
+                  {/* Historial de pagos (desplegable) */}
+                  {creditoSeleccionado?.id === cr.id && (
+                    <div className="border-t border-gray-200 bg-gray-50 p-2">
+                      <div className="overflow-x-auto max-h-64">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr>
+                              <th className="table-header">#</th>
+                              <th className="table-header">Tipo</th>
+                              <th className="table-header">Monto</th>
+                              <th className="table-header">Capital</th>
+                              <th className="table-header">Interés</th>
+                              <th className="table-header">Pagado</th>
+                              <th className="table-header">Fecha Máx.</th>
+                              <th className="table-header">Estado</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {pagosCredito.map((p, i) => (
+                              <tr key={p.id} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                                <td className="table-cell font-mono">{p.numero_cuota}</td>
+                                <td className="table-cell capitalize">{p.tipo_cuota.replace('_', ' ')}</td>
+                                <td className="table-cell">{formatCOP(p.monto_a_pagar)}</td>
+                                <td className="table-cell">{formatCOP(p.capital_a_pagar)}</td>
+                                <td className="table-cell">{formatCOP(p.interes_a_pagar)}</td>
+                                <td className="table-cell">{formatCOP(p.capital_pagado + p.interes_pagado)}</td>
+                                <td className="table-cell">{formatFecha(p.fecha_maxima)}</td>
+                                <td className="table-cell">
+                                  {p.pagado ? <span className="badge-success">Pagado</span> : <span className="badge-warning">Pendiente</span>}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
           )}
         </div>
       </Modal>

@@ -35,8 +35,9 @@ router = APIRouter(prefix="/creditos", tags=["Créditos"])
 async def listar_creditos(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=50),
-    busqueda: str = Query("", description="Buscar por nombre de cliente"),
+    busqueda: str = Query("", description="Buscar por nombre o cédula de cliente"),
     solo_activos: bool = Query(True),
+    cliente_id: uuid.UUID | None = Query(None, description="Filtrar por cliente"),
     current_user: Usuario = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -45,6 +46,9 @@ async def listar_creditos(
         .join(Cliente, Credito.cliente_id == Cliente.id)
         .where(Credito.deleted_at == None, Cliente.deleted_at == None)  # noqa: E711
     )
+
+    if cliente_id:
+        query = query.where(Credito.cliente_id == cliente_id)
 
     if solo_activos:
         query = query.where(Credito.activo == True)  # noqa: E712
@@ -59,7 +63,9 @@ async def listar_creditos(
 
     if busqueda:
         query = query.where(
-            (Cliente.nombre.ilike(f"%{busqueda}%")) | (Cliente.apellidos.ilike(f"%{busqueda}%"))
+            (Cliente.nombre.ilike(f"%{busqueda}%"))
+            | (Cliente.apellidos.ilike(f"%{busqueda}%"))
+            | (Cliente.cedula.ilike(f"%{busqueda}%"))
         )
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
