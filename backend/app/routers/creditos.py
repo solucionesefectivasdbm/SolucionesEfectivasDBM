@@ -26,7 +26,6 @@ from app.services.credito_service import (
     generar_numero_credito,
     generar_prefijo_cliente,
     recalcular_cuotas_futuras,
-    sincronizar_prefijos_por_nombre,
 )
 from app.utils.tz import ahora_bogota
 
@@ -312,57 +311,3 @@ async def historial_cuotas(
     )
     pagos = result.scalars().all()
     return [PagoResponse.model_validate(p) for p in pagos]
-
-
-@router.post("/fix-prefijos-nombre")
-async def fix_prefijos_nombre(
-    request: Request,
-    current_user: Usuario = Depends(require_role("admin")),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    ENDPOINT TEMPORAL — Migración del formato de numero_credito_cliente.
-
-    Convierte TODOS los créditos del formato anterior (p. ej. cédula-based)
-    al formato basado en nombre: "{nombre} {apellidos}[(N)]-CR-NNN".
-    Idempotente. Auditado. Ejecutar una sola vez tras el deploy.
-    """
-    ip = get_client_ip(request)
-
-    # Obtener los pares únicos (nombre, apellidos) de clientes ACTIVOS que tengan créditos
-    pares = (await db.execute(
-        select(Cliente.nombre, Cliente.apellidos)
-        .where(Cliente.deleted_at == None)  # noqa: E711
-        .distinct()
-    )).all()
-
-    total_cambios = 0
-    detalles: list[dict] = []
-
-    for nombre, apellidos in pares:
-        cambios = await sincronizar_prefijos_por_nombre(db, nombre, apellidos)
-        if not cambios:
-            continue
-
-        total_cambios += len(cambios)
-        detalles.append({
-            "nombre": nombre,
-            "apellidos": apellidos,
-            "cambios": [
-                {"credito_id": str(cid), "anterior": ant, "nuevo": nue}
-                for cid, ant, nue in cambios
-            ],
-        })
-
-        for credito_id, anterior, nuevo in cambios:
-            await audit_service.registrar_actualizacion_campos(
-                db=db, entidad="creditos", entidad_id=credito_id,
-                usuario_id=current_user.id, ip_origen=ip,
-                cambios={"numero_credito_cliente": (anterior, nuevo)},
-            )
-
-    return {
-        "grupos_procesados": len(detalles),
-        "creditos_renumerados": total_cambios,
-        "detalles": detalles,
-    }
