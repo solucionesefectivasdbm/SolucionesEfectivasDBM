@@ -45,8 +45,9 @@ class Credito(AuditMixin, Base):
         UUID(as_uuid=True), ForeignKey("clientes.id"), nullable=False
     )
     numero_credito_cliente: Mapped[str] = mapped_column(
-        String(20), unique=True, nullable=False,
-        comment="Formato: {cedula_cliente}-CR-{secuencial:03d}"
+        String(100), unique=True, nullable=False,
+        comment="Formato: {nombre} {apellidos}[(N)]-CR-{secuencial:03d}. "
+                "(N) se agrega cuando hay >1 cliente con el mismo nombre+apellidos."
     )
     tipo_credito: Mapped[TipoCredito] = mapped_column(
         Enum(TipoCredito, name="tipo_credito_enum"), nullable=False

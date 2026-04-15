@@ -87,25 +87,57 @@ def calcular_interes_periodo(capital: Decimal, tasa_mensual: Decimal) -> Decimal
     return (capital * tasa_mensual).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-async def renumerar_creditos_por_cedula(
+async def generar_prefijo_cliente(db: AsyncSession, cliente) -> str:
+    """
+    Calcula el prefijo de número de crédito para un cliente, basado en su nombre.
+
+    Reglas:
+    - Si el cliente es el único cliente ACTIVO con ese par (nombre, apellidos),
+      el prefijo es simplemente "{nombre} {apellidos}".
+    - Si hay 2+ clientes activos con el mismo nombre+apellidos, se añade un
+      disambiguador "(N)" donde N es la posición del cliente ordenada por
+      created_at ascendente (tiebreak por id). Ej: "Juan Pérez(1)", "Juan Pérez(2)".
+    """
+    from app.models.cliente import Cliente as ClienteModel
+
+    label_base = f"{cliente.nombre} {cliente.apellidos}"
+
+    siblings = (await db.execute(
+        select(ClienteModel).where(
+            ClienteModel.nombre == cliente.nombre,
+            ClienteModel.apellidos == cliente.apellidos,
+            ClienteModel.deleted_at == None,  # noqa: E711
+        ).order_by(ClienteModel.created_at.asc(), ClienteModel.id.asc())
+    )).scalars().all()
+
+    if len(siblings) <= 1:
+        return label_base
+
+    for idx, s in enumerate(siblings, start=1):
+        if s.id == cliente.id:
+            return f"{label_base}({idx})"
+
+    # Fallback: cliente no está activo (soft-deleted). Usar label base sin disambig.
+    return label_base
+
+
+async def renumerar_creditos_con_prefijo(
     db: AsyncSession,
     cliente_id: uuid.UUID,
-    nueva_cedula: str,
+    prefijo_base: str,
 ) -> list[tuple[uuid.UUID, str, str]]:
     """
-    Renumera todos los créditos del cliente para que usen la nueva cédula.
+    Renumera TODOS los créditos del cliente (incluyendo soft-deleted) para que
+    usen el `prefijo_base` dado. Genera números de la forma "{prefijo_base}-CR-NNN".
 
-    Se invoca cuando el cliente cambia su cédula (por ejemplo, reemplazo de
-    un valor placeholder por el dato real). Actualiza `numero_credito_cliente`
-    en TODOS los créditos del cliente — incluyendo los soft-deleted —
-    para liberar el prefijo anterior y evitar colisiones futuras.
+    Maneja dos tipos de colisión contra el UNIQUE constraint:
+    1. Créditos de OTROS clientes que ya usan ese prefijo: se saltan esos
+       secuenciales ocupados.
+    2. Colisión intra-cliente cuando algunos créditos del mismo cliente ya
+       tienen el prefijo destino: se hace rename en dos fases (a valor
+       temporal y luego al definitivo).
 
-    Si el nuevo prefijo ya está siendo usado por créditos de OTROS clientes
-    (p. ej. porque esa misma cédula la tuvo antes otro cliente distinto),
-    se saltan esos secuenciales ocupados.
-
-    Retorna lista de (credito_id, numero_anterior, numero_nuevo) para
-    registrar en el log de auditoría.
+    Retorna lista de (credito_id, numero_anterior, numero_nuevo) para auditoría.
     """
     creditos = (await db.execute(
         select(Credito)
@@ -116,9 +148,8 @@ async def renumerar_creditos_por_cedula(
     if not creditos:
         return []
 
-    prefix = f"{nueva_cedula}-CR-"
+    prefix = f"{prefijo_base}-CR-"
 
-    # Secuenciales ya ocupados bajo el nuevo prefijo por OTROS clientes
     existentes = (await db.execute(
         select(Credito.numero_credito_cliente).where(
             Credito.numero_credito_cliente.like(f"{prefix}%"),
@@ -133,8 +164,7 @@ async def renumerar_creditos_por_cedula(
         except (ValueError, IndexError):
             pass
 
-    # Planear la asignación final (captura valor anterior antes de cualquier mutación)
-    asignaciones: list[tuple[Credito, str, str]] = []  # (credito, anterior, nuevo)
+    asignaciones: list[tuple[Credito, str, str]] = []
     siguiente = 1
     for credito in creditos:
         while siguiente in ocupados:
@@ -149,15 +179,12 @@ async def renumerar_creditos_por_cedula(
     if not asignaciones:
         return []
 
-    # Paso 1: renombrar a valores temporales únicos para romper ciclos intra-cliente.
-    # Caso típico: un crédito existente tiene 'CED-CR-001' y queremos asignarlo a otro
-    # crédito del mismo cliente. Actualizar directamente viola el UNIQUE a mitad del flush.
-    # La columna numero_credito_cliente es VARCHAR(20); usamos 'T' + 19 hex de UUID (= 20 chars).
+    # Fase 1: renombrar a valores temporales únicos (rompe ciclos intra-cliente)
     for credito, _, _ in asignaciones:
         credito.numero_credito_cliente = f"T{credito.id.hex[:19]}"
     await db.flush()
 
-    # Paso 2: asignar los valores finales
+    # Fase 2: asignar valores finales
     cambios: list[tuple[uuid.UUID, str, str]] = []
     for credito, anterior, nuevo in asignaciones:
         credito.numero_credito_cliente = nuevo
@@ -166,19 +193,57 @@ async def renumerar_creditos_por_cedula(
     return cambios
 
 
-async def generar_numero_credito(db: AsyncSession, cedula_cliente: str) -> str:
+async def sincronizar_prefijos_por_nombre(
+    db: AsyncSession,
+    nombre: str,
+    apellidos: str,
+) -> list[tuple[uuid.UUID, str, str]]:
     """
-    Genera el número de crédito en formato {cedula}-CR-{secuencial:03d}.
+    Recalcula los prefijos correctos para TODOS los clientes activos que
+    comparten el par (nombre, apellidos) y renumera sus créditos.
 
-    Busca el siguiente secuencial disponible consultando directamente la tabla
-    `creditos` por el patrón del número. Así funciona aunque la cédula del cliente
-    haya cambiado, o aunque haya existido un cliente distinto con esa cédula en
-    el pasado (cuyos créditos ya no aparecen al unir por cliente.cedula).
-
-    El secuencial incluye créditos con borrado lógico para evitar duplicados
-    contra el UNIQUE constraint `creditos_numero_credito_cliente_key`.
+    Se invoca después de:
+    - Crear un cliente (puede agregar disambig a hermanos existentes).
+    - Actualizar el nombre/apellidos de un cliente (tanto el nombre viejo
+      como el nuevo deben re-sincronizarse).
+    - Eliminar (soft) un cliente (puede quitar el disambig al hermano que queda).
     """
-    prefix = f"{cedula_cliente}-CR-"
+    from app.models.cliente import Cliente as ClienteModel
+
+    activos = (await db.execute(
+        select(ClienteModel).where(
+            ClienteModel.nombre == nombre,
+            ClienteModel.apellidos == apellidos,
+            ClienteModel.deleted_at == None,  # noqa: E711
+        ).order_by(ClienteModel.created_at.asc(), ClienteModel.id.asc())
+    )).scalars().all()
+
+    label_base = f"{nombre} {apellidos}"
+    cambios_total: list[tuple[uuid.UUID, str, str]] = []
+
+    if len(activos) == 1:
+        cambios = await renumerar_creditos_con_prefijo(db, activos[0].id, label_base)
+        cambios_total.extend(cambios)
+    else:
+        for idx, cliente in enumerate(activos, start=1):
+            prefijo = f"{label_base}({idx})"
+            cambios = await renumerar_creditos_con_prefijo(db, cliente.id, prefijo)
+            cambios_total.extend(cambios)
+
+    return cambios_total
+
+
+async def generar_numero_credito(db: AsyncSession, prefijo_base: str) -> str:
+    """
+    Genera el siguiente número de crédito disponible bajo el prefijo dado.
+    Formato: "{prefijo_base}-CR-{NNN}".
+
+    El secuencial se calcula consultando directamente la tabla `creditos`
+    por el patrón del prefijo, así se respetan los huecos causados por
+    borrados físicos antiguos y se evita cualquier colisión con el
+    UNIQUE constraint `creditos_numero_credito_cliente_key`.
+    """
+    prefix = f"{prefijo_base}-CR-"
     result = await db.execute(
         select(func.count(Credito.id)).where(
             Credito.numero_credito_cliente.like(f"{prefix}%")
@@ -186,8 +251,6 @@ async def generar_numero_credito(db: AsyncSession, cedula_cliente: str) -> str:
     )
     count = result.scalar() or 0
     secuencial = count + 1
-    # Defensivo: si ya existe el número generado (p. ej. por huecos en la
-    # numeración causados por borrados físicos antiguos), avanzar hasta hallar uno libre.
     while True:
         candidato = f"{prefix}{secuencial:03d}"
         existe = (await db.execute(

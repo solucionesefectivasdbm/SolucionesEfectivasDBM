@@ -17,7 +17,7 @@ from app.models.usuario import TipoUsuario, Usuario
 from app.schemas.cliente import ClienteCreate, ClienteResponse, ClienteUpdate
 from app.schemas.common import PaginatedResponse
 from app.services import audit_service
-from app.services.credito_service import renumerar_creditos_por_cedula
+from app.services.credito_service import sincronizar_prefijos_por_nombre
 
 router = APIRouter(prefix="/clientes", tags=["Clientes"])
 
@@ -89,6 +89,17 @@ async def crear_cliente(
     db.add(cliente)
     await db.flush()
 
+    # Si ya existían clientes con el mismo nombre+apellidos, sus créditos necesitan
+    # que se les agregue disambig "(N)". Este cliente recién creado aún no tiene
+    # créditos, pero sus hermanos sí podrían.
+    renumerados = await sincronizar_prefijos_por_nombre(db, cliente.nombre, cliente.apellidos)
+    for credito_id, anterior, nuevo in renumerados:
+        await audit_service.registrar_actualizacion_campos(
+            db=db, entidad="creditos", entidad_id=credito_id,
+            usuario_id=current_user.id, ip_origen=get_client_ip(request),
+            cambios={"numero_credito_cliente": (anterior, nuevo)},
+        )
+
     await audit_service.registrar_creacion(
         db=db, entidad="clientes", entidad_id=cliente.id,
         usuario_id=current_user.id, ip_origen=get_client_ip(request),
@@ -139,8 +150,7 @@ async def actualizar_cliente(
 
     # Si se está cambiando la cédula, validar unicidad frente a otros clientes activos
     nueva_cedula = update_data.get("cedula")
-    cedula_cambio = nueva_cedula is not None and nueva_cedula != cliente.cedula
-    if cedula_cambio:
+    if nueva_cedula is not None and nueva_cedula != cliente.cedula:
         duplicado = (await db.execute(
             select(Cliente.id).where(
                 Cliente.cedula == nueva_cedula,
@@ -154,18 +164,31 @@ async def actualizar_cliente(
                 detail="La cédula ya está registrada para otro cliente",
             )
 
+    # Capturar nombre anterior antes de aplicar cambios para detectar si hay que re-sincronizar
+    nombre_anterior = cliente.nombre
+    apellidos_anterior = cliente.apellidos
+
     cambios = {}
     for field, value in update_data.items():
         cambios[field] = (str(getattr(cliente, field)), str(value))
         setattr(cliente, field, value)
 
-    # Si cambió la cédula, renumerar todos los créditos del cliente y auditar cada cambio
-    if cedula_cambio:
-        renumerados = await renumerar_creditos_por_cedula(db, cliente.id, nueva_cedula)
+    # Si cambió nombre o apellidos, renumerar créditos de este cliente y de sus hermanos
+    # (los del grupo del nombre viejo pueden perder disambig; los del nombre nuevo pueden ganarlo).
+    nombre_cambio = (cliente.nombre, cliente.apellidos) != (nombre_anterior, apellidos_anterior)
+    if nombre_cambio:
+        ip = get_client_ip(request)
+        renumerados: list = []
+        renumerados.extend(
+            await sincronizar_prefijos_por_nombre(db, nombre_anterior, apellidos_anterior)
+        )
+        renumerados.extend(
+            await sincronizar_prefijos_por_nombre(db, cliente.nombre, cliente.apellidos)
+        )
         for credito_id, numero_anterior, numero_nuevo in renumerados:
             await audit_service.registrar_actualizacion_campos(
                 db=db, entidad="creditos", entidad_id=credito_id,
-                usuario_id=current_user.id, ip_origen=get_client_ip(request),
+                usuario_id=current_user.id, ip_origen=ip,
                 cambios={"numero_credito_cliente": (numero_anterior, numero_nuevo)},
             )
 
@@ -206,6 +229,19 @@ async def eliminar_cliente(
         )
 
     cliente.deleted_at = ahora_bogota()
+
+    # Re-sincronizar prefijos de hermanos: al quedar uno solo activo puede perder el disambig.
+    nombre = cliente.nombre
+    apellidos = cliente.apellidos
+    renumerados = await sincronizar_prefijos_por_nombre(db, nombre, apellidos)
+    ip = get_client_ip(request)
+    for credito_id, anterior, nuevo in renumerados:
+        await audit_service.registrar_actualizacion_campos(
+            db=db, entidad="creditos", entidad_id=credito_id,
+            usuario_id=current_user.id, ip_origen=ip,
+            cambios={"numero_credito_cliente": (anterior, nuevo)},
+        )
+
     await audit_service.registrar_eliminacion(
         db=db, entidad="clientes", entidad_id=cliente.id,
         usuario_id=current_user.id, ip_origen=get_client_ip(request),

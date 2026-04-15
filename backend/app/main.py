@@ -70,10 +70,24 @@ async def root():
 
 @app.on_event("startup")
 async def startup_create_tables():
-    """Crea las tablas de la BD si no existen (primer despliegue)."""
+    """Crea las tablas de la BD si no existen y aplica migraciones mínimas de esquema."""
     from app.database import engine, Base
     from app.models import cliente, credito, pago, gestor, receptor, audit_log, usuario
+    from sqlalchemy import text
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+        # Migración manual: ampliar numero_credito_cliente si la columna es menor a 100.
+        # Es necesario porque create_all no altera columnas existentes.
+        result = await conn.execute(text(
+            "SELECT character_maximum_length FROM information_schema.columns "
+            "WHERE table_name = 'creditos' AND column_name = 'numero_credito_cliente'"
+        ))
+        current_length = result.scalar()
+        if current_length and current_length < 100:
+            await conn.execute(text(
+                "ALTER TABLE creditos ALTER COLUMN numero_credito_cliente TYPE VARCHAR(100)"
+            ))
 
 
