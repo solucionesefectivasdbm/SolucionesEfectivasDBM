@@ -133,7 +133,8 @@ async def renumerar_creditos_por_cedula(
         except (ValueError, IndexError):
             pass
 
-    cambios: list[tuple[uuid.UUID, str, str]] = []
+    # Planear la asignación final (captura valor anterior antes de cualquier mutación)
+    asignaciones: list[tuple[Credito, str, str]] = []  # (credito, anterior, nuevo)
     siguiente = 1
     for credito in creditos:
         while siguiente in ocupados:
@@ -141,10 +142,26 @@ async def renumerar_creditos_por_cedula(
         nuevo_numero = f"{prefix}{siguiente:03d}"
         anterior = credito.numero_credito_cliente
         if anterior != nuevo_numero:
-            cambios.append((credito.id, anterior, nuevo_numero))
-            credito.numero_credito_cliente = nuevo_numero
+            asignaciones.append((credito, anterior, nuevo_numero))
         ocupados.add(siguiente)
         siguiente += 1
+
+    if not asignaciones:
+        return []
+
+    # Paso 1: renombrar a valores temporales únicos para romper ciclos intra-cliente.
+    # Caso típico: un crédito existente tiene 'CED-CR-001' y queremos asignarlo a otro
+    # crédito del mismo cliente. Actualizar directamente viola el UNIQUE a mitad del flush.
+    # La columna numero_credito_cliente es VARCHAR(20); usamos 'T' + 19 hex de UUID (= 20 chars).
+    for credito, _, _ in asignaciones:
+        credito.numero_credito_cliente = f"T{credito.id.hex[:19]}"
+    await db.flush()
+
+    # Paso 2: asignar los valores finales
+    cambios: list[tuple[uuid.UUID, str, str]] = []
+    for credito, anterior, nuevo in asignaciones:
+        credito.numero_credito_cliente = nuevo
+        cambios.append((credito.id, anterior, nuevo))
 
     return cambios
 

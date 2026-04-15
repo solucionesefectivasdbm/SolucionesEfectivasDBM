@@ -25,6 +25,7 @@ from app.services.credito_service import (
     crear_primera_cuota,
     generar_numero_credito,
     recalcular_cuotas_futuras,
+    renumerar_creditos_por_cedula,
 )
 from app.utils.tz import ahora_bogota
 
@@ -309,3 +310,74 @@ async def historial_cuotas(
     )
     pagos = result.scalars().all()
     return [PagoResponse.model_validate(p) for p in pagos]
+
+
+@router.post("/fix-numeros-credito")
+async def fix_numeros_credito(
+    request: Request,
+    current_user: Usuario = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    ENDPOINT TEMPORAL — Migración de data histórica.
+
+    Recorre todos los clientes (activos y soft-deleted) y renumera los créditos
+    cuyo `numero_credito_cliente` no empieza con la cédula actual del cliente.
+    Usar una sola vez después del despliegue del fix de renumeración al cambiar
+    cédula. Idempotente: ejecutar varias veces no hace daño.
+
+    Retorna un resumen de los cambios aplicados.
+    """
+    ip = get_client_ip(request)
+
+    # Traer todos los clientes (incluyendo soft-deleted para cubrir créditos históricos)
+    clientes = (await db.execute(
+        select(Cliente.id, Cliente.cedula)
+    )).all()
+
+    clientes_afectados = 0
+    creditos_renumerados = 0
+    detalles: list[dict] = []
+
+    for cliente_id, cedula in clientes:
+        if not cedula:
+            continue
+
+        # ¿Tiene algún crédito cuyo prefijo NO coincide con la cédula actual?
+        sin_coincidir = (await db.execute(
+            select(func.count(Credito.id)).where(
+                Credito.cliente_id == cliente_id,
+                ~Credito.numero_credito_cliente.like(f"{cedula}-CR-%"),
+            )
+        )).scalar()
+
+        if not sin_coincidir:
+            continue
+
+        cambios = await renumerar_creditos_por_cedula(db, cliente_id, cedula)
+        if not cambios:
+            continue
+
+        clientes_afectados += 1
+        creditos_renumerados += len(cambios)
+        detalles.append({
+            "cliente_id": str(cliente_id),
+            "cedula": cedula,
+            "cambios": [
+                {"credito_id": str(cid), "anterior": ant, "nuevo": nue}
+                for cid, ant, nue in cambios
+            ],
+        })
+
+        for credito_id, anterior, nuevo in cambios:
+            await audit_service.registrar_actualizacion_campos(
+                db=db, entidad="creditos", entidad_id=credito_id,
+                usuario_id=current_user.id, ip_origen=ip,
+                cambios={"numero_credito_cliente": (anterior, nuevo)},
+            )
+
+    return {
+        "clientes_afectados": clientes_afectados,
+        "creditos_renumerados": creditos_renumerados,
+        "detalles": detalles,
+    }
