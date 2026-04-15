@@ -17,6 +17,7 @@ from app.models.usuario import TipoUsuario, Usuario
 from app.schemas.cliente import ClienteCreate, ClienteResponse, ClienteUpdate
 from app.schemas.common import PaginatedResponse
 from app.services import audit_service
+from app.services.credito_service import renumerar_creditos_por_cedula
 
 router = APIRouter(prefix="/clientes", tags=["Clientes"])
 
@@ -136,10 +137,37 @@ async def actualizar_cliente(
     if "gestor_id" in update_data and current_user.tipo_usuario != TipoUsuario.admin:
         raise HTTPException(status_code=403, detail="Solo el Administrador puede cambiar el gestor")
 
+    # Si se está cambiando la cédula, validar unicidad frente a otros clientes activos
+    nueva_cedula = update_data.get("cedula")
+    cedula_cambio = nueva_cedula is not None and nueva_cedula != cliente.cedula
+    if cedula_cambio:
+        duplicado = (await db.execute(
+            select(Cliente.id).where(
+                Cliente.cedula == nueva_cedula,
+                Cliente.id != cliente_id,
+                Cliente.deleted_at == None,  # noqa: E711
+            )
+        )).scalar_one_or_none()
+        if duplicado:
+            raise HTTPException(
+                status_code=409,
+                detail="La cédula ya está registrada para otro cliente",
+            )
+
     cambios = {}
     for field, value in update_data.items():
         cambios[field] = (str(getattr(cliente, field)), str(value))
         setattr(cliente, field, value)
+
+    # Si cambió la cédula, renumerar todos los créditos del cliente y auditar cada cambio
+    if cedula_cambio:
+        renumerados = await renumerar_creditos_por_cedula(db, cliente.id, nueva_cedula)
+        for credito_id, numero_anterior, numero_nuevo in renumerados:
+            await audit_service.registrar_actualizacion_campos(
+                db=db, entidad="creditos", entidad_id=credito_id,
+                usuario_id=current_user.id, ip_origen=get_client_ip(request),
+                cambios={"numero_credito_cliente": (numero_anterior, numero_nuevo)},
+            )
 
     await audit_service.registrar_actualizacion_campos(
         db=db, entidad="clientes", entidad_id=cliente.id,

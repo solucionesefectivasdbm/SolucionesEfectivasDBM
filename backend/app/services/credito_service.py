@@ -87,22 +87,100 @@ def calcular_interes_periodo(capital: Decimal, tasa_mensual: Decimal) -> Decimal
     return (capital * tasa_mensual).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+async def renumerar_creditos_por_cedula(
+    db: AsyncSession,
+    cliente_id: uuid.UUID,
+    nueva_cedula: str,
+) -> list[tuple[uuid.UUID, str, str]]:
+    """
+    Renumera todos los créditos del cliente para que usen la nueva cédula.
+
+    Se invoca cuando el cliente cambia su cédula (por ejemplo, reemplazo de
+    un valor placeholder por el dato real). Actualiza `numero_credito_cliente`
+    en TODOS los créditos del cliente — incluyendo los soft-deleted —
+    para liberar el prefijo anterior y evitar colisiones futuras.
+
+    Si el nuevo prefijo ya está siendo usado por créditos de OTROS clientes
+    (p. ej. porque esa misma cédula la tuvo antes otro cliente distinto),
+    se saltan esos secuenciales ocupados.
+
+    Retorna lista de (credito_id, numero_anterior, numero_nuevo) para
+    registrar en el log de auditoría.
+    """
+    creditos = (await db.execute(
+        select(Credito)
+        .where(Credito.cliente_id == cliente_id)
+        .order_by(Credito.created_at.asc(), Credito.numero_credito_cliente.asc())
+    )).scalars().all()
+
+    if not creditos:
+        return []
+
+    prefix = f"{nueva_cedula}-CR-"
+
+    # Secuenciales ya ocupados bajo el nuevo prefijo por OTROS clientes
+    existentes = (await db.execute(
+        select(Credito.numero_credito_cliente).where(
+            Credito.numero_credito_cliente.like(f"{prefix}%"),
+            Credito.cliente_id != cliente_id,
+        )
+    )).scalars().all()
+
+    ocupados: set[int] = set()
+    for num in existentes:
+        try:
+            ocupados.add(int(num[len(prefix):]))
+        except (ValueError, IndexError):
+            pass
+
+    cambios: list[tuple[uuid.UUID, str, str]] = []
+    siguiente = 1
+    for credito in creditos:
+        while siguiente in ocupados:
+            siguiente += 1
+        nuevo_numero = f"{prefix}{siguiente:03d}"
+        anterior = credito.numero_credito_cliente
+        if anterior != nuevo_numero:
+            cambios.append((credito.id, anterior, nuevo_numero))
+            credito.numero_credito_cliente = nuevo_numero
+        ocupados.add(siguiente)
+        siguiente += 1
+
+    return cambios
+
+
 async def generar_numero_credito(db: AsyncSession, cedula_cliente: str) -> str:
     """
     Genera el número de crédito en formato {cedula}-CR-{secuencial:03d}.
-    El secuencial incluye créditos con borrado lógico para evitar duplicados.
-    """
-    from app.models.cliente import Cliente
 
-    # Contar todos los créditos del cliente (incluyendo borrados lógicos)
+    Busca el siguiente secuencial disponible consultando directamente la tabla
+    `creditos` por el patrón del número. Así funciona aunque la cédula del cliente
+    haya cambiado, o aunque haya existido un cliente distinto con esa cédula en
+    el pasado (cuyos créditos ya no aparecen al unir por cliente.cedula).
+
+    El secuencial incluye créditos con borrado lógico para evitar duplicados
+    contra el UNIQUE constraint `creditos_numero_credito_cliente_key`.
+    """
+    prefix = f"{cedula_cliente}-CR-"
     result = await db.execute(
-        select(func.count(Credito.id))
-        .join(Cliente, Credito.cliente_id == Cliente.id)
-        .where(Cliente.cedula == cedula_cliente)
+        select(func.count(Credito.id)).where(
+            Credito.numero_credito_cliente.like(f"{prefix}%")
+        )
     )
     count = result.scalar() or 0
     secuencial = count + 1
-    return f"{cedula_cliente}-CR-{secuencial:03d}"
+    # Defensivo: si ya existe el número generado (p. ej. por huecos en la
+    # numeración causados por borrados físicos antiguos), avanzar hasta hallar uno libre.
+    while True:
+        candidato = f"{prefix}{secuencial:03d}"
+        existe = (await db.execute(
+            select(func.count(Credito.id)).where(
+                Credito.numero_credito_cliente == candidato
+            )
+        )).scalar()
+        if not existe:
+            return candidato
+        secuencial += 1
 
 
 async def crear_primera_cuota(
