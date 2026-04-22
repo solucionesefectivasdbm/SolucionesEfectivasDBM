@@ -90,4 +90,19 @@ async def startup_create_tables():
                 "ALTER TABLE creditos ALTER COLUMN numero_credito_cliente TYPE VARCHAR(100)"
             ))
 
+        # Migración: reemplazar UNIQUE total en cedula por índice parcial
+        # (solo clientes activos) para permitir recrear clientes soft-deleted.
+        has_full_unique = (await conn.execute(text(
+            "SELECT 1 FROM pg_constraint "
+            "WHERE conname = 'clientes_cedula_key' AND contype = 'u'"
+        ))).scalar()
+        if has_full_unique:
+            await conn.execute(text(
+                "ALTER TABLE clientes DROP CONSTRAINT clientes_cedula_key"
+            ))
+            await conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_clientes_cedula_active "
+                "ON clientes (cedula) WHERE deleted_at IS NULL"
+            ))
+
 

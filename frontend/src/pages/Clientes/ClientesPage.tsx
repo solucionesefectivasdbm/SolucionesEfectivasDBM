@@ -71,9 +71,7 @@ export default function ClientesPage() {
     setSubmitting(true)
     try {
       if (editando) {
-        // Solo excluir gestor_id (no se edita desde aquí)
-        const { gestor_id, ...updateData } = data
-        await clientesApi.actualizar(editando.id, updateData)
+        await clientesApi.actualizar(editando.id, data)
         toast.success('Cliente actualizado')
       } else {
         await clientesApi.crear(data)
@@ -231,14 +229,12 @@ export default function ClientesPage() {
           <FormField label="Correo electrónico">
             <input {...register('correo_electronico')} type="email" className="input" />
           </FormField>
-          {!editando && (
-            <FormField label="Gestor" required error={errors.gestor_id?.message}>
-              <select {...register('gestor_id', { required: 'Requerido' })} className="input">
-                <option value="">-- Seleccionar --</option>
-                {gestores.map(g => <option key={g.id} value={g.id}>{g.nombre} {g.apellidos}</option>)}
-              </select>
-            </FormField>
-          )}
+          <FormField label="Gestor" required error={errors.gestor_id?.message}>
+            <select {...register('gestor_id', { required: 'Requerido' })} className="input">
+              <option value="">-- Seleccionar --</option>
+              {gestores.map(g => <option key={g.id} value={g.id}>{g.nombre} {g.apellidos}</option>)}
+            </select>
+          </FormField>
           <div className="flex items-center gap-4 col-span-2">
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <input type="checkbox" {...register('afiliacion_militar')} className="w-4 h-4" />

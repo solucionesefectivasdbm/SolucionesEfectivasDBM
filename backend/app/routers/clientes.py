@@ -143,10 +143,7 @@ async def actualizar_cliente(
     if not cliente:
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
 
-    # Solo Admin puede cambiar gestor
     update_data = body.model_dump(exclude_none=True)
-    if "gestor_id" in update_data and current_user.tipo_usuario != TipoUsuario.admin:
-        raise HTTPException(status_code=403, detail="Solo el Administrador puede cambiar el gestor")
 
     # Si se está cambiando la cédula, validar unicidad frente a otros clientes activos
     nueva_cedula = update_data.get("cedula")
