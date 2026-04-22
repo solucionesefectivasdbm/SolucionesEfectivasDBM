@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
-import { pagosApi, receptoresApi, creditosApi } from '@/api'
+import { pagosApi, receptoresApi, creditosApi, gestoresApi } from '@/api'
 import { formatCOP, formatFecha, MESES, MOMENTOS, aniosDisponibles } from '@/utils/formatters'
 import { LoadingPage, EmptyState, Paginacion, PagoBadge } from '@/components/ui'
 import Modal from '@/components/ui/Modal'
 import { usePermissions } from '@/store/authStore'
-import type { Pago, Receptor, Credito } from '@/types'
+import type { Pago, Receptor, Credito, Gestor } from '@/types'
 import { Check, Calendar, User, Plus, Search, DollarSign } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -17,6 +17,8 @@ export default function PagosPage() {
   const [mes, setMes] = useState(hoy.getMonth() + 1)
   const [momento, setMomento] = useState('')
   const [busqueda, setBusqueda] = useState('')
+  const [filtroGestor, setFiltroGestor] = useState('')
+  const [gestores, setGestores] = useState<Gestor[]>([])
   const [page, setPage] = useState(1)
 
   const [pagos, setPagos] = useState<Pago[]>([])
@@ -55,15 +57,19 @@ export default function PagosPage() {
     if (!filtrosCompletos) return
     setLoading(true)
     try {
-      const res = await pagosApi.listar({ anio, mes, momento, busqueda, page })
+      const res = await pagosApi.listar({ anio, mes, momento, busqueda, page, gestor_id: filtroGestor || undefined })
       setPagos(res.data.items)
       setTotal(res.data.total)
       setPages(res.data.pages)
     } catch { toast.error('Error al cargar pagos') }
     finally { setLoading(false) }
-  }, [anio, mes, momento, busqueda, page, filtrosCompletos])
+  }, [anio, mes, momento, busqueda, page, filtroGestor, filtrosCompletos])
 
   useEffect(() => { cargarPagos() }, [cargarPagos])
+
+  useEffect(() => {
+    gestoresApi.listar({ page: 1 }).then(r => setGestores(r.data.items)).catch(() => {})
+  }, [])
 
   useEffect(() => {
     if (modalReceptor) {
@@ -199,7 +205,7 @@ export default function PagosPage() {
 
       {/* Filtros */}
       <div className="card">
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
           <div>
             <label className="label">Año *</label>
             <select className="input" value={anio} onChange={e => { setAnio(+e.target.value); setPage(1) }}>
@@ -217,6 +223,14 @@ export default function PagosPage() {
             <select className="input" value={momento} onChange={e => { setMomento(e.target.value); setPage(1) }}>
               <option value="">-- Seleccionar --</option>
               {MOMENTOS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="label">Gestor</label>
+            <select className="input" value={filtroGestor}
+              onChange={e => { setFiltroGestor(e.target.value); setPage(1) }}>
+              <option value="">Todos</option>
+              {gestores.map(g => <option key={g.id} value={g.id}>{g.nombre} {g.apellidos}</option>)}
             </select>
           </div>
           <div className="md:col-span-2">

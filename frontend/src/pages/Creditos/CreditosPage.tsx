@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
-import { creditosApi, clientesApi } from '@/api'
+import { creditosApi, clientesApi, gestoresApi } from '@/api'
 import { formatCOP, formatFecha, formatPorcentaje } from '@/utils/formatters'
 import { LoadingPage, EmptyState, Paginacion, FormField } from '@/components/ui'
 import Modal from '@/components/ui/Modal'
 import { usePermissions } from '@/store/authStore'
-import type { Credito, Pago, Cliente } from '@/types'
+import type { Credito, Pago, Cliente, Gestor } from '@/types'
 import { Plus, Eye, Pencil, Search, Trash2 } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
@@ -23,10 +23,12 @@ export default function CreditosPage() {
   const perms = usePermissions()
   const [creditos, setCreditos] = useState<Credito[]>([])
   const [clientes, setClientes] = useState<Cliente[]>([])
+  const [gestores, setGestores] = useState<Gestor[]>([])
   const [total, setTotal] = useState(0)
   const [pages, setPages] = useState(0)
   const [page, setPage] = useState(1)
   const [busqueda, setBusqueda] = useState('')
+  const [filtroGestor, setFiltroGestor] = useState('')
   const [loading, setLoading] = useState(true)
   const [modalCrear, setModalCrear] = useState(false)
   const [modalEditar, setModalEditar] = useState(false)
@@ -45,13 +47,13 @@ export default function CreditosPage() {
   const cargar = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await creditosApi.listar({ page, busqueda, solo_activos: soloActivos })
+      const res = await creditosApi.listar({ page, busqueda, solo_activos: soloActivos, gestor_id: filtroGestor || undefined })
       setCreditos(res.data.items)
       setTotal(res.data.total)
       setPages(res.data.pages)
     } catch { toast.error('Error al cargar créditos') }
     finally { setLoading(false) }
-  }, [page, busqueda, soloActivos])
+  }, [page, busqueda, soloActivos, filtroGestor])
 
   useEffect(() => { cargar() }, [cargar])
 
@@ -59,6 +61,10 @@ export default function CreditosPage() {
     clientesApi.listar({ page: 1, busqueda: busquedaCliente })
       .then(r => setClientes(r.data.items)).catch(() => {})
   }, [busquedaCliente])
+
+  useEffect(() => {
+    gestoresApi.listar({ page: 1 }).then(r => setGestores(r.data.items)).catch(() => {})
+  }, [])
 
   const abrirHistorial = async (c: Credito) => {
     setCreditoActual(c)
@@ -133,12 +139,17 @@ export default function CreditosPage() {
         )}
       </div>
 
-      <div className="card flex items-center gap-4">
-        <div className="relative flex-1 max-w-sm">
+      <div className="card flex items-center gap-4 flex-wrap">
+        <div className="relative flex-1 min-w-[200px] max-w-sm">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input className="input pl-9" placeholder="Buscar por cliente..."
             value={busqueda} onChange={e => { setBusqueda(e.target.value); setPage(1) }} />
         </div>
+        <select className="input max-w-[220px]" value={filtroGestor}
+          onChange={e => { setFiltroGestor(e.target.value); setPage(1) }}>
+          <option value="">Todos los gestores</option>
+          {gestores.map(g => <option key={g.id} value={g.id}>{g.nombre} {g.apellidos}</option>)}
+        </select>
         <label className="flex items-center gap-2 text-sm cursor-pointer">
           <input type="checkbox" checked={soloActivos} onChange={e => setSoloActivos(e.target.checked)} className="w-4 h-4" />
           Solo activos

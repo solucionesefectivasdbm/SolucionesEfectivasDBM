@@ -39,6 +39,7 @@ async def listar_creditos(
     busqueda: str = Query("", description="Buscar por nombre o cédula de cliente"),
     solo_activos: bool = Query(True),
     cliente_id: uuid.UUID | None = Query(None, description="Filtrar por cliente"),
+    gestor_id: uuid.UUID | None = Query(None, description="Filtrar por gestor"),
     current_user: Usuario = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -61,6 +62,8 @@ async def listar_creditos(
         )).scalar_one_or_none()
         if gestor:
             query = query.where(Cliente.gestor_id == gestor.id)
+    elif gestor_id:
+        query = query.where(Cliente.gestor_id == gestor_id)
 
     if busqueda:
         query = query.where(
