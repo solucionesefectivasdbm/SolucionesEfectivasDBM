@@ -475,6 +475,43 @@ def _siguiente_cuota_abono_capital(
         )
 
 
+async def recalcular_saldo_intereses(
+    db: AsyncSession,
+    credito: Credito,
+) -> None:
+    """
+    Recalcula `saldo_intereses` del crédito a partir de los valores actuales
+    (capital_prestado, tasa_interes_mensual, periodicidad, numero_cuotas) y
+    descuenta lo que ya ha sido cobrado en pagos previos.
+
+    - Cuota fija: total = capital * tasa * (numero_cuotas / periodos_por_mes)
+    - Abono capital: total = saldo_capital * tasa (un período de interés)
+
+    Se invoca cuando un Admin modifica capital o tasa, ya que de lo contrario
+    el saldo queda con el valor calculado al momento de creación.
+    """
+    total_interes_pagado = (await db.execute(
+        select(func.coalesce(func.sum(Pago.interes_pagado), Decimal("0.00"))).where(
+            Pago.credito_id == credito.id,
+            Pago.deleted_at == None,  # noqa: E711
+        )
+    )).scalar() or Decimal("0.00")
+
+    if credito.tipo_credito == TipoCredito.cuota_fija and credito.numero_cuotas:
+        ppm = Decimal(_periodos_por_mes(credito.periodicidad))
+        num_meses = Decimal(credito.numero_cuotas) / ppm
+        nuevo_total = credito.capital_prestado * credito.tasa_interes_mensual * num_meses
+    else:
+        # Abono capital — usamos saldo_capital actual y la tasa para estimar
+        # el interés del próximo periodo (es lo que la lógica de creación hace).
+        nuevo_total = credito.saldo_capital * credito.tasa_interes_mensual
+
+    nuevo_saldo = nuevo_total - Decimal(total_interes_pagado)
+    if nuevo_saldo < 0:
+        nuevo_saldo = Decimal("0.00")
+    credito.saldo_intereses = nuevo_saldo.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
 async def recalcular_primera_cuota_si_no_pagada(
     db: AsyncSession,
     credito: Credito,

@@ -27,6 +27,7 @@ from app.services.credito_service import (
     generar_prefijo_cliente,
     recalcular_cuotas_futuras,
     recalcular_primera_cuota_si_no_pagada,
+    recalcular_saldo_intereses,
 )
 from app.utils.tz import ahora_bogota
 
@@ -233,9 +234,14 @@ async def actualizar_credito(
         credito.tasa_interes_mensual = body.tasa_interes_mensual
         capital_o_tasa_cambio = True
 
-    # Si cambió capital o tasa, la primera cuota pendiente debe recalcularse
-    # para reflejar los nuevos valores (capital, interés y monto total).
+    # Si cambió capital o tasa, hay que actualizar:
+    # 1) saldo_intereses (que se calculó al crear y nunca se ajusta solo)
+    # 2) la primera cuota pendiente, para que refleje los nuevos valores.
     if capital_o_tasa_cambio:
+        saldo_intereses_anterior = str(credito.saldo_intereses)
+        await recalcular_saldo_intereses(db, credito)
+        cambios["saldo_intereses"] = (saldo_intereses_anterior, str(credito.saldo_intereses))
+
         await db.flush()
         recalculada = await recalcular_primera_cuota_si_no_pagada(db, credito)
         if recalculada:
