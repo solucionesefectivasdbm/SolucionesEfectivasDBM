@@ -475,6 +475,49 @@ def _siguiente_cuota_abono_capital(
         )
 
 
+async def recalcular_primera_cuota_si_no_pagada(
+    db: AsyncSession,
+    credito: Credito,
+) -> bool:
+    """
+    Recalcula la primera cuota del crédito (numero_cuota=1) usando los valores
+    actuales del crédito (capital_prestado, tasa_interes_mensual, etc.).
+
+    Solo aplica si la primera cuota aún NO ha sido pagada ni validada por el
+    recaudador. Si la cuota ya tuvo movimientos, la función no hace nada y
+    retorna False.
+
+    Se invoca cuando un Admin modifica capital_prestado o tasa_interes_mensual,
+    para que la cuota pendiente refleje los nuevos valores.
+    """
+    primera = (await db.execute(
+        select(Pago).where(
+            Pago.credito_id == credito.id,
+            Pago.numero_cuota == 1,
+            Pago.deleted_at == None,  # noqa: E711
+        )
+    )).scalar_one_or_none()
+
+    if not primera:
+        return False
+    if primera.pagado or primera.validado_recaudador:
+        return False
+    if primera.capital_pagado > 0 or primera.interes_pagado > 0:
+        return False
+
+    receptor_id = primera.receptor_id
+
+    # Reutilizamos crear_primera_cuota para obtener los valores frescos.
+    fresh = await crear_primera_cuota(credito, receptor_id)
+
+    primera.tipo_cuota = fresh.tipo_cuota
+    primera.monto_a_pagar = fresh.monto_a_pagar
+    primera.capital_a_pagar = fresh.capital_a_pagar
+    primera.interes_a_pagar = fresh.interes_a_pagar
+    primera.es_ultimo_pago = fresh.es_ultimo_pago
+    return True
+
+
 async def recalcular_cuotas_futuras(
     db: AsyncSession,
     credito: Credito,

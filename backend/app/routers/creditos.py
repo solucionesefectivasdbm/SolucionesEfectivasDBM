@@ -26,6 +26,7 @@ from app.services.credito_service import (
     generar_numero_credito,
     generar_prefijo_cliente,
     recalcular_cuotas_futuras,
+    recalcular_primera_cuota_si_no_pagada,
 )
 from app.utils.tz import ahora_bogota
 
@@ -219,15 +220,26 @@ async def actualizar_credito(
         )
 
     cambios = {}
+    capital_o_tasa_cambio = False
 
     if body.capital_prestado is not None:
         cambios["capital_prestado"] = (str(credito.capital_prestado), str(body.capital_prestado))
         credito.capital_prestado = body.capital_prestado
         credito.saldo_capital = body.capital_prestado
+        capital_o_tasa_cambio = True
 
     if body.tasa_interes_mensual is not None:
         cambios["tasa_interes_mensual"] = (str(credito.tasa_interes_mensual), str(body.tasa_interes_mensual))
         credito.tasa_interes_mensual = body.tasa_interes_mensual
+        capital_o_tasa_cambio = True
+
+    # Si cambió capital o tasa, la primera cuota pendiente debe recalcularse
+    # para reflejar los nuevos valores (capital, interés y monto total).
+    if capital_o_tasa_cambio:
+        await db.flush()
+        recalculada = await recalcular_primera_cuota_si_no_pagada(db, credito)
+        if recalculada:
+            cambios["primera_cuota_recalculada"] = ("no", "si")
 
     if body.fecha_pago_activo is not None:
         # Esta modificación recalcula TODOS los pagos futuros
@@ -314,3 +326,73 @@ async def historial_cuotas(
     )
     pagos = result.scalars().all()
     return [PagoResponse.model_validate(p) for p in pagos]
+
+
+@router.post("/recalcular-primera-cuota/{credito_id}")
+async def recalcular_primera_cuota_endpoint(
+    credito_id: uuid.UUID,
+    request: Request,
+    current_user: Usuario = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    ENDPOINT TEMPORAL — Recalcula la primera cuota de un crédito usando los
+    valores actuales (capital_prestado, tasa, etc.). Útil cuando un Admin
+    modificó el capital y la cuota previa quedó desactualizada.
+    """
+    credito = (await db.execute(
+        select(Credito).where(Credito.id == credito_id, Credito.deleted_at == None)  # noqa: E711
+    )).scalar_one_or_none()
+    if not credito:
+        raise HTTPException(status_code=404, detail="Crédito no encontrado")
+
+    primera_antes = (await db.execute(
+        select(Pago).where(
+            Pago.credito_id == credito_id,
+            Pago.numero_cuota == 1,
+            Pago.deleted_at == None,  # noqa: E711
+        )
+    )).scalar_one_or_none()
+    snapshot_antes = None
+    if primera_antes:
+        snapshot_antes = {
+            "monto_a_pagar": str(primera_antes.monto_a_pagar),
+            "capital_a_pagar": str(primera_antes.capital_a_pagar),
+            "interes_a_pagar": str(primera_antes.interes_a_pagar),
+        }
+
+    recalculada = await recalcular_primera_cuota_si_no_pagada(db, credito)
+    if not recalculada:
+        return {"recalculada": False, "razon": "La primera cuota no se puede recalcular (ya pagada o validada)"}
+
+    await db.flush()
+    primera_despues = (await db.execute(
+        select(Pago).where(
+            Pago.credito_id == credito_id,
+            Pago.numero_cuota == 1,
+            Pago.deleted_at == None,  # noqa: E711
+        )
+    )).scalar_one_or_none()
+    snapshot_despues = {
+        "monto_a_pagar": str(primera_despues.monto_a_pagar),
+        "capital_a_pagar": str(primera_despues.capital_a_pagar),
+        "interes_a_pagar": str(primera_despues.interes_a_pagar),
+    }
+
+    await audit_service.registrar_actualizacion_campos(
+        db=db, entidad="pagos", entidad_id=primera_despues.id,
+        usuario_id=current_user.id, ip_origen=get_client_ip(request),
+        cambios={
+            "monto_a_pagar": (snapshot_antes["monto_a_pagar"], snapshot_despues["monto_a_pagar"]),
+            "capital_a_pagar": (snapshot_antes["capital_a_pagar"], snapshot_despues["capital_a_pagar"]),
+            "interes_a_pagar": (snapshot_antes["interes_a_pagar"], snapshot_despues["interes_a_pagar"]),
+        },
+    )
+
+    return {
+        "recalculada": True,
+        "credito_id": str(credito.id),
+        "numero_credito": credito.numero_credito_cliente,
+        "antes": snapshot_antes,
+        "despues": snapshot_despues,
+    }
