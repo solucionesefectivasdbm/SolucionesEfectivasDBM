@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { gestoresApi, usuariosApi, receptoresApi } from '@/api'
-import { LoadingPage, EmptyState, Paginacion, FormField } from '@/components/ui'
+import { LoadingPage, EmptyState, Paginacion, FormField, ConfirmarCreacion, type ItemConfirmacion } from '@/components/ui'
 import Modal from '@/components/ui/Modal'
 import type { Gestor, Usuario, Receptor } from '@/types'
 import { Plus, Pencil, Search } from 'lucide-react'
@@ -28,6 +28,8 @@ export default function GestoresPage() {
   const [busqueda, setBusqueda] = useState('')
   const [loading, setLoading] = useState(true)
   const [modalForm, setModalForm] = useState(false)
+  const [modalConfirmarCrear, setModalConfirmarCrear] = useState(false)
+  const [datosPendientes, setDatosPendientes] = useState<GestorForm | null>(null)
   const [editando, setEditando] = useState<Gestor | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
@@ -81,9 +83,9 @@ export default function GestoresPage() {
   }
 
   const onSubmit = async (data: GestorForm) => {
-    setSubmitting(true)
-    try {
-      if (editando) {
+    if (editando) {
+      setSubmitting(true)
+      try {
         await gestoresApi.actualizar(editando.id, {
           cedula: data.cedula,
           nombre: data.nombre,
@@ -94,20 +96,59 @@ export default function GestoresPage() {
           receptor_id: data.receptor_id || null,
         })
         toast.success('Gestor actualizado')
-      } else {
-        await gestoresApi.crear({
-          ...data,
-          receptor_id: data.receptor_id || null,
-        })
-        toast.success('Gestor creado')
+        setModalForm(false)
+        cargar()
+      } catch (e: any) {
+        toast.error(e.response?.data?.detail || 'Error al guardar')
+      } finally {
+        setSubmitting(false)
       }
-      setModalForm(false)
+      return
+    }
+    // Creación: confirmar antes
+    setDatosPendientes(data)
+    setModalForm(false)
+    setModalConfirmarCrear(true)
+  }
+
+  const handleConfirmarCrear = async () => {
+    if (!datosPendientes) return
+    setSubmitting(true)
+    try {
+      await gestoresApi.crear({
+        ...datosPendientes,
+        receptor_id: datosPendientes.receptor_id || null,
+      })
+      toast.success('Gestor creado')
+      setModalConfirmarCrear(false)
+      setDatosPendientes(null)
       cargar()
     } catch (e: any) {
       toast.error(e.response?.data?.detail || 'Error al guardar')
     } finally {
       setSubmitting(false)
     }
+  }
+
+  const handleVolverFormulario = () => {
+    setModalConfirmarCrear(false)
+    setModalForm(true)
+  }
+
+  const itemsConfirmacion = (): ItemConfirmacion[] => {
+    if (!datosPendientes) return []
+    const usuario = usuarios.find(u => u.id === datosPendientes.user_id)
+    const receptor = receptores.find(r => r.id === datosPendientes.receptor_id)
+    return [
+      { label: 'Nombre', value: datosPendientes.nombre },
+      { label: 'Apellidos', value: datosPendientes.apellidos },
+      { label: 'Cédula', value: datosPendientes.cedula },
+      { label: 'Teléfono', value: datosPendientes.telefono },
+      { label: 'Correo', value: datosPendientes.correo_electronico },
+      { label: 'Dirección', value: datosPendientes.direccion },
+      { label: 'Usuario asociado', value: usuario ? usuario.username : '—' },
+      { label: 'Receptor asignado', value: receptor ? `${receptor.nombre} — ${receptor.cedula}` : 'Sin receptor' },
+    ]
   }
 
   return (
@@ -267,6 +308,16 @@ export default function GestoresPage() {
             </button>
           </div>
         </form>
+      </Modal>
+
+      <Modal isOpen={modalConfirmarCrear} onClose={handleVolverFormulario} title="Confirmar nuevo gestor" size="md">
+        <ConfirmarCreacion
+          mensaje="Verifique los datos del nuevo gestor antes de crearlo."
+          items={itemsConfirmacion()}
+          onConfirmar={handleConfirmarCrear}
+          onVolver={handleVolverFormulario}
+          loading={submitting}
+        />
       </Modal>
     </div>
   )

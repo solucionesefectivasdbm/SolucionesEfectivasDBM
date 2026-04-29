@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { pagosApi, receptoresApi, creditosApi, gestoresApi } from '@/api'
 import { formatCOP, formatFecha, MESES, MOMENTOS, aniosDisponibles } from '@/utils/formatters'
-import { LoadingPage, EmptyState, Paginacion, PagoBadge } from '@/components/ui'
+import { LoadingPage, EmptyState, Paginacion, PagoBadge, ConfirmarCreacion, type ItemConfirmacion } from '@/components/ui'
 import Modal from '@/components/ui/Modal'
 import { usePermissions } from '@/store/authStore'
 import type { Pago, Receptor, Credito, Gestor } from '@/types'
@@ -29,9 +29,11 @@ export default function PagosPage() {
   // Modales
   const [pagoSeleccionado, setPagoSeleccionado] = useState<Pago | null>(null)
   const [modalRegistrar, setModalRegistrar] = useState(false)
+  const [modalConfirmarRegistrar, setModalConfirmarRegistrar] = useState(false)
   const [modalExcedente, setModalExcedente] = useState(false)
   const [modalFecha, setModalFecha] = useState(false)
   const [modalReceptor, setModalReceptor] = useState(false)
+  const [modalConfirmarNoProgramado, setModalConfirmarNoProgramado] = useState(false)
   const [excedenteMonto, setExcedenteMonto] = useState(0)
   const [montosTemp, setMontosTemp] = useState({ capital: 0, interes: 0 })
   const [receptores, setReceptores] = useState<Receptor[]>([])
@@ -79,6 +81,17 @@ export default function PagosPage() {
 
   const isVencido = (p: Pago) => !p.pagado && new Date(p.fecha_maxima) < new Date()
 
+  const handleSolicitarRegistrar = () => {
+    // Antes de registrar, mostrar confirmación con los montos
+    setModalRegistrar(false)
+    setModalConfirmarRegistrar(true)
+  }
+
+  const handleVolverRegistrar = () => {
+    setModalConfirmarRegistrar(false)
+    setModalRegistrar(true)
+  }
+
   const handleRegistrar = async () => {
     if (!pagoSeleccionado) return
     setSubmitting(true)
@@ -93,16 +106,31 @@ export default function PagosPage() {
           capital: parseFloat(capitalPagado) || 0,
           interes: parseFloat(interesPagado) || 0,
         })
-        setModalRegistrar(false)
+        setModalConfirmarRegistrar(false)
         setModalExcedente(true)
       } else {
         toast.success(res.data.mensaje)
-        setModalRegistrar(false)
+        setModalConfirmarRegistrar(false)
         cargarPagos()
       }
     } catch (e: any) {
       toast.error(e.response?.data?.detail || 'Error al registrar pago')
     } finally { setSubmitting(false) }
+  }
+
+  const itemsRegistrar = (): ItemConfirmacion[] => {
+    if (!pagoSeleccionado) return []
+    const cap = parseFloat(capitalPagado) || 0
+    const inter = parseFloat(interesPagado) || 0
+    return [
+      { label: 'Cuota', value: `#${pagoSeleccionado.numero_cuota}` },
+      { label: 'Cliente', value: pagoSeleccionado.cliente_nombre || '—' },
+      { label: 'Crédito', value: pagoSeleccionado.numero_credito_cliente || '—' },
+      { label: 'Monto esperado', value: formatCOP(pagoSeleccionado.monto_a_pagar) },
+      { label: 'Capital a registrar', value: formatCOP(cap) },
+      { label: 'Interés a registrar', value: formatCOP(inter) },
+      { label: 'Total a registrar', value: formatCOP(cap + inter) },
+    ]
   }
 
   const handleConfirmarExcedente = async (destino: 'capital' | 'intereses') => {
@@ -175,6 +203,17 @@ export default function PagosPage() {
     } catch { toast.error('Error al cargar créditos') }
   }
 
+  const handleSolicitarNoProgramado = () => {
+    if (!npCreditoId || !npMonto) return
+    setModalNoProgramado(false)
+    setModalConfirmarNoProgramado(true)
+  }
+
+  const handleVolverNoProgramado = () => {
+    setModalConfirmarNoProgramado(false)
+    setModalNoProgramado(true)
+  }
+
   const handleNoProgramado = async () => {
     if (!npCreditoId || !npMonto) return
     setSubmitting(true)
@@ -185,11 +224,21 @@ export default function PagosPage() {
         fecha_pago: npFecha,
       })
       toast.success('Pago no programado registrado')
-      setModalNoProgramado(false)
+      setModalConfirmarNoProgramado(false)
       cargarPagos()
     } catch (e: any) {
       toast.error(e.response?.data?.detail || 'Error')
     } finally { setSubmitting(false) }
+  }
+
+  const itemsNoProgramado = (): ItemConfirmacion[] => {
+    const credito = creditosActivos.find(c => c.id === npCreditoId)
+    return [
+      { label: 'Crédito', value: credito ? credito.numero_credito_cliente : '—' },
+      { label: 'Monto', value: formatCOP(parseFloat(npMonto) || 0) },
+      { label: 'Destino', value: npDestino === 'capital' ? 'Abonar a capital' : 'Abonar a intereses' },
+      { label: 'Fecha del pago', value: npFecha },
+    ]
   }
 
   return (
@@ -405,12 +454,24 @@ export default function PagosPage() {
             </div>
             <div className="flex gap-3 justify-end">
               <button onClick={() => setModalRegistrar(false)} className="btn-ghost">Cancelar</button>
-              <button onClick={handleRegistrar} disabled={submitting} className="btn-primary">
-                {submitting ? 'Registrando...' : 'Registrar'}
+              <button onClick={handleSolicitarRegistrar} disabled={submitting} className="btn-primary">
+                Continuar
               </button>
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* Modal: Confirmar registro de pago */}
+      <Modal isOpen={modalConfirmarRegistrar} onClose={handleVolverRegistrar} title="Confirmar registro de pago">
+        <ConfirmarCreacion
+          mensaje="Verifique los montos a registrar antes de confirmar."
+          items={itemsRegistrar()}
+          onConfirmar={handleRegistrar}
+          onVolver={handleVolverRegistrar}
+          loading={submitting}
+          textoConfirmar="Confirmar y registrar"
+        />
       </Modal>
 
       {/* Modal: Excedente (bloqueante) */}
@@ -517,11 +578,23 @@ export default function PagosPage() {
           </div>
           <div className="flex gap-3 justify-end">
             <button onClick={() => setModalNoProgramado(false)} className="btn-ghost">Cancelar</button>
-            <button onClick={handleNoProgramado} disabled={submitting || !npCreditoId || !npMonto} className="btn-primary">
-              {submitting ? 'Registrando...' : 'Registrar Pago'}
+            <button onClick={handleSolicitarNoProgramado} disabled={!npCreditoId || !npMonto} className="btn-primary">
+              Continuar
             </button>
           </div>
         </div>
+      </Modal>
+
+      {/* Modal: Confirmar pago no programado */}
+      <Modal isOpen={modalConfirmarNoProgramado} onClose={handleVolverNoProgramado} title="Confirmar pago no programado">
+        <ConfirmarCreacion
+          mensaje="Verifique los datos del pago no programado antes de registrarlo."
+          items={itemsNoProgramado()}
+          onConfirmar={handleNoProgramado}
+          onVolver={handleVolverNoProgramado}
+          loading={submitting}
+          textoConfirmar="Confirmar y registrar"
+        />
       </Modal>
     </div>
   )

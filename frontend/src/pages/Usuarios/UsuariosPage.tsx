@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { usuariosApi } from '@/api'
-import { LoadingPage, EmptyState, Paginacion, ConfirmDelete, FormField } from '@/components/ui'
+import { LoadingPage, EmptyState, Paginacion, ConfirmDelete, FormField, ConfirmarCreacion, type ItemConfirmacion } from '@/components/ui'
 import Modal from '@/components/ui/Modal'
 import type { Usuario } from '@/types'
 import { Plus, Pencil, Trash2, Key, Search } from 'lucide-react'
@@ -13,6 +13,8 @@ export default function UsuariosPage() {
   const [page, setPage] = useState(1); const [busqueda, setBusqueda] = useState('')
   const [loading, setLoading] = useState(true)
   const [modalForm, setModalForm] = useState(false)
+  const [modalConfirmarCrear, setModalConfirmarCrear] = useState(false)
+  const [datosPendientes, setDatosPendientes] = useState<any>(null)
   const [modalEliminar, setModalEliminar] = useState(false)
   const [modalPassword, setModalPassword] = useState(false)
   const [editando, setEditando] = useState<Usuario | null>(null)
@@ -33,18 +35,48 @@ export default function UsuariosPage() {
   useEffect(() => { cargar() }, [cargar])
 
   const onSubmit = async (data: any) => {
-    setSubmitting(true)
-    try {
-      if (editando) {
+    if (editando) {
+      setSubmitting(true)
+      try {
         await usuariosApi.actualizar(editando.id, { telefono: data.telefono, tipo_usuario: data.tipo_usuario, activo: data.activo })
         toast.success('Usuario actualizado')
-      } else {
-        await usuariosApi.crear(data)
-        toast.success('Usuario creado')
-      }
-      setModalForm(false); cargar()
+        setModalForm(false); cargar()
+      } catch (e: any) { toast.error(e.response?.data?.detail || 'Error') }
+      finally { setSubmitting(false) }
+      return
+    }
+    // Creación: pedir confirmación
+    setDatosPendientes(data)
+    setModalForm(false)
+    setModalConfirmarCrear(true)
+  }
+
+  const handleConfirmarCrear = async () => {
+    if (!datosPendientes) return
+    setSubmitting(true)
+    try {
+      await usuariosApi.crear(datosPendientes)
+      toast.success('Usuario creado')
+      setModalConfirmarCrear(false)
+      setDatosPendientes(null)
+      cargar()
     } catch (e: any) { toast.error(e.response?.data?.detail || 'Error') }
     finally { setSubmitting(false) }
+  }
+
+  const handleVolverFormulario = () => {
+    setModalConfirmarCrear(false)
+    setModalForm(true)
+  }
+
+  const itemsConfirmacion = (): ItemConfirmacion[] => {
+    if (!datosPendientes) return []
+    return [
+      { label: 'Usuario', value: datosPendientes.username },
+      { label: 'Contraseña', value: '••••••••' },
+      { label: 'Teléfono', value: datosPendientes.telefono },
+      { label: 'Rol', value: ROLES[datosPendientes.tipo_usuario] ?? datosPendientes.tipo_usuario },
+    ]
   }
 
   const handleEliminar = async () => {
@@ -175,6 +207,16 @@ export default function UsuariosPage() {
             </button>
           </div>
         </form>
+      </Modal>
+
+      <Modal isOpen={modalConfirmarCrear} onClose={handleVolverFormulario} title="Confirmar nuevo usuario" size="md">
+        <ConfirmarCreacion
+          mensaje="Verifique los datos del nuevo usuario antes de crearlo."
+          items={itemsConfirmacion()}
+          onConfirmar={handleConfirmarCrear}
+          onVolver={handleVolverFormulario}
+          loading={submitting}
+        />
       </Modal>
 
       <Modal isOpen={modalPassword} onClose={() => setModalPassword(false)} title="Restablecer Contraseña" size="sm">

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { clientesApi, gestoresApi, creditosApi } from '@/api'
-import { LoadingPage, EmptyState, Paginacion, ConfirmDelete, FormField } from '@/components/ui'
+import { LoadingPage, EmptyState, Paginacion, ConfirmDelete, FormField, ConfirmarCreacion, type ItemConfirmacion } from '@/components/ui'
 import Modal from '@/components/ui/Modal'
 import { usePermissions } from '@/store/authStore'
 import type { Cliente, Gestor, Credito, Pago } from '@/types'
@@ -27,6 +27,8 @@ export default function ClientesPage() {
   const [loading, setLoading] = useState(true)
   const [modalForm, setModalForm] = useState(false)
   const [modalEliminar, setModalEliminar] = useState(false)
+  const [modalConfirmarCrear, setModalConfirmarCrear] = useState(false)
+  const [datosPendientes, setDatosPendientes] = useState<ClienteForm | null>(null)
   const [editando, setEditando] = useState<Cliente | null>(null)
   const [eliminando, setEliminando] = useState<Cliente | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -68,21 +70,60 @@ export default function ClientesPage() {
   }
 
   const onSubmit = async (data: ClienteForm) => {
-    setSubmitting(true)
-    try {
-      if (editando) {
+    if (editando) {
+      // Edit no requiere confirmación
+      setSubmitting(true)
+      try {
         await clientesApi.actualizar(editando.id, data)
         toast.success('Cliente actualizado')
-      } else {
-        await clientesApi.crear(data)
-        toast.success('Cliente creado')
-      }
-      setModalForm(false)
+        setModalForm(false)
+        cargar()
+      } catch (e: any) {
+        const detail = e.response?.data?.detail
+        toast.error(Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error')
+      } finally { setSubmitting(false) }
+      return
+    }
+    // Creación: pedir confirmación primero
+    setDatosPendientes(data)
+    setModalForm(false)
+    setModalConfirmarCrear(true)
+  }
+
+  const handleConfirmarCrear = async () => {
+    if (!datosPendientes) return
+    setSubmitting(true)
+    try {
+      await clientesApi.crear(datosPendientes)
+      toast.success('Cliente creado')
+      setModalConfirmarCrear(false)
+      setDatosPendientes(null)
       cargar()
     } catch (e: any) {
       const detail = e.response?.data?.detail
       toast.error(Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error')
     } finally { setSubmitting(false) }
+  }
+
+  const handleVolverFormulario = () => {
+    setModalConfirmarCrear(false)
+    setModalForm(true)
+  }
+
+  const itemsConfirmacion = (): ItemConfirmacion[] => {
+    if (!datosPendientes) return []
+    const gestor = gestores.find(g => g.id === datosPendientes.gestor_id)
+    return [
+      { label: 'Nombre', value: datosPendientes.nombre },
+      { label: 'Apellidos', value: datosPendientes.apellidos },
+      { label: 'Cédula', value: datosPendientes.cedula },
+      { label: 'Teléfono', value: datosPendientes.telefono },
+      { label: 'Dirección', value: datosPendientes.direccion },
+      { label: 'Correo', value: datosPendientes.correo_electronico || '—' },
+      { label: 'Gestor', value: gestor ? `${gestor.nombre} ${gestor.apellidos}` : '—' },
+      { label: 'Afiliación militar', value: datosPendientes.afiliacion_militar ? 'Sí' : 'No' },
+      { label: 'Al día', value: datosPendientes.al_dia ? 'Sí' : 'No' },
+    ]
   }
 
   const [soloActivosHistorial, setSoloActivosHistorial] = useState(true)
@@ -252,6 +293,17 @@ export default function ClientesPage() {
             </button>
           </div>
         </form>
+      </Modal>
+
+      {/* Modal Confirmar creación */}
+      <Modal isOpen={modalConfirmarCrear} onClose={handleVolverFormulario} title="Confirmar nuevo cliente">
+        <ConfirmarCreacion
+          mensaje="Verifique los datos del cliente antes de crearlo. Si algo está mal, vuelva al formulario para corregirlo."
+          items={itemsConfirmacion()}
+          onConfirmar={handleConfirmarCrear}
+          onVolver={handleVolverFormulario}
+          loading={submitting}
+        />
       </Modal>
 
       {/* Modal Eliminar */}

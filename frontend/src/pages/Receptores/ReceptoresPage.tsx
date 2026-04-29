@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { receptoresApi } from '@/api'
-import { LoadingPage, EmptyState, Paginacion, ConfirmDelete, FormField } from '@/components/ui'
+import { LoadingPage, EmptyState, Paginacion, ConfirmDelete, FormField, ConfirmarCreacion, type ItemConfirmacion } from '@/components/ui'
 import Modal from '@/components/ui/Modal'
 import type { Receptor, CuentaBancaria } from '@/types'
 import { Plus, Pencil, Trash2, Search, CreditCard } from 'lucide-react'
@@ -13,6 +13,10 @@ export default function ReceptoresPage() {
   const [page, setPage] = useState(1); const [busqueda, setBusqueda] = useState('')
   const [loading, setLoading] = useState(true)
   const [modalForm, setModalForm] = useState(false)
+  const [modalConfirmarCrear, setModalConfirmarCrear] = useState(false)
+  const [datosPendientes, setDatosPendientes] = useState<any>(null)
+  const [modalConfirmarCuenta, setModalConfirmarCuenta] = useState(false)
+  const [datosCuentaPendientes, setDatosCuentaPendientes] = useState<any>(null)
   const [modalEliminar, setModalEliminar] = useState(false)
   const [modalCuentas, setModalCuentas] = useState(false)
   const [modalCuenta, setModalCuenta] = useState(false)
@@ -35,17 +39,54 @@ export default function ReceptoresPage() {
   useEffect(() => { cargar() }, [cargar])
 
   const onSubmit = async (data: any) => {
+    if (editando) {
+      setSubmitting(true)
+      try {
+        await receptoresApi.actualizar(editando.id, data)
+        toast.success('Receptor actualizado')
+        setModalForm(false); cargar()
+      } catch (e: any) {
+        const detail = e.response?.data?.detail
+        const msg = Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error'
+        toast.error(msg)
+      }
+      finally { setSubmitting(false) }
+      return
+    }
+    setDatosPendientes(data)
+    setModalForm(false)
+    setModalConfirmarCrear(true)
+  }
+
+  const handleConfirmarCrear = async () => {
+    if (!datosPendientes) return
     setSubmitting(true)
     try {
-      if (editando) { await receptoresApi.actualizar(editando.id, data); toast.success('Receptor actualizado') }
-      else { await receptoresApi.crear(data); toast.success('Receptor creado') }
-      setModalForm(false); cargar()
+      await receptoresApi.crear(datosPendientes)
+      toast.success('Receptor creado')
+      setModalConfirmarCrear(false)
+      setDatosPendientes(null)
+      cargar()
     } catch (e: any) {
       const detail = e.response?.data?.detail
       const msg = Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error'
       toast.error(msg)
     }
     finally { setSubmitting(false) }
+  }
+
+  const handleVolverFormulario = () => {
+    setModalConfirmarCrear(false)
+    setModalForm(true)
+  }
+
+  const itemsConfirmacion = (): ItemConfirmacion[] => {
+    if (!datosPendientes) return []
+    return [
+      { label: 'Nombre', value: datosPendientes.nombre },
+      { label: 'Cédula', value: datosPendientes.cedula },
+      { label: 'Teléfono', value: datosPendientes.telefono },
+    ]
   }
 
   const handleEliminar = async () => {
@@ -64,16 +105,37 @@ export default function ReceptoresPage() {
 
   const onSubmitCuenta = async (data: any) => {
     if (!seleccionado) return
-    setSubmitting(true)
-    try {
-      if (editandoCuenta) {
+    if (editandoCuenta) {
+      setSubmitting(true)
+      try {
         await receptoresApi.actualizarCuenta(seleccionado.id, editandoCuenta.id, data)
         toast.success('Cuenta actualizada')
-      } else {
-        await receptoresApi.agregarCuenta(seleccionado.id, data)
-        toast.success('Cuenta agregada')
+        setModalCuenta(false)
+        const res = await receptoresApi.obtener(seleccionado.id)
+        setSeleccionado(res.data)
+        cargar()
+      } catch (e: any) {
+        const detail = e.response?.data?.detail
+        const msg = Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error'
+        toast.error(msg)
       }
-      setModalCuenta(false)
+      finally { setSubmitting(false) }
+      return
+    }
+    // Crear cuenta — pedir confirmación
+    setDatosCuentaPendientes(data)
+    setModalCuenta(false)
+    setModalConfirmarCuenta(true)
+  }
+
+  const handleConfirmarCrearCuenta = async () => {
+    if (!seleccionado || !datosCuentaPendientes) return
+    setSubmitting(true)
+    try {
+      await receptoresApi.agregarCuenta(seleccionado.id, datosCuentaPendientes)
+      toast.success('Cuenta agregada')
+      setModalConfirmarCuenta(false)
+      setDatosCuentaPendientes(null)
       const res = await receptoresApi.obtener(seleccionado.id)
       setSeleccionado(res.data)
       cargar()
@@ -83,6 +145,20 @@ export default function ReceptoresPage() {
       toast.error(msg)
     }
     finally { setSubmitting(false) }
+  }
+
+  const handleVolverCuenta = () => {
+    setModalConfirmarCuenta(false)
+    setModalCuenta(true)
+  }
+
+  const itemsCuenta = (): ItemConfirmacion[] => {
+    if (!datosCuentaPendientes) return []
+    return [
+      { label: 'Entidad bancaria', value: datosCuentaPendientes.entidad_bancaria },
+      { label: 'Tipo de cuenta', value: datosCuentaPendientes.tipo_cuenta },
+      { label: 'Número de cuenta', value: datosCuentaPendientes.numero_cuenta },
+    ]
   }
 
   return (
@@ -207,6 +283,27 @@ export default function ReceptoresPage() {
             </button>
           </div>
         </form>
+      </Modal>
+
+      <Modal isOpen={modalConfirmarCrear} onClose={handleVolverFormulario} title="Confirmar nuevo receptor" size="md">
+        <ConfirmarCreacion
+          mensaje="Verifique los datos del nuevo receptor antes de crearlo."
+          items={itemsConfirmacion()}
+          onConfirmar={handleConfirmarCrear}
+          onVolver={handleVolverFormulario}
+          loading={submitting}
+        />
+      </Modal>
+
+      <Modal isOpen={modalConfirmarCuenta} onClose={handleVolverCuenta} title="Confirmar nueva cuenta" size="md">
+        <ConfirmarCreacion
+          mensaje="Verifique los datos de la cuenta bancaria antes de agregarla."
+          items={itemsCuenta()}
+          onConfirmar={handleConfirmarCrearCuenta}
+          onVolver={handleVolverCuenta}
+          loading={submitting}
+          textoConfirmar="Confirmar y agregar"
+        />
       </Modal>
 
       <Modal isOpen={modalEliminar} onClose={() => setModalEliminar(false)} title="Eliminar Receptor" size="sm">

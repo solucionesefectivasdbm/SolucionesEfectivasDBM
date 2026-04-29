@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { creditosApi, clientesApi, gestoresApi } from '@/api'
 import { formatCOP, formatFecha, formatPorcentaje } from '@/utils/formatters'
-import { LoadingPage, EmptyState, Paginacion, FormField } from '@/components/ui'
+import { LoadingPage, EmptyState, Paginacion, FormField, ConfirmarCreacion, type ItemConfirmacion } from '@/components/ui'
 import Modal from '@/components/ui/Modal'
 import { usePermissions } from '@/store/authStore'
 import type { Credito, Pago, Cliente, Gestor } from '@/types'
@@ -31,6 +31,8 @@ export default function CreditosPage() {
   const [filtroGestor, setFiltroGestor] = useState('')
   const [loading, setLoading] = useState(true)
   const [modalCrear, setModalCrear] = useState(false)
+  const [modalConfirmarCrear, setModalConfirmarCrear] = useState(false)
+  const [datosPendientes, setDatosPendientes] = useState<CreditoForm | null>(null)
   const [modalEditar, setModalEditar] = useState(false)
   const [modalHistorial, setModalHistorial] = useState(false)
   const [creditoActual, setCreditoActual] = useState<Credito | null>(null)
@@ -75,25 +77,69 @@ export default function CreditosPage() {
     } catch { toast.error('Error al cargar historial') }
   }
 
-  const onCrear = async (data: CreditoForm) => {
+  const onCrear = (data: CreditoForm) => {
+    // En vez de enviar de inmediato, mostramos el modal de confirmación
+    setDatosPendientes(data)
+    setModalCrear(false)
+    setModalConfirmarCrear(true)
+  }
+
+  const handleConfirmarCrear = async () => {
+    if (!datosPendientes) return
     setSubmitting(true)
     try {
       const payload = {
-        ...data,
-        capital_prestado: parseFloat(String(data.capital_prestado)),
-        tasa_interes_mensual: parseFloat(String(data.tasa_interes_mensual)) / 100,
-        numero_cuotas: data.tipo_credito === 'cuota_fija' ? parseInt(String(data.numero_cuotas)) : null,
-        abono_minimo: data.tipo_credito === 'abono_capital' && data.abono_minimo
-          ? parseFloat(String(data.abono_minimo)) : null,
+        ...datosPendientes,
+        capital_prestado: parseFloat(String(datosPendientes.capital_prestado)),
+        tasa_interes_mensual: parseFloat(String(datosPendientes.tasa_interes_mensual)) / 100,
+        numero_cuotas: datosPendientes.tipo_credito === 'cuota_fija' ? parseInt(String(datosPendientes.numero_cuotas)) : null,
+        abono_minimo: datosPendientes.tipo_credito === 'abono_capital' && datosPendientes.abono_minimo
+          ? parseFloat(String(datosPendientes.abono_minimo)) : null,
       }
       await creditosApi.crear(payload)
       toast.success('Crédito creado')
-      setModalCrear(false)
+      setModalConfirmarCrear(false)
+      setDatosPendientes(null)
+      setClienteSeleccionado(null)
       reset()
       cargar()
     } catch (e: any) {
       toast.error(e.response?.data?.detail || 'Error al crear crédito')
     } finally { setSubmitting(false) }
+  }
+
+  const handleVolverFormulario = () => {
+    setModalConfirmarCrear(false)
+    setModalCrear(true)
+  }
+
+  const itemsConfirmacion = (): ItemConfirmacion[] => {
+    if (!datosPendientes) return []
+    const cliente = clienteSeleccionado
+    const tipo = TIPO_LABELS[datosPendientes.tipo_credito] ?? datosPendientes.tipo_credito
+    const periodicidad = PERIOD_LABELS[datosPendientes.periodicidad] ?? datosPendientes.periodicidad
+    const capital = parseFloat(String(datosPendientes.capital_prestado)) || 0
+    const tasa = parseFloat(String(datosPendientes.tasa_interes_mensual)) || 0
+    const items: ItemConfirmacion[] = [
+      { label: 'Cliente', value: cliente ? `${cliente.nombre} ${cliente.apellidos} — ${cliente.cedula}` : '—' },
+      { label: 'Tipo de crédito', value: tipo },
+      { label: 'Capital prestado', value: formatCOP(capital) },
+      { label: 'Tasa mensual', value: `${tasa}%` },
+      { label: 'Fecha de apertura', value: datosPendientes.fecha_apertura },
+      { label: 'Fecha inicial de pago', value: datosPendientes.fecha_inicial_pago },
+      { label: 'Periodicidad', value: periodicidad },
+    ]
+    if (datosPendientes.tipo_credito === 'cuota_fija') {
+      items.push({ label: 'Número de cuotas', value: String(datosPendientes.numero_cuotas) })
+    }
+    if (datosPendientes.tipo_credito === 'abono_capital' && datosPendientes.abono_minimo) {
+      items.push({ label: 'Abono mínimo', value: formatCOP(parseFloat(String(datosPendientes.abono_minimo))) })
+    }
+    items.push({
+      label: 'Interés por días corridos',
+      value: datosPendientes.calcular_interes_dias_corridos ? 'Sí (primera cuota)' : 'No',
+    })
+    return items
   }
 
   const onEditar = async (data: EditForm) => {
@@ -319,6 +365,17 @@ export default function CreditosPage() {
             </button>
           </div>
         </form>
+      </Modal>
+
+      {/* Modal Confirmar creación */}
+      <Modal isOpen={modalConfirmarCrear} onClose={handleVolverFormulario} title="Confirmar nuevo crédito" size="lg">
+        <ConfirmarCreacion
+          mensaje="Verifique que los datos del crédito sean correctos antes de crearlo."
+          items={itemsConfirmacion()}
+          onConfirmar={handleConfirmarCrear}
+          onVolver={handleVolverFormulario}
+          loading={submitting}
+        />
       </Modal>
 
       {/* Modal Editar (solo Admin) */}
