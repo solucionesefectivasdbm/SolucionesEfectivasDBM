@@ -14,7 +14,7 @@ from app.dependencies import get_client_ip, get_current_user, require_role
 from app.models.cliente import Cliente
 from app.models.credito import Credito, TipoCredito
 from app.models.gestor import Gestor
-from app.models.pago import Pago, TipoCuota
+from app.models.pago import Pago
 from app.models.usuario import TipoUsuario, Usuario
 from app.schemas.common import PaginatedResponse
 from app.schemas.credito import CreditoCreate, CreditoResponse, CreditoUpdate
@@ -316,98 +316,6 @@ async def eliminar_credito(
         db=db, entidad="creditos", entidad_id=credito.id,
         usuario_id=current_user.id, ip_origen=get_client_ip(request),
     )
-
-
-@router.post("/migrar-mensual-abono-capital")
-async def migrar_mensual_abono_capital(
-    request: Request,
-    current_user: Usuario = Depends(require_role("admin")),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    ENDPOINT TEMPORAL — Migra los créditos abono_capital de periodicidad mensual
-    al nuevo formato de cuota combinada (interés + abono mínimo).
-
-    Solo aplica a créditos cuya primera cuota aún no ha tenido movimientos
-    (capital_pagado=0 y interes_pagado=0). Idempotente.
-    """
-    from app.models.credito import TipoCredito, Periodicidad
-
-    creditos = (await db.execute(
-        select(Credito).where(
-            Credito.tipo_credito == TipoCredito.abono_capital,
-            Credito.periodicidad == Periodicidad.mensual,
-            Credito.deleted_at == None,  # noqa: E711
-        )
-    )).scalars().all()
-
-    ip = get_client_ip(request)
-    detalles: list[dict] = []
-    actualizados = 0
-    saltados = 0
-
-    for credito in creditos:
-        primera = (await db.execute(
-            select(Pago).where(
-                Pago.credito_id == credito.id,
-                Pago.numero_cuota == 1,
-                Pago.deleted_at == None,  # noqa: E711
-            )
-        )).scalar_one_or_none()
-
-        if not primera:
-            saltados += 1
-            continue
-        if primera.pagado or primera.validado_recaudador:
-            saltados += 1
-            continue
-        if primera.capital_pagado > 0 or primera.interes_pagado > 0:
-            saltados += 1
-            continue
-        # Si ya está en formato combinado (programada con capital), saltar.
-        if primera.tipo_cuota == TipoCuota.programada:
-            saltados += 1
-            continue
-
-        antes = {
-            "tipo_cuota": primera.tipo_cuota.value if hasattr(primera.tipo_cuota, "value") else str(primera.tipo_cuota),
-            "monto_a_pagar": str(primera.monto_a_pagar),
-            "capital_a_pagar": str(primera.capital_a_pagar),
-            "interes_a_pagar": str(primera.interes_a_pagar),
-        }
-
-        recalculada = await recalcular_primera_cuota_si_no_pagada(db, credito)
-        if not recalculada:
-            saltados += 1
-            continue
-
-        await db.flush()
-        despues = {
-            "tipo_cuota": primera.tipo_cuota.value if hasattr(primera.tipo_cuota, "value") else str(primera.tipo_cuota),
-            "monto_a_pagar": str(primera.monto_a_pagar),
-            "capital_a_pagar": str(primera.capital_a_pagar),
-            "interes_a_pagar": str(primera.interes_a_pagar),
-        }
-
-        await audit_service.registrar_actualizacion_campos(
-            db=db, entidad="pagos", entidad_id=primera.id,
-            usuario_id=current_user.id, ip_origen=ip,
-            cambios={k: (antes[k], despues[k]) for k in antes if antes[k] != despues[k]},
-        )
-
-        actualizados += 1
-        detalles.append({
-            "credito_id": str(credito.id),
-            "numero_credito": credito.numero_credito_cliente,
-            "antes": antes,
-            "despues": despues,
-        })
-
-    return {
-        "creditos_actualizados": actualizados,
-        "creditos_saltados": saltados,
-        "detalles": detalles,
-    }
 
 
 @router.get("/{credito_id}/cuotas", response_model=list[PagoResponse])
