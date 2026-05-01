@@ -355,6 +355,7 @@ async def _primera_cuota_abono_capital(
             momento=momento,
             fecha_maxima=fecha_maxima,
             receptor_id=receptor_id,
+            es_ultimo_pago=False,
         )
 
     return Pago(
@@ -367,6 +368,7 @@ async def _primera_cuota_abono_capital(
         momento=momento,
         fecha_maxima=fecha_maxima,
         receptor_id=receptor_id,
+        es_ultimo_pago=False,
     )
 
 
@@ -475,6 +477,7 @@ def _siguiente_cuota_abono_capital(
             momento=momento,
             fecha_maxima=fecha_maxima,
             receptor_id=receptor_id,
+            es_ultimo_pago=False,
         )
 
     if cuota_anterior.tipo_cuota == TipoCuota.interes:
@@ -589,7 +592,9 @@ async def recalcular_primera_cuota_si_no_pagada(
     primera.monto_a_pagar = fresh.monto_a_pagar
     primera.capital_a_pagar = fresh.capital_a_pagar
     primera.interes_a_pagar = fresh.interes_a_pagar
-    primera.es_ultimo_pago = fresh.es_ultimo_pago
+    # Defensivo: en instancias transitorias el valor por defecto del modelo
+    # no se aplica hasta INSERT, así que tratamos None como False.
+    primera.es_ultimo_pago = bool(fresh.es_ultimo_pago) if fresh.es_ultimo_pago is not None else False
     return True
 
 
