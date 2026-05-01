@@ -75,8 +75,9 @@ export const creditosApi = {
 // ─── Pagos ────────────────────────────────────────────────────────────────────
 export const pagosApi = {
   listar: (params: {
-    anio: number; mes: number; momento: string;
+    anio: number; mes: number; momento?: string;
     gestor_id?: string; cliente_id?: string; receptor_id?: string;
+    solo_periodicidad?: string; excluir_periodicidad?: string;
     busqueda?: string; page?: number
   }) => api.get<PaginatedResponse<Pago>>('/pagos', { params }),
 

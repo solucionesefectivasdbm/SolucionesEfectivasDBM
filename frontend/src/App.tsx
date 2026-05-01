@@ -56,7 +56,8 @@ export default function App() {
         }>
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<DashboardPage />} />
-          <Route path="pagos" element={<PagosPage />} />
+          <Route path="pagos" element={<PagosPage variante="regular" />} />
+          <Route path="pagos/semanales" element={<PagosPage variante="semanal" />} />
           <Route path="creditos" element={<CreditosPage />} />
           <Route path="clientes" element={<ClientesPage />} />
           <Route path="usuarios" element={<UsuariosPage />} />

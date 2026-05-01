@@ -5,13 +5,20 @@ import { LoadingPage, EmptyState, Paginacion, PagoBadge, ConfirmarCreacion, type
 import Modal from '@/components/ui/Modal'
 import { usePermissions } from '@/store/authStore'
 import type { Pago, Receptor, Credito, Gestor } from '@/types'
-import { Check, Calendar, User, Plus, Search, DollarSign } from 'lucide-react'
+import { Check, Calendar, User, Plus, Search, DollarSign, CalendarDays, ArrowLeft } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
+import { useNavigate } from 'react-router-dom'
 
-export default function PagosPage() {
+interface PagosPageProps {
+  variante?: 'regular' | 'semanal'
+}
+
+export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   const perms = usePermissions()
   const hoy = new Date()
+  const navigate = useNavigate()
+  const esSemanal = variante === 'semanal'
 
   const [anio, setAnio] = useState(hoy.getFullYear())
   const [mes, setMes] = useState(hoy.getMonth() + 1)
@@ -53,19 +60,29 @@ export default function PagosPage() {
   const [nuevoReceptor, setNuevoReceptor] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  const filtrosCompletos = momento !== ''
+  // En la variante semanal, momento es opcional → filtros siempre completos.
+  const filtrosCompletos = esSemanal || momento !== ''
 
   const cargarPagos = useCallback(async () => {
     if (!filtrosCompletos) return
     setLoading(true)
     try {
-      const res = await pagosApi.listar({ anio, mes, momento, busqueda, page, gestor_id: filtroGestor || undefined })
+      const res = await pagosApi.listar({
+        anio,
+        mes,
+        momento: momento || undefined,
+        busqueda,
+        page,
+        gestor_id: filtroGestor || undefined,
+        solo_periodicidad: esSemanal ? 'semanal' : undefined,
+        excluir_periodicidad: esSemanal ? undefined : 'semanal',
+      })
       setPagos(res.data.items)
       setTotal(res.data.total)
       setPages(res.data.pages)
     } catch { toast.error('Error al cargar pagos') }
     finally { setLoading(false) }
-  }, [anio, mes, momento, busqueda, page, filtroGestor, filtrosCompletos])
+  }, [anio, mes, momento, busqueda, page, filtroGestor, filtrosCompletos, esSemanal])
 
   useEffect(() => { cargarPagos() }, [cargarPagos])
 
@@ -243,13 +260,26 @@ export default function PagosPage() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-black text-primary-600">Módulo de Pagos</h1>
-        {perms.canRegistrarPago && (
-          <button onClick={abrirNoProgramado} className="btn-primary flex items-center gap-2">
-            <DollarSign size={16} /> Pago No Programado
-          </button>
-        )}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <h1 className="text-2xl font-black text-primary-600">
+          {esSemanal ? 'Pagos Semanales' : 'Módulo de Pagos'}
+        </h1>
+        <div className="flex items-center gap-2">
+          {esSemanal ? (
+            <button onClick={() => navigate('/pagos')} className="btn-ghost flex items-center gap-2">
+              <ArrowLeft size={16} /> Volver a Pagos
+            </button>
+          ) : (
+            <button onClick={() => navigate('/pagos/semanales')} className="btn-secondary flex items-center gap-2">
+              <CalendarDays size={16} /> Pagos Semanales
+            </button>
+          )}
+          {perms.canRegistrarPago && (
+            <button onClick={abrirNoProgramado} className="btn-primary flex items-center gap-2">
+              <DollarSign size={16} /> Pago No Programado
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Filtros */}
@@ -268,9 +298,9 @@ export default function PagosPage() {
             </select>
           </div>
           <div>
-            <label className="label">Momento *</label>
+            <label className="label">Momento {esSemanal ? '' : '*'}</label>
             <select className="input" value={momento} onChange={e => { setMomento(e.target.value); setPage(1) }}>
-              <option value="">-- Seleccionar --</option>
+              <option value="">{esSemanal ? 'Todos los del mes' : '-- Seleccionar --'}</option>
               {MOMENTOS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
             </select>
           </div>
@@ -301,7 +331,11 @@ export default function PagosPage() {
       {!filtrosCompletos && (
         <div className="card text-center py-12 text-gray-400">
           <p className="text-4xl mb-3">🔍</p>
-          <p className="font-medium">Selecciona año, mes y momento para ver los pagos.</p>
+          <p className="font-medium">
+            {esSemanal
+              ? 'Selecciona año y mes para ver los pagos semanales.'
+              : 'Selecciona año, mes y momento para ver los pagos.'}
+          </p>
         </div>
       )}
 
