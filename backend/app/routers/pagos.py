@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from app.database import get_db
 from app.dependencies import get_client_ip, get_current_user, require_role
 from app.models.cliente import Cliente
-from app.models.credito import Credito
+from app.models.credito import Credito, Periodicidad
 from app.models.gestor import Gestor
 from app.models.pago import Pago, TipoCuota
 from app.models.usuario import TipoUsuario, Usuario
@@ -51,10 +51,12 @@ router = APIRouter(prefix="/pagos", tags=["Pagos"])
 async def listar_pagos(
     anio: int = Query(..., description="Año (obligatorio)"),
     mes: int = Query(..., ge=1, le=12, description="Mes (obligatorio)"),
-    momento: str = Query(..., description="m1..m5 (obligatorio)"),
+    momento: str | None = Query(None, description="m1..m5 (opcional). Si se omite, se filtra por todo el mes calendario."),
     gestor_id: uuid.UUID | None = Query(None),
     cliente_id: uuid.UUID | None = Query(None),
     receptor_id: uuid.UUID | None = Query(None),
+    solo_periodicidad: Periodicidad | None = Query(None, description="Filtrar solo créditos con esta periodicidad"),
+    excluir_periodicidad: Periodicidad | None = Query(None, description="Excluir créditos con esta periodicidad"),
     busqueda: str = Query(""),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=50),
@@ -62,14 +64,23 @@ async def listar_pagos(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Listado de pagos con filtros obligatorios.
-    Los filtros año, mes y momento son SIEMPRE requeridos.
+    Listado de pagos. Año y mes son obligatorios. El momento es opcional
+    (cuando no se especifica se incluyen todos los pagos del mes calendario).
+    Filtros adicionales por periodicidad permiten separar la vista de pagos
+    semanales del resto.
     """
-    if momento not in ("m1", "m2", "m3", "m4", "m5"):
+    if momento is not None and momento not in ("m1", "m2", "m3", "m4", "m5"):
         raise HTTPException(status_code=400, detail="Momento inválido. Use m1..m5")
 
     # Calcular rango de fechas del período
-    fecha_inicio, fecha_fin = get_periodo_momento(anio, mes, momento)
+    if momento:
+        fecha_inicio, fecha_fin = get_periodo_momento(anio, mes, momento)
+    else:
+        # Mes calendario completo
+        import calendar
+        ultimo_dia = calendar.monthrange(anio, mes)[1]
+        fecha_inicio = date(anio, mes, 1)
+        fecha_fin = date(anio, mes, ultimo_dia)
 
     query = (
         select(Pago)
@@ -96,6 +107,10 @@ async def listar_pagos(
         query = query.where(Credito.cliente_id == cliente_id)
     if receptor_id:
         query = query.where(Pago.receptor_id == receptor_id)
+    if solo_periodicidad:
+        query = query.where(Credito.periodicidad == solo_periodicidad)
+    if excluir_periodicidad:
+        query = query.where(Credito.periodicidad != excluir_periodicidad)
     if busqueda:
         query = query.where(
             or_(

@@ -327,8 +327,9 @@ async def _primera_cuota_abono_capital(
     receptor_id: uuid.UUID | None,
 ) -> Pago:
     """
-    Primera cuota de abono_capital — siempre es de tipo INTERÉS.
-    En abono_capital la cuota de interés es solo interés (sin amortización).
+    Primera cuota de abono_capital. La estructura depende de la periodicidad:
+    - Mensual: cuota combinada — interés + abono mínimo en una sola cuota.
+    - Otras periodicidades: solo interés (las cuotas alternan interés / abono).
     """
     if credito.calcular_interes_dias_corridos:
         interes = calcular_interes_primera_cuota(
@@ -339,6 +340,22 @@ async def _primera_cuota_abono_capital(
         )
     else:
         interes = calcular_interes_periodo(credito.saldo_capital, credito.tasa_interes_mensual)
+
+    if credito.periodicidad == Periodicidad.mensual:
+        # Cuota combinada: interés + abono mínimo (capital).
+        abono = credito.abono_minimo if credito.abono_minimo else Decimal("0.00")
+        monto_total = (interes + abono).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return Pago(
+            credito_id=credito.id,
+            numero_cuota=1,
+            tipo_cuota=TipoCuota.programada,
+            monto_a_pagar=monto_total,
+            capital_a_pagar=abono,
+            interes_a_pagar=interes,
+            momento=momento,
+            fecha_maxima=fecha_maxima,
+            receptor_id=receptor_id,
+        )
 
     return Pago(
         credito_id=credito.id,
@@ -432,13 +449,34 @@ def _siguiente_cuota_abono_capital(
     saldo_pendiente: Decimal,
 ) -> Pago:
     """
-    Genera la siguiente cuota para abono_capital.
-    Secuencia: INTERÉS → ABONO → INTERÉS → ABONO...
-    
-    REGLA: El saldo pendiente SOLO se arrastra en cuotas de INTERÉS.
-    Las cuotas de ABONO nunca tienen arrastre — el cliente abona
-    lo que puede y el saldo capital se reduce con lo pagado.
+    Genera la siguiente cuota para abono_capital. La estructura depende de la
+    periodicidad:
+
+    - Mensual: cada cuota es combinada (interés sobre saldo_capital actual +
+      abono mínimo). El saldo_pendiente (faltante de intereses de la cuota
+      anterior) se suma al monto total — siempre hay interés donde arrastrar.
+
+    - Otras periodicidades: alternancia INTERÉS → ABONO → INTERÉS → ABONO.
+      Solo las cuotas de interés admiten arrastre. Las de abono nunca.
     """
+    if credito.periodicidad == Periodicidad.mensual:
+        interes = calcular_interes_periodo(credito.saldo_capital, credito.tasa_interes_mensual)
+        abono = credito.abono_minimo if credito.abono_minimo else Decimal("0.00")
+        monto_total = (interes + abono + saldo_pendiente).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        return Pago(
+            credito_id=credito.id,
+            numero_cuota=numero,
+            tipo_cuota=TipoCuota.programada,
+            monto_a_pagar=monto_total,
+            capital_a_pagar=abono,
+            interes_a_pagar=interes,
+            momento=momento,
+            fecha_maxima=fecha_maxima,
+            receptor_id=receptor_id,
+        )
+
     if cuota_anterior.tipo_cuota == TipoCuota.interes:
         # Siguiente es ABONO
         # Si hay abono_minimo definido, ese es el monto esperado.

@@ -147,9 +147,28 @@ class PagoService:
             ),
         )
 
-        # REGLA CLAVE: cuotas de ABONO nunca arrastran faltante
+        # REGLAS DE ARRASTRE:
+        # - Cuotas tipo ABONO (abono_capital quincenal/etc.): nunca arrastran
+        #   faltante (el abono de capital es voluntario).
+        # - Cuotas de cuota_fija: arrastra el faltante completo (capital + interés).
+        # - Cuotas abono_capital con periodicidad mensual (programadas combinadas):
+        #   solo arrastra el faltante de INTERESES; el faltante de capital se
+        #   considera "abono no realizado" y no genera deuda.
+        # - Cuotas tipo INTERÉS (abono_capital quincenal): arrastran el faltante
+        #   total, que en la práctica equivale al faltante de interés porque el
+        #   capital_a_pagar es 0.
         from app.models.pago import TipoCuota
-        saldo_a_arrastrar = Decimal("0.00") if pago.tipo_cuota == TipoCuota.abono else faltante
+        from app.models.credito import TipoCredito
+        if pago.tipo_cuota == TipoCuota.abono:
+            saldo_a_arrastrar = Decimal("0.00")
+        elif credito.tipo_credito == TipoCredito.cuota_fija:
+            saldo_a_arrastrar = faltante
+        else:
+            # abono_capital — solo el faltante de intereses se arrastra
+            faltante_interes = (pago.interes_a_pagar - request.interes_pagado).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+            saldo_a_arrastrar = max(Decimal("0.00"), faltante_interes)
 
         await PagoService._verificar_cierre_credito(db, credito, pago)
 
