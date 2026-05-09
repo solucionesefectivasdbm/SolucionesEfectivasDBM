@@ -73,7 +73,10 @@ export default function UsuariosPage() {
     if (!datosPendientes) return []
     return [
       { label: 'Usuario', value: datosPendientes.username },
-      { label: 'Contraseña', value: '••••••••' },
+      {
+        label: 'Contraseña temporal',
+        value: <span className="font-mono bg-yellow-50 px-2 py-0.5 rounded border border-yellow-200">{datosPendientes.password}</span>,
+      },
       { label: 'Teléfono', value: datosPendientes.telefono },
       { label: 'Rol', value: ROLES[datosPendientes.tipo_usuario] ?? datosPendientes.tipo_usuario },
     ]
@@ -170,12 +173,13 @@ export default function UsuariosPage() {
               <FormField label="Username" required error={errors.username?.message as string | undefined}>
                 <input {...register('username', { required: 'Requerido' })} className={`input ${errors.username ? 'input-error' : ''}`} />
               </FormField>
-              <FormField label="Contraseña" required error={errors.password?.message as string | undefined}>
+              <FormField label="Contraseña temporal" required error={errors.password?.message as string | undefined}>
                 <input {...register('password', {
                   required: 'Requerido',
                   minLength: { value: 8, message: 'Mínimo 8 caracteres' },
                   pattern: { value: /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)/, message: 'Requiere mayúscula, minúscula y número' }
-                })} type="password" className={`input ${errors.password ? 'input-error' : ''}`} />
+                })} type="text" autoComplete="off" className={`input font-mono ${errors.password ? 'input-error' : ''}`} />
+                <p className="text-xs text-gray-400 mt-1">Visible para que la verifique antes de dictarla al usuario.</p>
               </FormField>
             </>
           )}
@@ -222,8 +226,11 @@ export default function UsuariosPage() {
       <Modal isOpen={modalPassword} onClose={() => setModalPassword(false)} title="Restablecer Contraseña" size="sm">
         <div className="space-y-4">
           <p className="text-sm text-gray-600">Nueva contraseña temporal para <strong>{seleccionado?.username}</strong>.</p>
-          <input type="password" className="input" placeholder="Nueva contraseña"
+          <input type="text" autoComplete="off" className="input font-mono" placeholder="Nueva contraseña"
             value={newPassword} onChange={e => setNewPassword(e.target.value)} />
+          <p className="text-xs text-gray-400">
+            Visible para que la verifique antes de dictarla. El usuario debe cambiarla en su primer login.
+          </p>
           <div className="flex gap-3 justify-end">
             <button onClick={() => setModalPassword(false)} className="btn-ghost">Cancelar</button>
             <button onClick={handleResetPassword} disabled={submitting} className="btn-primary">

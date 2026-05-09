@@ -9,6 +9,7 @@ nunca en localStorage.
 Rate limiting: slowapi limita a 10 intentos fallidos por IP en 15 min.
 Bloqueo de 30 min al superar el límite (configurado en config.py).
 """
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -17,6 +18,8 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 from app.config import get_settings
 from app.database import get_db
@@ -82,18 +85,42 @@ async def login(
     )
     usuario = result.scalar_one_or_none()
 
-    # Validar credenciales (mensaje genérico para no revelar si el usuario existe)
-    if not usuario or not pwd_context.verify(body.password, usuario.password_hash):
+    # Logs detallados para diagnosticar problemas de login en producción.
+    # No exponen información sensible al cliente — solo a Railway logs.
+    if not usuario:
+        logger.warning("LOGIN FAIL — usuario no encontrado: %r (ip=%s)", body.username, get_client_ip(request))
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Credenciales incorrectas",
+        )
+
+    try:
+        password_ok = pwd_context.verify(body.password, usuario.password_hash)
+    except Exception as e:
+        logger.exception("LOGIN FAIL — error verificando password para %s: %s", body.username, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error verificando credenciales",
+        )
+
+    if not password_ok:
+        logger.warning(
+            "LOGIN FAIL — password no coincide para %s (must_change=%s, activo=%s)",
+            body.username, usuario.must_change_password, usuario.activo,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Credenciales incorrectas",
         )
 
     if not usuario.activo:
+        logger.warning("LOGIN FAIL — usuario inactivo: %s", body.username)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Usuario deshabilitado. Contacte al administrador.",
         )
+
+    logger.info("LOGIN OK — %s (must_change=%s)", body.username, usuario.must_change_password)
 
     access_token = crear_access_token(str(usuario.id))
     refresh_token = crear_refresh_token(str(usuario.id))

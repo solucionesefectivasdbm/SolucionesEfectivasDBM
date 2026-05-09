@@ -3,10 +3,13 @@ routers/usuarios.py — CRUD de usuarios del sistema.
 Solo accesible para Admin en operaciones de gestión.
 Cualquier usuario puede cambiar su propia contraseña.
 """
+import logging
 import math
 import uuid
 from datetime import datetime, timezone
 from app.utils.fechas import ahora_bogota
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from passlib.context import CryptContext
@@ -220,7 +223,23 @@ async def cambiar_mi_password(
     db: AsyncSession = Depends(get_db),
 ):
     """Cualquier usuario puede cambiar su propia contraseña."""
-    if not pwd_context.verify(body.password_actual, current_user.password_hash):
+    try:
+        password_ok = pwd_context.verify(body.password_actual, current_user.password_hash)
+    except Exception as e:
+        logger.exception(
+            "CAMBIAR PASSWORD FAIL — error verificando hash de %s: %s",
+            current_user.username, e,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error verificando la contraseña actual",
+        )
+
+    if not password_ok:
+        logger.warning(
+            "CAMBIAR PASSWORD FAIL — contraseña actual incorrecta para %s (must_change=%s)",
+            current_user.username, current_user.must_change_password,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="La contraseña actual es incorrecta",
@@ -228,6 +247,7 @@ async def cambiar_mi_password(
 
     current_user.password_hash = pwd_context.hash(body.password_nuevo)
     current_user.must_change_password = False
+    logger.info("CAMBIAR PASSWORD OK — %s", current_user.username)
 
     await audit_service.registrar_cambio(
         db=db,
