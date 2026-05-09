@@ -256,6 +256,72 @@ async def confirmar_excedente(
     return result
 
 
+@router.post("/revertir-validaciones-bulk")
+async def revertir_validaciones_bulk(
+    request: Request,
+    anio: int,
+    mes: int,
+    momento: str,
+    current_user: Usuario = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    ENDPOINT TEMPORAL — Revierte (validado_recaudador=False) todos los pagos
+    del período (anio/mes/momento) que aún no tengan montos registrados.
+
+    No toca pagos con pagado=True ni con capital_pagado/interes_pagado > 0.
+    """
+    if momento not in ("m1", "m2", "m3", "m4", "m5"):
+        raise HTTPException(status_code=400, detail="Momento inválido")
+
+    fecha_inicio, fecha_fin = get_periodo_momento(anio, mes, momento)
+
+    pagos = (await db.execute(
+        select(Pago).where(
+            Pago.deleted_at == None,  # noqa: E711
+            Pago.fecha_maxima >= fecha_inicio,
+            Pago.fecha_maxima <= fecha_fin,
+            Pago.validado_recaudador == True,  # noqa: E712
+            Pago.pagado == False,  # noqa: E712
+            Pago.capital_pagado == 0,
+            Pago.interes_pagado == 0,
+        )
+    )).scalars().all()
+
+    ip = get_client_ip(request)
+    revertidos: list[dict] = []
+
+    for pago in pagos:
+        antes_tipo = pago.tipo_validacion
+        pago.validado_recaudador = False
+        pago.tipo_validacion = None
+
+        cambios = {"validado_recaudador": ("True", "False")}
+        if antes_tipo is not None:
+            cambios["tipo_validacion"] = (str(antes_tipo), "None")
+
+        await audit_service.registrar_actualizacion_campos(
+            db=db, entidad="pagos", entidad_id=pago.id,
+            usuario_id=current_user.id, ip_origen=ip,
+            cambios=cambios,
+        )
+
+        revertidos.append({
+            "pago_id": str(pago.id),
+            "credito_id": str(pago.credito_id),
+            "numero_cuota": pago.numero_cuota,
+            "fecha_maxima": str(pago.fecha_maxima),
+            "tipo_validacion_anterior": antes_tipo,
+        })
+
+    return {
+        "periodo": f"{anio}-{mes:02d} {momento}",
+        "rango_fechas": [str(fecha_inicio), str(fecha_fin)],
+        "revertidos": len(revertidos),
+        "detalles": revertidos,
+    }
+
+
 @router.post("/{pago_id}/validar", response_model=PagoResponse)
 async def validar_pago(
     pago_id: uuid.UUID,
