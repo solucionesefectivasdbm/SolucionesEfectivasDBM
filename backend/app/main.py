@@ -105,4 +105,14 @@ async def startup_create_tables():
                 "ON clientes (cedula) WHERE deleted_at IS NULL"
             ))
 
+        # Migración: agregar columna tipo_validacion a pagos si no existe.
+        has_tipo_validacion = (await conn.execute(text(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'pagos' AND column_name = 'tipo_validacion'"
+        ))).scalar()
+        if not has_tipo_validacion:
+            await conn.execute(text(
+                "ALTER TABLE pagos ADD COLUMN tipo_validacion VARCHAR(20)"
+            ))
+
 

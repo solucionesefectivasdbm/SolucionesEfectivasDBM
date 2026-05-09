@@ -79,6 +79,10 @@ class Pago(AuditMixin, Base):
         Boolean, default=False, nullable=False,
         comment="True cuando es la última cuota de un crédito cuota_fija"
     )
+    tipo_validacion: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True,
+        comment="Tipo declarado por el recaudador al validar: completo, incompleto o con_excedente"
+    )
 
     # Relaciones
     credito: Mapped["Credito"] = relationship(  # type: ignore[name-defined]  # noqa: F821

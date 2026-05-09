@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -68,11 +68,18 @@ async def listar_creditos(
         query = query.where(Cliente.gestor_id == gestor_id)
 
     if busqueda:
-        query = query.where(
-            (Cliente.nombre.ilike(f"%{busqueda}%"))
-            | (Cliente.apellidos.ilike(f"%{busqueda}%"))
-            | (Cliente.cedula.ilike(f"%{busqueda}%"))
-        )
+        # Búsqueda por palabras: cada token debe aparecer en algún campo.
+        terminos = [t for t in busqueda.strip().split() if t]
+        if terminos:
+            condiciones = [
+                or_(
+                    Cliente.nombre.ilike(f"%{t}%"),
+                    Cliente.apellidos.ilike(f"%{t}%"),
+                    Cliente.cedula.ilike(f"%{t}%"),
+                )
+                for t in terminos
+            ]
+            query = query.where(and_(*condiciones))
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
     items = (await db.execute(query.offset((page - 1) * page_size).limit(page_size))).scalars().all()

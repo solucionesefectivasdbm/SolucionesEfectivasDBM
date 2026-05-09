@@ -41,6 +41,8 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   const [modalFecha, setModalFecha] = useState(false)
   const [modalReceptor, setModalReceptor] = useState(false)
   const [modalConfirmarNoProgramado, setModalConfirmarNoProgramado] = useState(false)
+  const [modalTipoValidacion, setModalTipoValidacion] = useState(false)
+  const [pagoAValidar, setPagoAValidar] = useState<Pago | null>(null)
   const [excedenteMonto, setExcedenteMonto] = useState(0)
   const [montosTemp, setMontosTemp] = useState({ capital: 0, interes: 0 })
   const [receptores, setReceptores] = useState<Receptor[]>([])
@@ -172,10 +174,18 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
     }
   }
 
-  const handleValidar = async (pago: Pago) => {
+  const abrirValidar = (pago: Pago) => {
+    setPagoAValidar(pago)
+    setModalTipoValidacion(true)
+  }
+
+  const handleValidar = async (tipo: 'completo' | 'incompleto' | 'con_excedente') => {
+    if (!pagoAValidar) return
     try {
-      await pagosApi.validar(pago.id)
+      await pagosApi.validar(pagoAValidar.id, tipo)
       toast.success('Pago validado')
+      setModalTipoValidacion(false)
+      setPagoAValidar(null)
       cargarPagos()
     } catch (e: any) {
       toast.error(e.response?.data?.detail || 'Error')
@@ -394,6 +404,19 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                         </td>
                         <td className="table-cell">
                           <PagoBadge pagado={p.pagado} validado={p.validado_recaudador} />
+                          {p.tipo_validacion && (
+                            <span
+                              className={clsx(
+                                'ml-1 text-xs px-2 py-0.5 rounded-full font-medium',
+                                p.tipo_validacion === 'completo' && 'bg-green-100 text-green-700',
+                                p.tipo_validacion === 'incompleto' && 'bg-yellow-100 text-yellow-700',
+                                p.tipo_validacion === 'con_excedente' && 'bg-blue-100 text-blue-700',
+                              )}
+                            >
+                              {p.tipo_validacion === 'con_excedente' ? 'Con excedente' :
+                                p.tipo_validacion.charAt(0).toUpperCase() + p.tipo_validacion.slice(1)}
+                            </span>
+                          )}
                           {isVencido(p) && <span className="badge-danger ml-1">Vencido</span>}
                           {p.es_ultimo_pago && <span className="badge-warning ml-1">Última</span>}
                         </td>
@@ -403,7 +426,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                             {perms.canValidarPago && !p.pagado && !p.validado_recaudador && (
                               <button
                                 title="Validar pago (check)"
-                                onClick={() => handleValidar(p)}
+                                onClick={() => abrirValidar(p)}
                                 className="p-1.5 bg-success text-white rounded-lg hover:opacity-90 transition-opacity"
                               >
                                 <Check size={14} />
@@ -506,6 +529,49 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
           loading={submitting}
           textoConfirmar="Confirmar y registrar"
         />
+      </Modal>
+
+      {/* Modal: Tipo de validación */}
+      <Modal isOpen={modalTipoValidacion} onClose={() => { setModalTipoValidacion(false); setPagoAValidar(null) }}
+        title="Validar pago" size="md">
+        {pagoAValidar && (
+          <div className="space-y-4">
+            <div className="bg-primary-50 rounded-lg p-3 text-sm">
+              <p className="font-semibold text-primary-700">
+                Cuota #{pagoAValidar.numero_cuota} — {pagoAValidar.cliente_nombre}
+              </p>
+              <p className="text-gray-600">
+                Monto esperado: <strong>{formatCOP(pagoAValidar.monto_a_pagar)}</strong>
+              </p>
+            </div>
+            <p className="text-sm text-gray-600">
+              ¿Cómo fue este pago? Esta información ayuda al registrador a saber qué montos esperar.
+            </p>
+            <div className="grid grid-cols-1 gap-2">
+              <button onClick={() => handleValidar('completo')}
+                className="px-4 py-3 bg-green-100 text-green-700 hover:bg-green-200 rounded-lg font-medium text-left transition-colors">
+                <span className="block font-semibold">Completo</span>
+                <span className="block text-xs text-green-600">El cliente pagó exactamente el monto esperado</span>
+              </button>
+              <button onClick={() => handleValidar('incompleto')}
+                className="px-4 py-3 bg-yellow-100 text-yellow-700 hover:bg-yellow-200 rounded-lg font-medium text-left transition-colors">
+                <span className="block font-semibold">Incompleto</span>
+                <span className="block text-xs text-yellow-600">El cliente pagó menos del monto esperado</span>
+              </button>
+              <button onClick={() => handleValidar('con_excedente')}
+                className="px-4 py-3 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg font-medium text-left transition-colors">
+                <span className="block font-semibold">Con excedente</span>
+                <span className="block text-xs text-blue-600">El cliente pagó más del monto esperado</span>
+              </button>
+            </div>
+            <div className="flex justify-end pt-1">
+              <button onClick={() => { setModalTipoValidacion(false); setPagoAValidar(null) }}
+                className="btn-ghost">
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* Modal: Excedente (bloqueante) */}

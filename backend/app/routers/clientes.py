@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from app.utils.fechas import ahora_bogota
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -52,9 +52,20 @@ async def listar_clientes(
         query = query.where(Cliente.gestor_id == gestor_id)
 
     if busqueda:
-        query = query.where(
-            (Cliente.nombre.ilike(f"%{busqueda}%")) | (Cliente.apellidos.ilike(f"%{busqueda}%"))
-        )
+        # Búsqueda por palabras: "Juan Pérez" requiere que cada token aparezca
+        # en algún campo (nombre, apellidos o cédula). Permite buscar nombre
+        # completo aunque cada palabra esté en columnas distintas.
+        terminos = [t for t in busqueda.strip().split() if t]
+        if terminos:
+            condiciones = [
+                or_(
+                    Cliente.nombre.ilike(f"%{t}%"),
+                    Cliente.apellidos.ilike(f"%{t}%"),
+                    Cliente.cedula.ilike(f"%{t}%"),
+                )
+                for t in terminos
+            ]
+            query = query.where(and_(*condiciones))
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
     items = (await db.execute(query.offset((page - 1) * page_size).limit(page_size))).scalars().all()

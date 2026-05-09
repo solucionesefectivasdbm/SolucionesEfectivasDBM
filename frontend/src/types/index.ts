@@ -5,6 +5,7 @@ export type TipoCredito = 'cuota_fija' | 'abono_capital'
 export type Periodicidad = 'mensual' | 'quincenal' | 'semanal' | 'diario'
 export type TipoCuota = 'programada' | 'no_programada' | 'interes' | 'abono'
 export type DestinoExcedente = 'capital' | 'intereses'
+export type TipoValidacion = 'completo' | 'incompleto' | 'con_excedente'
 export type TipoCuenta = 'Ahorros' | 'Corriente'
 export type Momento = 'm1' | 'm2' | 'm3' | 'm4' | 'm5'
 
@@ -113,6 +114,7 @@ export interface Pago {
   fecha_pago_real: string | null
   es_excedente_a: DestinoExcedente | null
   es_ultimo_pago: boolean
+  tipo_validacion?: TipoValidacion | null
   cliente_nombre?: string | null
   numero_credito_cliente?: string | null
 }

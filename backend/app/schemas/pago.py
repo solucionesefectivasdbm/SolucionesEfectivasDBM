@@ -27,6 +27,7 @@ class PagoResponse(BaseModel):
     fecha_pago_real: Optional[date]
     es_excedente_a: Optional[DestinoExcedente]
     es_ultimo_pago: bool
+    tipo_validacion: Optional[str] = None
     cliente_nombre: Optional[str] = None
     numero_credito_cliente: Optional[str] = None
 
@@ -69,6 +70,18 @@ class PagoNoProgramadoRequest(BaseModel):
     def validar_monto(cls, v: Decimal) -> Decimal:
         if v <= 0:
             raise ValueError("El monto debe ser mayor a cero")
+        return v
+
+
+class ValidarPagoRequest(BaseModel):
+    """Recaudador / Admin: validación con tipo declarado."""
+    tipo_validacion: Optional[str] = None  # "completo" | "incompleto" | "con_excedente"
+
+    @field_validator("tipo_validacion")
+    @classmethod
+    def validar_tipo(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ("completo", "incompleto", "con_excedente"):
+            raise ValueError("tipo_validacion debe ser completo, incompleto o con_excedente")
         return v
 
 

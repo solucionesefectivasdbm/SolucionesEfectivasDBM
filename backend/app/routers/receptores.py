@@ -31,7 +31,7 @@ async def listar_receptores(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=50),
     busqueda: str = Query(""),
-    current_user: Usuario = Depends(require_role("admin")),
+    current_user: Usuario = Depends(require_role("admin", "recaudador")),
     db: AsyncSession = Depends(get_db),
 ):
     query = (

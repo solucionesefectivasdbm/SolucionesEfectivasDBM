@@ -15,8 +15,9 @@ import uuid
 from datetime import date, datetime, timezone
 from app.utils.fechas import hoy_bogota
 from decimal import Decimal
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -39,6 +40,7 @@ from app.schemas.pago import (
     PagoResponse,
     RegistrarPagoRequest,
     RegistrarPagoResponse,
+    ValidarPagoRequest,
 )
 from app.services import audit_service
 from app.services.pago_service import PagoService
@@ -112,12 +114,19 @@ async def listar_pagos(
     if excluir_periodicidad:
         query = query.where(Credito.periodicidad != excluir_periodicidad)
     if busqueda:
-        query = query.where(
-            or_(
-                Cliente.nombre.ilike(f"%{busqueda}%"),
-                Cliente.apellidos.ilike(f"%{busqueda}%"),
-            )
-        )
+        # Búsqueda por palabras: cada token debe aparecer en algún campo
+        # (nombre, apellidos o cédula). Permite buscar por nombre completo.
+        terminos = [t for t in busqueda.strip().split() if t]
+        if terminos:
+            condiciones = [
+                or_(
+                    Cliente.nombre.ilike(f"%{t}%"),
+                    Cliente.apellidos.ilike(f"%{t}%"),
+                    Cliente.cedula.ilike(f"%{t}%"),
+                )
+                for t in terminos
+            ]
+            query = query.where(and_(*condiciones))
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
 
@@ -251,13 +260,14 @@ async def confirmar_excedente(
 async def validar_pago(
     pago_id: uuid.UUID,
     request: Request,
+    body: Optional[ValidarPagoRequest] = Body(default=None),
     current_user: Usuario = Depends(require_role("admin", "recaudador")),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Recaudador/Admin marca el pago como validado (check).
-    FLUJO: este check se da ANTES de registrar montos.
-    El recaudador valida que el pago fue recibido, luego el registrador ingresa los montos.
+    Recaudador/Admin marca el pago como validado (check) y declara el tipo
+    de pago observado: completo, incompleto o con_excedente. Esa información
+    sirve de hint para el registrador.
     """
     pago, _ = await _get_pago_con_credito(db, pago_id)
 
@@ -265,11 +275,15 @@ async def validar_pago(
         raise HTTPException(status_code=422, detail="Este pago ya fue validado")
 
     pago.validado_recaudador = True
+    cambios = {"validado_recaudador": ("False", "True")}
+    if body and body.tipo_validacion is not None:
+        cambios["tipo_validacion"] = (str(pago.tipo_validacion), body.tipo_validacion)
+        pago.tipo_validacion = body.tipo_validacion
 
     await audit_service.registrar_actualizacion_campos(
         db=db, entidad="pagos", entidad_id=pago.id,
         usuario_id=current_user.id, ip_origen=get_client_ip(request),
-        cambios={"validado_recaudador": ("False", "True")},
+        cambios=cambios,
     )
     return PagoResponse.model_validate(pago)
 

@@ -94,8 +94,8 @@ export const pagosApi = {
     destino_excedente,
   }),
 
-  validar: (pagoId: string) =>
-    api.post<Pago>(`/pagos/${pagoId}/validar`),
+  validar: (pagoId: string, tipo_validacion?: 'completo' | 'incompleto' | 'con_excedente') =>
+    api.post<Pago>(`/pagos/${pagoId}/validar`, tipo_validacion ? { tipo_validacion } : {}),
 
   modificarFecha: (pagoId: string, fecha_maxima: string) =>
     api.patch<Pago>(`/pagos/${pagoId}/fecha`, { fecha_maxima }),

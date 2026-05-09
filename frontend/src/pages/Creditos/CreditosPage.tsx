@@ -43,7 +43,7 @@ export default function CreditosPage() {
   const [clienteSeleccionado, setClienteSeleccionado] = useState<Cliente | null>(null)
 
   const { register, handleSubmit, watch, reset, formState: { errors } } = useForm<CreditoForm>()
-  const { register: regEdit, handleSubmit: handleEdit } = useForm<EditForm>()
+  const { register: regEdit, handleSubmit: handleEdit, reset: resetEdit } = useForm<EditForm>()
   const tipoCreditoWatch = watch('tipo_credito')
 
   const cargar = useCallback(async () => {
@@ -253,7 +253,15 @@ export default function CreditosPage() {
                           </button>
                           {perms.isAdmin && c.activo && (
                             <>
-                              <button onClick={() => { setCreditoActual(c); setModalEditar(true) }}
+                              <button onClick={() => {
+                                setCreditoActual(c)
+                                resetEdit({
+                                  capital_prestado: c.capital_prestado,
+                                  tasa_interes_mensual: c.tasa_interes_mensual * 100,
+                                  fecha_pago_activo: '',
+                                })
+                                setModalEditar(true)
+                              }}
                                 className="p-1.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700" title="Editar">
                                 <Pencil size={13} />
                               </button>
