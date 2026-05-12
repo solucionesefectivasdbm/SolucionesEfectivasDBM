@@ -14,6 +14,7 @@ interface AuditEntry {
   valor_anterior: string | null
   valor_nuevo: string | null
   usuario_id: string
+  usuario_username: string | null
   fecha_accion: string
   ip_origen: string
 }
@@ -112,6 +113,7 @@ export default function AuditoriaPage() {
                 <thead>
                   <tr>
                     <th className="table-header">Fecha</th>
+                    <th className="table-header">Usuario</th>
                     <th className="table-header">Entidad</th>
                     <th className="table-header">Acción</th>
                     <th className="table-header">Campo</th>
@@ -124,6 +126,9 @@ export default function AuditoriaPage() {
                   {entries.map((e, i) => (
                     <tr key={e.id} className={i % 2 === 0 ? 'table-row-even' : 'table-row-odd'}>
                       <td className="table-cell text-xs whitespace-nowrap">{formatDate(e.fecha_accion)}</td>
+                      <td className="table-cell text-xs font-medium">
+                        {e.usuario_username ?? <span className="text-gray-400 font-mono">{e.usuario_id.slice(0, 8)}...</span>}
+                      </td>
                       <td className="table-cell">
                         <span className="font-mono text-xs">{e.entidad}</span>
                         <span className="block text-[10px] text-gray-400 font-mono">{e.entidad_id.slice(0, 8)}...</span>

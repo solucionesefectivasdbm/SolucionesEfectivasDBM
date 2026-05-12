@@ -52,7 +52,7 @@ export const receptoresApi = {
 
 // ─── Clientes ─────────────────────────────────────────────────────────────────
 export const clientesApi = {
-  listar: (params?: { page?: number; busqueda?: string; gestor_id?: string }) =>
+  listar: (params?: { page?: number; busqueda?: string; gestor_id?: string; al_dia?: boolean }) =>
     api.get<PaginatedResponse<Cliente>>('/clientes', { params }),
   crear: (data: object) => api.post<Cliente>('/clientes', data),
   obtener: (id: string) => api.get<Cliente>(`/clientes/${id}`),
@@ -96,6 +96,9 @@ export const pagosApi = {
 
   validar: (pagoId: string, tipo_validacion?: 'completo' | 'incompleto' | 'con_excedente') =>
     api.post<Pago>(`/pagos/${pagoId}/validar`, tipo_validacion ? { tipo_validacion } : {}),
+
+  desvalidar: (pagoId: string) =>
+    api.post<Pago>(`/pagos/${pagoId}/desvalidar`),
 
   modificarFecha: (pagoId: string, fecha_maxima: string) =>
     api.patch<Pago>(`/pagos/${pagoId}/fecha`, { fecha_maxima }),

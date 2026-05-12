@@ -5,7 +5,7 @@ import { LoadingPage, EmptyState, Paginacion, PagoBadge, ConfirmarCreacion, type
 import Modal from '@/components/ui/Modal'
 import { usePermissions } from '@/store/authStore'
 import type { Pago, Receptor, Credito, Gestor } from '@/types'
-import { Check, Calendar, User, Plus, Search, DollarSign, CalendarDays, ArrowLeft } from 'lucide-react'
+import { Check, Calendar, User, Plus, Search, DollarSign, CalendarDays, ArrowLeft, RotateCcw } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 import { useNavigate } from 'react-router-dom'
@@ -186,6 +186,17 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       toast.success('Pago validado')
       setModalTipoValidacion(false)
       setPagoAValidar(null)
+      cargarPagos()
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || 'Error')
+    }
+  }
+
+  const handleDesvalidar = async (pago: Pago) => {
+    if (!confirm(`¿Revertir el check de la cuota #${pago.numero_cuota} de ${pago.cliente_nombre}?`)) return
+    try {
+      await pagosApi.desvalidar(pago.id)
+      toast.success('Check revertido')
       cargarPagos()
     } catch (e: any) {
       toast.error(e.response?.data?.detail || 'Error')
@@ -430,6 +441,16 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                                 className="p-1.5 bg-success text-white rounded-lg hover:opacity-90 transition-opacity"
                               >
                                 <Check size={14} />
+                              </button>
+                            )}
+                            {/* Revertir check — solo si validado, sin montos */}
+                            {perms.canValidarPago && !p.pagado && p.validado_recaudador && p.capital_pagado === 0 && p.interes_pagado === 0 && (
+                              <button
+                                title="Revertir check"
+                                onClick={() => handleDesvalidar(p)}
+                                className="p-1.5 bg-orange-500 text-white rounded-lg hover:opacity-90 transition-opacity"
+                              >
+                                <RotateCcw size={14} />
                               </button>
                             )}
                             {/* Paso 2: Registrar montos — Solo si ya fue validado */}

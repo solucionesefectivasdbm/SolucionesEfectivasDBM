@@ -24,6 +24,7 @@ export default function ClientesPage() {
   const [page, setPage] = useState(1)
   const [busqueda, setBusqueda] = useState('')
   const [filtroGestor, setFiltroGestor] = useState('')
+  const [filtroAlDia, setFiltroAlDia] = useState<'todos' | 'al_dia' | 'no_al_dia'>('todos')
   const [loading, setLoading] = useState(true)
   const [modalForm, setModalForm] = useState(false)
   const [modalEliminar, setModalEliminar] = useState(false)
@@ -43,13 +44,14 @@ export default function ClientesPage() {
   const cargar = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await clientesApi.listar({ page, busqueda, gestor_id: filtroGestor || undefined })
+      const al_dia = filtroAlDia === 'al_dia' ? true : filtroAlDia === 'no_al_dia' ? false : undefined
+      const res = await clientesApi.listar({ page, busqueda, gestor_id: filtroGestor || undefined, al_dia })
       setClientes(res.data.items)
       setTotal(res.data.total)
       setPages(res.data.pages)
     } catch { toast.error('Error al cargar clientes') }
     finally { setLoading(false) }
-  }, [page, busqueda, filtroGestor])
+  }, [page, busqueda, filtroGestor, filtroAlDia])
 
   useEffect(() => { cargar() }, [cargar])
 
@@ -182,6 +184,12 @@ export default function ClientesPage() {
           onChange={e => { setFiltroGestor(e.target.value); setPage(1) }}>
           <option value="">Todos los gestores</option>
           {gestores.map(g => <option key={g.id} value={g.id}>{g.nombre} {g.apellidos}</option>)}
+        </select>
+        <select className="input max-w-[160px]" value={filtroAlDia}
+          onChange={e => { setFiltroAlDia(e.target.value as 'todos' | 'al_dia' | 'no_al_dia'); setPage(1) }}>
+          <option value="todos">Al día y atraso</option>
+          <option value="al_dia">Solo al día</option>
+          <option value="no_al_dia">Solo en atraso</option>
         </select>
       </div>
 

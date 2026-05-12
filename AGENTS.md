@@ -1,31 +1,37 @@
 # Code Review Rules
 
+Reglas que reflejan los patrones reales del proyecto. No introducir convenciones
+nuevas sin alinear primero al resto del codebase.
+
 ## Python (Backend)
-- Use SQLAlchemy 2.x async patterns (`AsyncSession`, `await db.execute(...)`).
-- All monetary calculations must use `Decimal`, never `float`.
-- For paginated endpoints, `ORDER BY` MUST include a deterministic tiebreaker
-  (typically the primary key) to avoid inconsistent pagination when multiple
-  rows share the leading ordering columns.
-- Soft deletes are handled via `deleted_at IS NULL` filters.
-- Audit every mutation through `audit_service.registrar_*` helpers; do not
-  insert into `audit_log` directly.
-- Never log raw passwords or `password_hash` values.
+- Usar SQLAlchemy 2.x async (`AsyncSession`, `await db.execute(...)`).
+- Todo cálculo financiero del backend usa `Decimal`, nunca `float`.
+- En endpoints paginados, el `ORDER BY` debe terminar en una columna única
+  (típicamente la PK) como tiebreaker, para evitar paginación inconsistente.
+- Soft delete vía `deleted_at IS NULL`.
+- Toda mutación pasa por los helpers de `audit_service.registrar_*`; nunca
+  insertar en `audit_log` directamente.
+- Nunca loguear `password` crudo ni `password_hash`.
 
 ## TypeScript (Frontend)
-- Prefer `const` and `let`; never `var`.
-- Use functional React components with named exports.
-- The access token lives in the Zustand store (memory only) — never in
-  `localStorage` or `sessionStorage`.
-- All API calls go through the shared axios instance with `withCredentials: true`.
+- Las páginas usan `export default function PageName()` (es el patrón
+  establecido — no migrar a named exports a menos que se refactorice todo).
+- Componentes funcionales con hooks.
+- Estado global con Zustand; el access token vive SOLO en memoria del store.
+- Llamadas a API a través de la instancia compartida de axios.
+- `parseFloat` es aceptable para entrada de UI (formularios), pero el
+  resultado canónico de cálculos vive en el backend con `Decimal`. El frontend
+  solo muestra/lee valores ya calculados.
+- `catch (e: any)` con manejo a través de `e.response?.data?.detail` es el
+  patrón establecido para errores de axios.
 
-## Migrations
-- Schema changes that need to apply to existing rows must be added to the
-  `startup_create_tables` hook in `backend/app/main.py` with an idempotent
-  check (e.g. `information_schema.columns` lookup before `ALTER TABLE`).
-- One-time data migrations should be exposed as a temporary admin-only POST
-  endpoint, executed once, then removed in a follow-up commit.
+## Migraciones
+- Cambios de esquema que apliquen a filas existentes van en el hook
+  `startup_create_tables` de `backend/app/main.py` con check idempotente
+  (`information_schema.columns` antes de `ALTER TABLE`).
+- Migraciones de datos puntuales se exponen como endpoint temporal admin-only
+  POST, se ejecutan una vez, y se eliminan en un commit posterior.
 
 ## Commits
-- Use conventional commit messages in Spanish (matching project history).
-- Group related backend + frontend changes in a single commit when they
-  represent one logical change.
+- Mensajes en español, en línea con el historial del repo.
+- Agrupar cambios relacionados de backend y frontend en un solo commit.
