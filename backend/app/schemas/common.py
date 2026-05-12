@@ -29,6 +29,7 @@ class AuditLogResponse(BaseModel):
     valor_anterior: Optional[str]
     valor_nuevo: Optional[str]
     usuario_id: uuid.UUID
+    usuario_username: Optional[str] = None
     fecha_accion: datetime
     ip_origen: str
 

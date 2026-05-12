@@ -260,6 +260,95 @@ async def confirmar_excedente(
     return result
 
 
+@router.post("/{pago_id}/desvalidar", response_model=PagoResponse)
+async def desvalidar_pago(
+    pago_id: uuid.UUID,
+    request: Request,
+    current_user: Usuario = Depends(require_role("admin", "recaudador")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Revierte la validación (check) de un pago.
+    Solo permitido si el pago no ha sido pagado y no tiene montos registrados.
+    """
+    pago, _ = await _get_pago_con_credito(db, pago_id)
+
+    if pago.pagado:
+        raise HTTPException(
+            status_code=422,
+            detail="No se puede revertir: el pago ya fue registrado con montos.",
+        )
+    if pago.capital_pagado > 0 or pago.interes_pagado > 0:
+        raise HTTPException(
+            status_code=422,
+            detail="No se puede revertir: el pago tiene montos registrados.",
+        )
+    if not pago.validado_recaudador:
+        raise HTTPException(status_code=422, detail="Este pago no estaba validado.")
+
+    tipo_anterior = pago.tipo_validacion
+    pago.validado_recaudador = False
+    pago.tipo_validacion = None
+
+    cambios = {"validado_recaudador": ("True", "False")}
+    if tipo_anterior is not None:
+        cambios["tipo_validacion"] = (str(tipo_anterior), "None")
+
+    await audit_service.registrar_actualizacion_campos(
+        db=db, entidad="pagos", entidad_id=pago.id,
+        usuario_id=current_user.id, ip_origen=get_client_ip(request),
+        cambios=cambios,
+    )
+    return PagoResponse.model_validate(pago)
+
+
+@router.post("/revertir-validaciones-bulk")
+async def revertir_validaciones_bulk(
+    request: Request,
+    anio: int,
+    mes: int,
+    momento: str,
+    current_user: Usuario = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    ENDPOINT TEMPORAL — Revierte validado_recaudador para todos los pagos del
+    período sin montos registrados.
+    """
+    if momento not in ("m1", "m2", "m3", "m4", "m5"):
+        raise HTTPException(status_code=400, detail="Momento inválido")
+
+    fecha_inicio, fecha_fin = get_periodo_momento(anio, mes, momento)
+    pagos = (await db.execute(
+        select(Pago).where(
+            Pago.deleted_at == None,  # noqa: E711
+            Pago.fecha_maxima >= fecha_inicio,
+            Pago.fecha_maxima <= fecha_fin,
+            Pago.validado_recaudador == True,  # noqa: E712
+            Pago.pagado == False,  # noqa: E712
+            Pago.capital_pagado == 0,
+            Pago.interes_pagado == 0,
+        )
+    )).scalars().all()
+
+    ip = get_client_ip(request)
+    revertidos = 0
+    for pago in pagos:
+        antes_tipo = pago.tipo_validacion
+        pago.validado_recaudador = False
+        pago.tipo_validacion = None
+        cambios = {"validado_recaudador": ("True", "False")}
+        if antes_tipo is not None:
+            cambios["tipo_validacion"] = (str(antes_tipo), "None")
+        await audit_service.registrar_actualizacion_campos(
+            db=db, entidad="pagos", entidad_id=pago.id,
+            usuario_id=current_user.id, ip_origen=ip, cambios=cambios,
+        )
+        revertidos += 1
+
+    return {"periodo": f"{anio}-{mes:02d} {momento}", "revertidos": revertidos}
+
+
 @router.post("/{pago_id}/validar", response_model=PagoResponse)
 async def validar_pago(
     pago_id: uuid.UUID,

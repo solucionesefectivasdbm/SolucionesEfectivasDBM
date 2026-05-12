@@ -34,10 +34,13 @@ async def listar_clientes(
     page_size: int = Query(50, ge=1, le=50),
     busqueda: str = Query(""),
     gestor_id: uuid.UUID | None = Query(None),
+    al_dia: bool | None = Query(None, description="True solo al día, False solo no al día, None todos"),
     current_user: Usuario = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Cliente).where(Cliente.deleted_at == None)  # noqa: E711
+    if al_dia is not None:
+        query = query.where(Cliente.al_dia == al_dia)
 
     # Gestor solo ve sus clientes
     if current_user.tipo_usuario == TipoUsuario.gestor:

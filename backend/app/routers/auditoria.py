@@ -46,13 +46,26 @@ async def listar_auditoria(
     if fecha_hasta:
         query = query.where(AuditLog.fecha_accion <= fecha_hasta)
 
-    query = query.order_by(AuditLog.fecha_accion.desc())
+    query = query.order_by(AuditLog.fecha_accion.desc(), AuditLog.id)
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
-    items = (await db.execute(query.offset((page - 1) * page_size).limit(page_size))).scalars().all()
+
+    # Traer en paralelo el username del usuario que hizo cada cambio
+    rows = (await db.execute(
+        query.add_columns(Usuario.username.label("usuario_username"))
+        .join(Usuario, AuditLog.usuario_id == Usuario.id, isouter=True)
+        .offset((page - 1) * page_size).limit(page_size)
+    )).all()
+
+    items = []
+    for row in rows:
+        log = row[0]
+        data = AuditLogResponse.model_validate(log).model_dump()
+        data["usuario_username"] = row.usuario_username
+        items.append(AuditLogResponse.model_validate(data))
 
     return PaginatedResponse(
-        items=[AuditLogResponse.model_validate(a) for a in items],
+        items=items,
         total=total, page=page, page_size=page_size,
         pages=math.ceil(total / page_size) if total else 0,
     )
