@@ -389,13 +389,21 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                       <tr
                         key={p.id}
                         className={clsx(
-                          i % 2 === 0 ? 'table-row-even' : 'table-row-odd',
-                          isVencido(p) && 'bg-red-50',
+                          p.es_proyectada
+                            ? 'bg-gray-50 text-gray-400'
+                            : i % 2 === 0 ? 'table-row-even' : 'table-row-odd',
+                          !p.es_proyectada && isVencido(p) && 'bg-red-50',
                           p.es_ultimo_pago && 'border-l-4 border-l-accent',
                         )}
+                        title={p.es_proyectada ? `Proyectada — ${p.razon_bloqueo ?? ''}` : undefined}
                       >
-                        <td className="table-cell font-mono font-semibold">#{p.numero_cuota}</td>
-                        <td className="table-cell font-medium text-gray-800">{p.cliente_nombre || '—'}</td>
+                        <td className="table-cell font-mono font-semibold">
+                          {p.es_proyectada && <span className="mr-1">🔒</span>}
+                          #{p.numero_cuota}
+                        </td>
+                        <td className={clsx('table-cell font-medium', p.es_proyectada ? 'text-gray-500' : 'text-gray-800')}>
+                          {p.cliente_nombre || '—'}
+                        </td>
                         <td className="table-cell font-mono text-xs text-gray-500">{p.numero_credito_cliente || p.credito_id.slice(0, 8) + '...'}</td>
                         <td className="table-cell">
                           <span className="badge-info capitalize">{p.tipo_cuota.replace('_', ' ')}</span>
@@ -414,8 +422,12 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                           </span>
                         </td>
                         <td className="table-cell">
-                          <PagoBadge pagado={p.pagado} validado={p.validado_recaudador} />
-                          {p.tipo_validacion && (
+                          {p.es_proyectada ? (
+                            <span className="badge-warning" title={p.razon_bloqueo ?? ''}>Bloqueada</span>
+                          ) : (
+                            <PagoBadge pagado={p.pagado} validado={p.validado_recaudador} />
+                          )}
+                          {!p.es_proyectada && p.tipo_validacion && (
                             <span
                               className={clsx(
                                 'ml-1 text-xs px-2 py-0.5 rounded-full font-medium',
@@ -428,13 +440,16 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                                 p.tipo_validacion.charAt(0).toUpperCase() + p.tipo_validacion.slice(1)}
                             </span>
                           )}
-                          {isVencido(p) && <span className="badge-danger ml-1">Vencido</span>}
+                          {!p.es_proyectada && isVencido(p) && <span className="badge-danger ml-1">Vencido</span>}
                           {p.es_ultimo_pago && <span className="badge-warning ml-1">Última</span>}
                         </td>
                         <td className="table-cell">
                           <div className="flex items-center gap-1">
+                            {p.es_proyectada && (
+                              <span className="text-xs text-gray-400 italic">{p.razon_bloqueo}</span>
+                            )}
                             {/* Paso 1: Validar (check) — Recaudador/Admin primero */}
-                            {perms.canValidarPago && !p.pagado && !p.validado_recaudador && (
+                            {!p.es_proyectada && perms.canValidarPago && !p.pagado && !p.validado_recaudador && (
                               <button
                                 title="Validar pago (check)"
                                 onClick={() => abrirValidar(p)}
@@ -444,7 +459,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                               </button>
                             )}
                             {/* Revertir check — solo si validado, sin montos */}
-                            {perms.canValidarPago && !p.pagado && p.validado_recaudador && p.capital_pagado === 0 && p.interes_pagado === 0 && (
+                            {!p.es_proyectada && perms.canValidarPago && !p.pagado && p.validado_recaudador && p.capital_pagado === 0 && p.interes_pagado === 0 && (
                               <button
                                 title="Revertir check"
                                 onClick={() => handleDesvalidar(p)}
@@ -454,7 +469,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                               </button>
                             )}
                             {/* Paso 2: Registrar montos — Solo si ya fue validado */}
-                            {perms.canRegistrarPago && !p.pagado && p.validado_recaudador && (
+                            {!p.es_proyectada && perms.canRegistrarPago && !p.pagado && p.validado_recaudador && (
                               <button
                                 title="Registrar pago"
                                 onClick={() => {
@@ -469,7 +484,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                               </button>
                             )}
                             {/* Modificar fecha */}
-                            {perms.canValidarPago && !p.pagado && (
+                            {!p.es_proyectada && perms.canValidarPago && !p.pagado && (
                               <button
                                 title="Modificar fecha"
                                 onClick={() => {
@@ -483,7 +498,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                               </button>
                             )}
                             {/* Modificar receptor */}
-                            {perms.canValidarPago && (
+                            {!p.es_proyectada && perms.canValidarPago && (
                               <button
                                 title="Modificar receptor"
                                 onClick={() => {

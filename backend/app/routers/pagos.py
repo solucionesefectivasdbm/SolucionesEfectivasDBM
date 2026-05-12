@@ -44,7 +44,7 @@ from app.schemas.pago import (
 )
 from app.services import audit_service
 from app.services.pago_service import PagoService
-from app.utils.momentos import get_periodo_momento
+from app.utils.momentos import get_momento, get_periodo_momento
 
 router = APIRouter(prefix="/pagos", tags=["Pagos"])
 
@@ -128,38 +128,263 @@ async def listar_pagos(
             ]
             query = query.where(and_(*condiciones))
 
-    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
-
-    # Query extendida: traer Pago + Cliente.nombre + Cliente.apellidos + Credito.numero_credito_cliente
+    # Traer TODAS las cuotas reales (sin paginar), con datos del cliente y crédito.
+    # Necesitamos todas para mergearlas con las virtuales y paginar en memoria.
     query_ext = (
         query.add_columns(
             Cliente.nombre.label("cliente_nombre"),
             Cliente.apellidos.label("cliente_apellidos"),
             Credito.numero_credito_cliente,
         )
-        # ORDER BY debe ser determinista: muchos pagos comparten
-        # (fecha_maxima, numero_cuota), así que sin Pago.id como tiebreaker
-        # PostgreSQL paginaba de forma inconsistente — el mismo pago podía
-        # aparecer en varias páginas y otros desaparecían.
         .order_by(Pago.fecha_maxima, Pago.numero_cuota, Pago.id)
-        .offset((page - 1) * page_size)
-        .limit(page_size)
     )
     rows = (await db.execute(query_ext)).all()
 
-    items = []
+    reales: list[dict] = []
     for row in rows:
         pago = row[0]
         data = PagoResponse.model_validate(pago).model_dump()
         data["cliente_nombre"] = f"{row.cliente_nombre} {row.cliente_apellidos}"
         data["numero_credito_cliente"] = row.numero_credito_cliente
-        items.append(PagoResponse.model_validate(data))
+        reales.append(data)
+
+    # ── Filas virtuales (cuotas proyectadas que deberían existir pero no se
+    #    han generado por estar bloqueadas detrás de una cuota pendiente) ──
+    # No proyectamos cuando hay filtro de receptor (las virtuales no tienen
+    # receptor asignado todavía, así que no aplicarían al filtro).
+    virtuales = await _calcular_virtuales(
+        db=db,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+        current_user=current_user,
+        gestor_id_filtro=gestor_id,
+        cliente_id_filtro=cliente_id,
+        receptor_id_filtro=receptor_id,
+        solo_periodicidad=solo_periodicidad,
+        excluir_periodicidad=excluir_periodicidad,
+        busqueda=busqueda,
+    )
+
+    # Merge + sort + paginar en memoria
+    todos = reales + virtuales
+    todos.sort(key=lambda x: (x["fecha_maxima"], x["numero_cuota"], str(x["id"])))
+
+    total = len(todos)
+    inicio = (page - 1) * page_size
+    page_items = todos[inicio : inicio + page_size]
+
+    items = [PagoResponse.model_validate(x) for x in page_items]
 
     return PaginatedResponse(
         items=items,
         total=total, page=page, page_size=page_size,
         pages=math.ceil(total / page_size) if total else 0,
     )
+
+
+async def _calcular_virtuales(
+    db: AsyncSession,
+    fecha_inicio: date,
+    fecha_fin: date,
+    current_user: Usuario,
+    gestor_id_filtro,
+    cliente_id_filtro,
+    receptor_id_filtro,
+    solo_periodicidad,
+    excluir_periodicidad,
+    busqueda: str,
+) -> list[dict]:
+    """
+    Computa filas "virtuales" para cada crédito activo que debería tener una
+    cuota en el período pero no la tiene generada (porque la cuota anterior
+    está pendiente). Respeta los mismos filtros que el listado regular.
+
+    Si hay filtro de receptor activo, no se generan virtuales (las virtuales
+    no tienen receptor asignado todavía).
+    """
+    from datetime import timedelta
+    from decimal import Decimal, ROUND_HALF_UP
+    from app.models.credito import Periodicidad, TipoCredito
+    from app.services.credito_service import _periodos_por_mes
+
+    if receptor_id_filtro is not None:
+        return []
+
+    # Créditos activos que matchean los filtros del listado.
+    cq = (
+        select(Credito)
+        .join(Cliente, Credito.cliente_id == Cliente.id)
+        .where(
+            Credito.activo == True,  # noqa: E712
+            Credito.deleted_at == None,  # noqa: E711
+            Cliente.deleted_at == None,  # noqa: E711
+        )
+    )
+
+    if current_user.tipo_usuario == TipoUsuario.gestor:
+        gestor = (await db.execute(
+            select(Gestor).where(Gestor.user_id == current_user.id)
+        )).scalar_one_or_none()
+        if gestor:
+            cq = cq.where(Cliente.gestor_id == gestor.id)
+
+    if gestor_id_filtro:
+        cq = cq.where(Cliente.gestor_id == gestor_id_filtro)
+    if cliente_id_filtro:
+        cq = cq.where(Credito.cliente_id == cliente_id_filtro)
+    if solo_periodicidad:
+        cq = cq.where(Credito.periodicidad == solo_periodicidad)
+    if excluir_periodicidad:
+        cq = cq.where(Credito.periodicidad != excluir_periodicidad)
+    if busqueda:
+        terminos = [t for t in busqueda.strip().split() if t]
+        if terminos:
+            condiciones = [
+                or_(
+                    Cliente.nombre.ilike(f"%{t}%"),
+                    Cliente.apellidos.ilike(f"%{t}%"),
+                    Cliente.cedula.ilike(f"%{t}%"),
+                )
+                for t in terminos
+            ]
+            cq = cq.where(and_(*condiciones))
+
+    creditos_rows = (await db.execute(
+        cq.add_columns(
+            Cliente.nombre.label("cliente_nombre"),
+            Cliente.apellidos.label("cliente_apellidos"),
+        )
+    )).all()
+
+    if not creditos_rows:
+        return []
+
+    credito_ids = [row[0].id for row in creditos_rows]
+
+    # Cuotas existentes por crédito (numero_cuota + estado pagado)
+    existentes_rows = (await db.execute(
+        select(Pago.credito_id, Pago.numero_cuota, Pago.pagado).where(
+            Pago.deleted_at == None,  # noqa: E711
+            Pago.credito_id.in_(credito_ids),
+        )
+    )).all()
+    existentes_map: dict = {}
+    bloqueador_map: dict = {}  # credito_id -> (numero_cuota más alto pendiente)
+    for cid, nc, pagado in existentes_rows:
+        existentes_map.setdefault(cid, set()).add(nc)
+        if not pagado:
+            actual = bloqueador_map.get(cid)
+            if actual is None or nc > actual:
+                bloqueador_map[cid] = nc
+
+    delta_dias = {
+        Periodicidad.mensual: 30,
+        Periodicidad.quincenal: 14,
+        Periodicidad.semanal: 7,
+        Periodicidad.diario: 1,
+    }
+
+    virtuales: list[dict] = []
+
+    for row in creditos_rows:
+        credito = row[0]
+        cliente_nombre = f"{row.cliente_nombre} {row.cliente_apellidos}"
+        delta = delta_dias[credito.periodicidad]
+        ppm = Decimal(_periodos_por_mes(credito.periodicidad))
+
+        existentes = existentes_map.get(credito.id, set())
+        bloqueador = bloqueador_map.get(credito.id)
+
+        # Si no hay bloqueador (todas las cuotas existentes están pagadas) y la
+        # próxima ya está por generarse, no proyectamos — el sistema la creará
+        # cuando corresponda.
+        if bloqueador is None:
+            continue
+
+        # Proyectar cuota por cuota hasta exceder fecha_fin.
+        n = 1
+        # Safety cap
+        max_iter = 2000
+        while max_iter > 0:
+            max_iter -= 1
+            fecha_proy = credito.fecha_inicial_pago + timedelta(days=(n - 1) * delta)
+            if fecha_proy > fecha_fin:
+                break
+            if (
+                credito.tipo_credito == TipoCredito.cuota_fija
+                and credito.numero_cuotas is not None
+                and n > credito.numero_cuotas
+            ):
+                break
+
+            if fecha_proy >= fecha_inicio and n not in existentes:
+                # Computar valores estimados según tipo y periodicidad
+                if credito.tipo_credito == TipoCredito.cuota_fija and credito.numero_cuotas:
+                    capital_x = (credito.capital_prestado / Decimal(credito.numero_cuotas)).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+                    interes_x = (credito.capital_prestado * credito.tasa_interes_mensual / ppm).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+                    monto = (capital_x + interes_x).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    tipo_cuota_str = "programada"
+                    capital_a_pagar = capital_x
+                    interes_a_pagar = interes_x
+                else:
+                    # abono_capital
+                    interes_est = (credito.saldo_capital * credito.tasa_interes_mensual / ppm).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+                    abono = credito.abono_minimo if credito.abono_minimo else Decimal("0.00")
+                    if credito.periodicidad == Periodicidad.mensual:
+                        monto = (interes_est + abono).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                        tipo_cuota_str = "programada"
+                        capital_a_pagar = abono
+                        interes_a_pagar = interes_est
+                    else:
+                        if n % 2 == 1:
+                            tipo_cuota_str = "interes"
+                            monto = interes_est
+                            capital_a_pagar = Decimal("0.00")
+                            interes_a_pagar = interes_est
+                        else:
+                            tipo_cuota_str = "abono"
+                            monto = abono
+                            capital_a_pagar = abono
+                            interes_a_pagar = Decimal("0.00")
+
+                # UUID determinista para esta combinación (credito_id, numero_cuota).
+                # Permite que React lo use como key consistente entre requests.
+                virtual_id = uuid.uuid5(uuid.NAMESPACE_OID, f"{credito.id}-{n}")
+
+                virtuales.append({
+                    "id": virtual_id,
+                    "credito_id": credito.id,
+                    "numero_cuota": n,
+                    "tipo_cuota": tipo_cuota_str,
+                    "monto_a_pagar": monto,
+                    "capital_a_pagar": capital_a_pagar,
+                    "interes_a_pagar": interes_a_pagar,
+                    "capital_pagado": Decimal("0.00"),
+                    "interes_pagado": Decimal("0.00"),
+                    "momento": get_momento(fecha_proy),
+                    "fecha_maxima": fecha_proy,
+                    "receptor_id": None,
+                    "pagado": False,
+                    "validado_recaudador": False,
+                    "fecha_pago_real": None,
+                    "es_excedente_a": None,
+                    "es_ultimo_pago": False,
+                    "tipo_validacion": None,
+                    "cliente_nombre": cliente_nombre,
+                    "numero_credito_cliente": credito.numero_credito_cliente,
+                    "es_proyectada": True,
+                    "razon_bloqueo": f"Cuota #{bloqueador} pendiente",
+                })
+
+            n += 1
+
+    return virtuales
 
 
 @router.post("/{pago_id}/registrar", response_model=RegistrarPagoResponse)

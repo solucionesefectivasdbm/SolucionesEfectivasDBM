@@ -30,6 +30,9 @@ class PagoResponse(BaseModel):
     tipo_validacion: Optional[str] = None
     cliente_nombre: Optional[str] = None
     numero_credito_cliente: Optional[str] = None
+    # Campos virtuales: solo presentes en filas proyectadas (no existen en BD)
+    es_proyectada: bool = False
+    razon_bloqueo: Optional[str] = None
 
 
 class RegistrarPagoRequest(BaseModel):

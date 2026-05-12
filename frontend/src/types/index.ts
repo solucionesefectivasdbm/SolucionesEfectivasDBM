@@ -117,6 +117,8 @@ export interface Pago {
   tipo_validacion?: TipoValidacion | null
   cliente_nombre?: string | null
   numero_credito_cliente?: string | null
+  es_proyectada?: boolean
+  razon_bloqueo?: string | null
 }
 
 export interface RegistrarPagoResponse {
