@@ -58,7 +58,7 @@ async def listar_gestores(
 
     total = (await db.execute(count_query)).scalar()
     items = (await db.execute(
-        query.offset((page - 1) * page_size).limit(page_size)
+        query.order_by(Gestor.nombre, Gestor.id).offset((page - 1) * page_size).limit(page_size)
     )).scalars().all()
 
     return PaginatedResponse(

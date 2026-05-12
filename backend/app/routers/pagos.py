@@ -137,7 +137,11 @@ async def listar_pagos(
             Cliente.apellidos.label("cliente_apellidos"),
             Credito.numero_credito_cliente,
         )
-        .order_by(Pago.fecha_maxima, Pago.numero_cuota)
+        # ORDER BY debe ser determinista: muchos pagos comparten
+        # (fecha_maxima, numero_cuota), así que sin Pago.id como tiebreaker
+        # PostgreSQL paginaba de forma inconsistente — el mismo pago podía
+        # aparecer en varias páginas y otros desaparecían.
+        .order_by(Pago.fecha_maxima, Pago.numero_cuota, Pago.id)
         .offset((page - 1) * page_size)
         .limit(page_size)
     )

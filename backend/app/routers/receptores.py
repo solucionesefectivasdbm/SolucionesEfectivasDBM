@@ -43,7 +43,9 @@ async def listar_receptores(
         query = query.where(Receptor.nombre.ilike(f"%{busqueda}%"))
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
-    items = (await db.execute(query.offset((page - 1) * page_size).limit(page_size))).scalars().all()
+    items = (await db.execute(
+        query.order_by(Receptor.nombre, Receptor.id).offset((page - 1) * page_size).limit(page_size)
+    )).scalars().all()
 
     return PaginatedResponse(
         items=[ReceptorResponse.model_validate(r) for r in items],

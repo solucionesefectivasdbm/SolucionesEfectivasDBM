@@ -52,7 +52,7 @@ async def listar_usuarios(
     total = total_result.scalar()
 
     items_result = await db.execute(
-        query.offset((page - 1) * page_size).limit(page_size)
+        query.order_by(Usuario.username, Usuario.id).offset((page - 1) * page_size).limit(page_size)
     )
     items = items_result.scalars().all()
 

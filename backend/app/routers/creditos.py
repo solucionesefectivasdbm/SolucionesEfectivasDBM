@@ -82,7 +82,9 @@ async def listar_creditos(
             query = query.where(and_(*condiciones))
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
-    items = (await db.execute(query.offset((page - 1) * page_size).limit(page_size))).scalars().all()
+    items = (await db.execute(
+        query.order_by(Credito.created_at.desc(), Credito.id).offset((page - 1) * page_size).limit(page_size)
+    )).scalars().all()
 
     return PaginatedResponse(
         items=[CreditoResponse.model_validate(c) for c in items],
