@@ -31,11 +31,12 @@ export function EmptyState({ message }: { message: string }) {
   )
 }
 
-// Badge de estado pago
+// Badge de estado pago.
+// Flujo: pendiente → validado (check del recaudador) → pagado (registro de montos).
 export function PagoBadge({ pagado, validado }: { pagado: boolean; validado: boolean }) {
-  if (!pagado) return <span className="badge-warning">Pendiente</span>
-  if (pagado && !validado) return <span className="badge-info">Registrado</span>
-  return <span className="badge-success">Validado</span>
+  if (pagado) return <span className="badge-success">Pagado</span>
+  if (validado) return <span className="badge-info">Validado</span>
+  return <span className="badge-warning">Pendiente</span>
 }
 
 // Badge mora
