@@ -458,8 +458,9 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                                 <Check size={14} />
                               </button>
                             )}
-                            {/* Revertir check — solo si validado, sin montos */}
-                            {!p.es_proyectada && perms.canValidarPago && !p.pagado && p.validado_recaudador && p.capital_pagado === 0 && p.interes_pagado === 0 && (
+                            {/* Revertir check — visible si está validado y no pagado.
+                                Backend valida que no haya montos registrados. */}
+                            {!p.es_proyectada && perms.canValidarPago && !p.pagado && p.validado_recaudador && (
                               <button
                                 title="Revertir check"
                                 onClick={() => handleDesvalidar(p)}
