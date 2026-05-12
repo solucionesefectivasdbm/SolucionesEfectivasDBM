@@ -124,7 +124,6 @@ export default function ClientesPage() {
       { label: 'Correo', value: datosPendientes.correo_electronico || '—' },
       { label: 'Gestor', value: gestor ? `${gestor.nombre} ${gestor.apellidos}` : '—' },
       { label: 'Afiliación militar', value: datosPendientes.afiliacion_militar ? 'Sí' : 'No' },
-      { label: 'Al día', value: datosPendientes.al_dia ? 'Sí' : 'No' },
     ]
   }
 
@@ -289,10 +288,9 @@ export default function ClientesPage() {
               <input type="checkbox" {...register('afiliacion_militar')} className="w-4 h-4" />
               Afiliación militar
             </label>
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
-              <input type="checkbox" {...register('al_dia')} className="w-4 h-4" />
-              Al día
-            </label>
+            <span className="text-xs text-gray-400 italic">
+              Estado "al día" se calcula automáticamente según pagos vencidos pendientes.
+            </span>
           </div>
           <div className="col-span-2 flex gap-3 justify-end pt-2">
             <button type="button" onClick={() => setModalForm(false)} className="btn-ghost">Cancelar</button>

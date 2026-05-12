@@ -13,11 +13,13 @@ from app.dependencies import get_client_ip, get_current_user, require_role
 from app.models.cliente import Cliente
 from app.models.credito import Credito
 from app.models.gestor import Gestor
+from app.models.pago import Pago
 from app.models.usuario import TipoUsuario, Usuario
 from app.schemas.cliente import ClienteCreate, ClienteResponse, ClienteUpdate
 from app.schemas.common import PaginatedResponse
 from app.services import audit_service
 from app.services.credito_service import sincronizar_prefijos_por_nombre
+from app.utils.fechas import hoy_bogota
 
 router = APIRouter(prefix="/clientes", tags=["Clientes"])
 
@@ -39,8 +41,26 @@ async def listar_clientes(
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Cliente).where(Cliente.deleted_at == None)  # noqa: E711
-    if al_dia is not None:
-        query = query.where(Cliente.al_dia == al_dia)
+
+    # "Al día" se computa automáticamente: cliente está al día si NO tiene
+    # ningún pago vencido y sin pagar. El campo persistido en BD ya no se
+    # usa para filtrar — se sobrescribe en el response con el valor real.
+    hoy = hoy_bogota()
+    atrasados_subq = (
+        select(Credito.cliente_id)
+        .join(Pago, Pago.credito_id == Credito.id)
+        .where(
+            Credito.deleted_at == None,  # noqa: E711
+            Pago.deleted_at == None,  # noqa: E711
+            Pago.pagado == False,  # noqa: E712
+            Pago.fecha_maxima < hoy,
+        )
+        .distinct()
+    )
+    if al_dia is True:
+        query = query.where(~Cliente.id.in_(atrasados_subq))
+    elif al_dia is False:
+        query = query.where(Cliente.id.in_(atrasados_subq))
 
     # Gestor solo ve sus clientes
     if current_user.tipo_usuario == TipoUsuario.gestor:
@@ -75,8 +95,31 @@ async def listar_clientes(
         query.order_by(Cliente.created_at.desc(), Cliente.id).offset((page - 1) * page_size).limit(page_size)
     )).scalars().all()
 
+    # Computar al_dia real para los clientes de la página actual.
+    ids_pagina = [c.id for c in items]
+    atrasados_set: set = set()
+    if ids_pagina:
+        atrasados_rows = await db.execute(
+            select(Credito.cliente_id)
+            .join(Pago, Pago.credito_id == Credito.id)
+            .where(
+                Credito.cliente_id.in_(ids_pagina),
+                Credito.deleted_at == None,  # noqa: E711
+                Pago.deleted_at == None,  # noqa: E711
+                Pago.pagado == False,  # noqa: E712
+                Pago.fecha_maxima < hoy,
+            )
+            .distinct()
+        )
+        atrasados_set = set(atrasados_rows.scalars().all())
+
+    response_items = []
+    for c in items:
+        c.al_dia = c.id not in atrasados_set
+        response_items.append(ClienteResponse.model_validate(c))
+
     return PaginatedResponse(
-        items=[ClienteResponse.model_validate(c) for c in items],
+        items=response_items,
         total=total, page=page, page_size=page_size,
         pages=math.ceil(total / page_size) if total else 0,
     )
@@ -142,6 +185,22 @@ async def obtener_cliente(
     cliente = (await db.execute(query)).scalar_one_or_none()
     if not cliente:
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
+
+    # Computar al_dia
+    hoy = hoy_bogota()
+    tiene_atraso = (await db.execute(
+        select(Pago.id)
+        .join(Credito, Pago.credito_id == Credito.id)
+        .where(
+            Credito.cliente_id == cliente.id,
+            Credito.deleted_at == None,  # noqa: E711
+            Pago.deleted_at == None,  # noqa: E711
+            Pago.pagado == False,  # noqa: E712
+            Pago.fecha_maxima < hoy,
+        )
+        .limit(1)
+    )).scalar_one_or_none()
+    cliente.al_dia = tiene_atraso is None
     return ClienteResponse.model_validate(cliente)
 
 
