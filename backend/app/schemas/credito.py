@@ -56,7 +56,15 @@ class CreditoUpdate(BaseModel):
     """Solo Admin puede modificar estos campos."""
     capital_prestado: Optional[Decimal] = None
     tasa_interes_mensual: Optional[Decimal] = None
+    abono_minimo: Optional[Decimal] = None  # Solo aplica a abono_capital
     fecha_pago_activo: Optional[date] = None  # Recalcula todo el ciclo
+
+    @field_validator("abono_minimo")
+    @classmethod
+    def validar_abono_minimo(cls, v: Optional[Decimal]) -> Optional[Decimal]:
+        if v is not None and v < 0:
+            raise ValueError("El abono mínimo no puede ser negativo")
+        return v
 
 
 class CreditoResponse(BaseModel):

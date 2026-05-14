@@ -553,48 +553,90 @@ async def recalcular_saldo_intereses(
     credito.saldo_intereses = nuevo_saldo.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-async def recalcular_primera_cuota_si_no_pagada(
+async def recalcular_cuota_actual_si_no_pagada(
     db: AsyncSession,
     credito: Credito,
 ) -> bool:
     """
-    Recalcula la primera cuota del crédito (numero_cuota=1) usando los valores
-    actuales del crédito (capital_prestado, tasa_interes_mensual, etc.).
+    Recalcula la cuota ACTUAL del crédito (la primera sin pagar, sea cual sea
+    su número) usando los valores actuales del crédito (capital_prestado,
+    tasa_interes_mensual, abono_minimo, etc.).
 
-    Solo aplica si la primera cuota aún NO ha sido pagada ni validada por el
-    recaudador. Si la cuota ya tuvo movimientos, la función no hace nada y
-    retorna False.
+    Solo aplica si la cuota actual no tiene montos registrados
+    (capital_pagado=0 y interes_pagado=0). Si el recaudador ya le dio check
+    pero aún no se registraron montos, igual se recalcula — el check solo
+    confirma recepción, no congela los montos esperados.
 
-    Se invoca cuando un Admin modifica capital_prestado o tasa_interes_mensual,
-    para que la cuota pendiente refleje los nuevos valores.
+    Se invoca cuando un Admin modifica capital_prestado, tasa_interes_mensual
+    o abono_minimo, para que el cambio se vea reflejado DESDE la cuota actual
+    (no solo en las cuotas posteriores que se generen luego).
+
+    Mantiene numero_cuota, fecha_maxima, momento y receptor_id intactos —
+    solo actualiza los montos (capital_a_pagar, interes_a_pagar, monto_a_pagar)
+    y el tipo de cuota.
     """
-    primera = (await db.execute(
+    actual = (await db.execute(
         select(Pago).where(
             Pago.credito_id == credito.id,
-            Pago.numero_cuota == 1,
+            Pago.pagado == False,  # noqa: E712
             Pago.deleted_at == None,  # noqa: E711
-        )
+        ).order_by(Pago.numero_cuota).limit(1)
     )).scalar_one_or_none()
 
-    if not primera:
+    if not actual:
         return False
-    if primera.pagado or primera.validado_recaudador:
-        return False
-    if primera.capital_pagado > 0 or primera.interes_pagado > 0:
+    if actual.capital_pagado > 0 or actual.interes_pagado > 0:
         return False
 
-    receptor_id = primera.receptor_id
+    ppm = Decimal(_periodos_por_mes(credito.periodicidad))
 
-    # Reutilizamos crear_primera_cuota para obtener los valores frescos.
-    fresh = await crear_primera_cuota(credito, receptor_id)
+    if credito.tipo_credito == TipoCredito.cuota_fija and credito.numero_cuotas:
+        capital_x = calcular_capital_cuota_fija(
+            credito.capital_prestado, credito.numero_cuotas,
+        )
+        if actual.numero_cuota == 1 and credito.calcular_interes_dias_corridos:
+            interes = calcular_interes_primera_cuota(
+                credito.capital_prestado, credito.tasa_interes_mensual,
+                credito.fecha_apertura, credito.fecha_inicial_pago,
+            )
+        else:
+            interes = calcular_interes_cuota_fija(
+                credito.capital_prestado, credito.tasa_interes_mensual, credito.periodicidad,
+            )
+        actual.tipo_cuota = TipoCuota.programada
+        actual.capital_a_pagar = capital_x
+        actual.interes_a_pagar = interes
+        actual.monto_a_pagar = (capital_x + interes).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        actual.es_ultimo_pago = actual.numero_cuota >= credito.numero_cuotas
+    else:
+        # abono_capital
+        if actual.numero_cuota == 1 and credito.calcular_interes_dias_corridos:
+            interes = calcular_interes_primera_cuota(
+                credito.saldo_capital, credito.tasa_interes_mensual,
+                credito.fecha_apertura, credito.fecha_inicial_pago,
+            )
+        else:
+            interes = calcular_interes_periodo(credito.saldo_capital, credito.tasa_interes_mensual)
+        abono = credito.abono_minimo if credito.abono_minimo else Decimal("0.00")
 
-    primera.tipo_cuota = fresh.tipo_cuota
-    primera.monto_a_pagar = fresh.monto_a_pagar
-    primera.capital_a_pagar = fresh.capital_a_pagar
-    primera.interes_a_pagar = fresh.interes_a_pagar
-    # Defensivo: en instancias transitorias el valor por defecto del modelo
-    # no se aplica hasta INSERT, así que tratamos None como False.
-    primera.es_ultimo_pago = bool(fresh.es_ultimo_pago) if fresh.es_ultimo_pago is not None else False
+        if credito.periodicidad == Periodicidad.mensual:
+            # Cuota combinada: interés + abono mínimo
+            actual.tipo_cuota = TipoCuota.programada
+            actual.capital_a_pagar = abono
+            actual.interes_a_pagar = interes
+            actual.monto_a_pagar = (interes + abono).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        else:
+            # Quincenal/otras: respetar el tipo de la cuota (interés o abono)
+            if actual.tipo_cuota == TipoCuota.abono:
+                actual.capital_a_pagar = abono
+                actual.interes_a_pagar = Decimal("0.00")
+                actual.monto_a_pagar = abono
+            else:
+                actual.tipo_cuota = TipoCuota.interes
+                actual.capital_a_pagar = Decimal("0.00")
+                actual.interes_a_pagar = interes
+                actual.monto_a_pagar = interes
+        actual.es_ultimo_pago = False
     return True
 
 

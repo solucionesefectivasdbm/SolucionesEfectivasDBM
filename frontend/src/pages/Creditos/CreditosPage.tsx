@@ -17,7 +17,12 @@ interface CreditoForm {
   abono_minimo: number
 }
 
-interface EditForm { capital_prestado: number; tasa_interes_mensual: number; fecha_pago_activo: string }
+interface EditForm {
+  capital_prestado: number
+  tasa_interes_mensual: number
+  abono_minimo: number
+  fecha_pago_activo: string
+}
 
 export default function CreditosPage() {
   const perms = usePermissions()
@@ -149,6 +154,15 @@ export default function CreditosPage() {
       const payload: any = {}
       if (data.capital_prestado) payload.capital_prestado = parseFloat(String(data.capital_prestado))
       if (data.tasa_interes_mensual) payload.tasa_interes_mensual = parseFloat(String(data.tasa_interes_mensual)) / 100
+      // abono_minimo solo aplica a abono_capital. Se envía aunque sea 0
+      // (puede querer ponerlo en 0), por eso se valida que no sea undefined/'' .
+      if (
+        creditoActual.tipo_credito === 'abono_capital' &&
+        data.abono_minimo !== undefined &&
+        String(data.abono_minimo) !== ''
+      ) {
+        payload.abono_minimo = parseFloat(String(data.abono_minimo))
+      }
       if (data.fecha_pago_activo) payload.fecha_pago_activo = data.fecha_pago_activo
       await creditosApi.actualizar(creditoActual.id, payload)
       toast.success('Crédito actualizado')
@@ -258,6 +272,7 @@ export default function CreditosPage() {
                                 resetEdit({
                                   capital_prestado: c.capital_prestado,
                                   tasa_interes_mensual: c.tasa_interes_mensual * 100,
+                                  abono_minimo: c.abono_minimo ?? 0,
                                   fecha_pago_activo: '',
                                 })
                                 setModalEditar(true)
@@ -390,7 +405,7 @@ export default function CreditosPage() {
       <Modal isOpen={modalEditar} onClose={() => setModalEditar(false)} title="Modificar Crédito">
         <form onSubmit={handleEdit(onEditar)} className="space-y-4">
           <p className="text-xs text-gray-500 bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-            ⚠️ Modificar estos valores recalculará las cuotas futuras del crédito.
+            ⚠️ Modificar estos valores recalculará la cuota actual y las cuotas futuras del crédito.
           </p>
           <FormField label="Nuevo capital prestado">
             <input {...regEdit('capital_prestado')} type="number" step="1"
@@ -400,6 +415,12 @@ export default function CreditosPage() {
             <input {...regEdit('tasa_interes_mensual')} type="number" step="0.01"
               defaultValue={creditoActual ? creditoActual.tasa_interes_mensual * 100 : ''} className="input" />
           </FormField>
+          {creditoActual?.tipo_credito === 'abono_capital' && (
+            <FormField label="Nuevo abono mínimo">
+              <input {...regEdit('abono_minimo')} type="number" step="1"
+                defaultValue={creditoActual?.abono_minimo ?? 0} className="input" />
+            </FormField>
+          )}
           <FormField label="Nueva fecha del pago activo">
             <input {...regEdit('fecha_pago_activo')} type="date" className="input" />
           </FormField>

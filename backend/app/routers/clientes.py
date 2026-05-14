@@ -92,7 +92,7 @@ async def listar_clientes(
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
     items = (await db.execute(
-        query.order_by(Cliente.created_at.desc(), Cliente.id).offset((page - 1) * page_size).limit(page_size)
+        query.order_by(Cliente.nombre, Cliente.apellidos, Cliente.id).offset((page - 1) * page_size).limit(page_size)
     )).scalars().all()
 
     # Computar al_dia real para los clientes de la página actual.

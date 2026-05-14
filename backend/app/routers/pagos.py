@@ -136,7 +136,7 @@ async def listar_pagos(
             Cliente.apellidos.label("cliente_apellidos"),
             Credito.numero_credito_cliente,
         )
-        .order_by(Pago.fecha_maxima, Pago.numero_cuota, Pago.id)
+        .order_by(Cliente.nombre, Cliente.apellidos, Pago.numero_cuota, Pago.id)
     )
     rows = (await db.execute(query_ext)).all()
 
@@ -165,9 +165,9 @@ async def listar_pagos(
         busqueda=busqueda,
     )
 
-    # Merge + sort + paginar en memoria
+    # Merge + sort + paginar en memoria. Orden alfabético por nombre de cliente.
     todos = reales + virtuales
-    todos.sort(key=lambda x: (x["fecha_maxima"], x["numero_cuota"], str(x["id"])))
+    todos.sort(key=lambda x: ((x["cliente_nombre"] or "").lower(), x["numero_cuota"], str(x["id"])))
 
     total = len(todos)
     inicio = (page - 1) * page_size

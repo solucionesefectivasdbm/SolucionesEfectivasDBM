@@ -25,8 +25,8 @@ from app.services.credito_service import (
     crear_primera_cuota,
     generar_numero_credito,
     generar_prefijo_cliente,
+    recalcular_cuota_actual_si_no_pagada,
     recalcular_cuotas_futuras,
-    recalcular_primera_cuota_si_no_pagada,
     recalcular_saldo_intereses,
 )
 from app.utils.tz import ahora_bogota
@@ -83,7 +83,7 @@ async def listar_creditos(
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
     items = (await db.execute(
-        query.order_by(Credito.created_at.desc(), Credito.id).offset((page - 1) * page_size).limit(page_size)
+        query.order_by(Credito.numero_credito_cliente, Credito.id).offset((page - 1) * page_size).limit(page_size)
     )).scalars().all()
 
     return PaginatedResponse(
@@ -230,31 +230,37 @@ async def actualizar_credito(
         )
 
     cambios = {}
-    capital_o_tasa_cambio = False
+    requiere_recalculo = False
 
     if body.capital_prestado is not None:
         cambios["capital_prestado"] = (str(credito.capital_prestado), str(body.capital_prestado))
         credito.capital_prestado = body.capital_prestado
         credito.saldo_capital = body.capital_prestado
-        capital_o_tasa_cambio = True
+        requiere_recalculo = True
 
     if body.tasa_interes_mensual is not None:
         cambios["tasa_interes_mensual"] = (str(credito.tasa_interes_mensual), str(body.tasa_interes_mensual))
         credito.tasa_interes_mensual = body.tasa_interes_mensual
-        capital_o_tasa_cambio = True
+        requiere_recalculo = True
 
-    # Si cambió capital o tasa, hay que actualizar:
+    if body.abono_minimo is not None:
+        cambios["abono_minimo"] = (str(credito.abono_minimo), str(body.abono_minimo))
+        credito.abono_minimo = body.abono_minimo
+        requiere_recalculo = True
+
+    # Si cambió capital, tasa o abono mínimo, hay que actualizar:
     # 1) saldo_intereses (que se calculó al crear y nunca se ajusta solo)
-    # 2) la primera cuota pendiente, para que refleje los nuevos valores.
-    if capital_o_tasa_cambio:
+    # 2) la cuota ACTUAL (primera sin pagar) — el cambio se refleja desde la
+    #    cuota actual, no solo en las posteriores que se generen luego.
+    if requiere_recalculo:
         saldo_intereses_anterior = str(credito.saldo_intereses)
         await recalcular_saldo_intereses(db, credito)
         cambios["saldo_intereses"] = (saldo_intereses_anterior, str(credito.saldo_intereses))
 
         await db.flush()
-        recalculada = await recalcular_primera_cuota_si_no_pagada(db, credito)
+        recalculada = await recalcular_cuota_actual_si_no_pagada(db, credito)
         if recalculada:
-            cambios["primera_cuota_recalculada"] = ("no", "si")
+            cambios["cuota_actual_recalculada"] = ("no", "si")
 
     if body.fecha_pago_activo is not None:
         # Esta modificación recalcula TODOS los pagos futuros
