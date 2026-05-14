@@ -53,7 +53,10 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   const [npMonto, setNpMonto] = useState('')
   const [npDestino, setNpDestino] = useState<'capital' | 'intereses'>('capital')
   const [npFecha, setNpFecha] = useState(new Date().toISOString().split('T')[0])
-  const [creditosActivos, setCreditosActivos] = useState<Credito[]>([])
+  // Búsqueda manual de crédito en el modal de pago no programado
+  const [npBusquedaCredito, setNpBusquedaCredito] = useState('')
+  const [npCreditoSeleccionado, setNpCreditoSeleccionado] = useState<Credito | null>(null)
+  const [npCreditosResultados, setNpCreditosResultados] = useState<Credito[]>([])
 
   // Form registrar pago
   const [capitalPagado, setCapitalPagado] = useState('')
@@ -229,17 +232,29 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
     } finally { setSubmitting(false) }
   }
 
-  const abrirNoProgramado = async () => {
-    try {
-      const res = await creditosApi.listar({ solo_activos: true, page: 1 })
-      setCreditosActivos(res.data.items)
-      setNpCreditoId('')
-      setNpMonto('')
-      setNpDestino('capital')
-      setNpFecha(new Date().toISOString().split('T')[0])
-      setModalNoProgramado(true)
-    } catch { toast.error('Error al cargar créditos') }
+  const abrirNoProgramado = () => {
+    setNpCreditoId('')
+    setNpCreditoSeleccionado(null)
+    setNpBusquedaCredito('')
+    setNpCreditosResultados([])
+    setNpMonto('')
+    setNpDestino('capital')
+    setNpFecha(new Date().toISOString().split('T')[0])
+    setModalNoProgramado(true)
   }
+
+  // Búsqueda manual de créditos en el modal de pago no programado.
+  useEffect(() => {
+    if (!modalNoProgramado || npCreditoSeleccionado || !npBusquedaCredito.trim()) {
+      setNpCreditosResultados([])
+      return
+    }
+    let cancelado = false
+    creditosApi.listar({ solo_activos: true, page: 1, busqueda: npBusquedaCredito })
+      .then(r => { if (!cancelado) setNpCreditosResultados(r.data.items) })
+      .catch(() => { if (!cancelado) setNpCreditosResultados([]) })
+    return () => { cancelado = true }
+  }, [npBusquedaCredito, modalNoProgramado, npCreditoSeleccionado])
 
   const handleSolicitarNoProgramado = () => {
     if (!npCreditoId || !npMonto) return
@@ -270,9 +285,8 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   }
 
   const itemsNoProgramado = (): ItemConfirmacion[] => {
-    const credito = creditosActivos.find(c => c.id === npCreditoId)
     return [
-      { label: 'Crédito', value: credito ? credito.numero_credito_cliente : '—' },
+      { label: 'Crédito', value: npCreditoSeleccionado ? npCreditoSeleccionado.numero_credito_cliente : '—' },
       { label: 'Monto', value: formatCOP(parseFloat(npMonto) || 0) },
       { label: 'Destino', value: npDestino === 'capital' ? 'Abonar a capital' : 'Abonar a intereses' },
       { label: 'Fecha del pago', value: npFecha },
@@ -689,12 +703,49 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
           </p>
           <div>
             <label className="label">Crédito *</label>
-            <select className="input" value={npCreditoId} onChange={e => setNpCreditoId(e.target.value)}>
-              <option value="">-- Seleccionar crédito --</option>
-              {creditosActivos.map(c => (
-                <option key={c.id} value={c.id}>{c.numero_credito_cliente} — {formatCOP(c.saldo_capital)}</option>
-              ))}
-            </select>
+            <div className="relative">
+              <input
+                type="text"
+                className="input"
+                placeholder="Escriba para buscar crédito o cliente..."
+                value={npCreditoSeleccionado
+                  ? `${npCreditoSeleccionado.numero_credito_cliente} — ${formatCOP(npCreditoSeleccionado.saldo_capital)}`
+                  : npBusquedaCredito}
+                onChange={e => {
+                  setNpBusquedaCredito(e.target.value)
+                  setNpCreditoSeleccionado(null)
+                  setNpCreditoId('')
+                }}
+                onFocus={() => {
+                  if (npCreditoSeleccionado) {
+                    setNpBusquedaCredito('')
+                    setNpCreditoSeleccionado(null)
+                    setNpCreditoId('')
+                  }
+                }}
+              />
+              {!npCreditoSeleccionado && npBusquedaCredito && npCreditosResultados.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                  {npCreditosResultados.map(c => (
+                    <button key={c.id} type="button"
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-primary-50 border-b border-gray-50 last:border-0"
+                      onClick={() => {
+                        setNpCreditoSeleccionado(c)
+                        setNpCreditoId(c.id)
+                        setNpBusquedaCredito('')
+                      }}>
+                      <span className="font-medium font-mono text-primary-600">{c.numero_credito_cliente}</span>
+                      <span className="text-gray-400 ml-2">— saldo {formatCOP(c.saldo_capital)}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {!npCreditoSeleccionado && npBusquedaCredito && npCreditosResultados.length === 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg px-3 py-2 text-sm text-gray-400">
+                  Sin resultados
+                </div>
+              )}
+            </div>
           </div>
           <div>
             <label className="label">Monto *</label>
