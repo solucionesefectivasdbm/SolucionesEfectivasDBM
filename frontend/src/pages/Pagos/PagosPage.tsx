@@ -68,9 +68,13 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   // En la variante semanal, momento es opcional → filtros siempre completos.
   const filtrosCompletos = esSemanal || momento !== ''
 
-  const cargarPagos = useCallback(async () => {
+  // mostrarSpinner=true para carga inicial y cambios de filtro (se quiere el
+  // estado de carga). false para recargas tras una acción sobre un pago —
+  // así la tabla no se desmonta y la posición de scroll se mantiene, evitando
+  // tener que volver a buscar el mismo pago para hacerle otra acción.
+  const cargarPagos = useCallback(async (mostrarSpinner = true) => {
     if (!filtrosCompletos) return
-    setLoading(true)
+    if (mostrarSpinner) setLoading(true)
     try {
       const res = await pagosApi.listar({
         anio,
@@ -86,7 +90,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       setTotal(res.data.total)
       setPages(res.data.pages)
     } catch { toast.error('Error al cargar pagos') }
-    finally { setLoading(false) }
+    finally { if (mostrarSpinner) setLoading(false) }
   }, [anio, mes, momento, busqueda, page, filtroGestor, filtrosCompletos, esSemanal])
 
   useEffect(() => { cargarPagos() }, [cargarPagos])
@@ -133,7 +137,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       } else {
         toast.success(res.data.mensaje)
         setModalConfirmarRegistrar(false)
-        cargarPagos()
+        cargarPagos(false)
       }
     } catch (e: any) {
       toast.error(e.response?.data?.detail || 'Error al registrar pago')
@@ -169,7 +173,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       )
       toast.success(res.data.mensaje)
       setModalExcedente(false)
-      cargarPagos()
+      cargarPagos(false)
     } catch (e: any) {
       toast.error(e.response?.data?.detail || 'Error')
     } finally { 
@@ -189,7 +193,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       toast.success('Pago validado')
       setModalTipoValidacion(false)
       setPagoAValidar(null)
-      cargarPagos()
+      cargarPagos(false)
     } catch (e: any) {
       toast.error(e.response?.data?.detail || 'Error')
     }
@@ -200,7 +204,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
     try {
       await pagosApi.desvalidar(pago.id)
       toast.success('Check revertido')
-      cargarPagos()
+      cargarPagos(false)
     } catch (e: any) {
       toast.error(e.response?.data?.detail || 'Error')
     }
@@ -213,7 +217,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       await pagosApi.modificarFecha(pagoSeleccionado.id, nuevaFecha)
       toast.success('Fecha actualizada')
       setModalFecha(false)
-      cargarPagos()
+      cargarPagos(false)
     } catch (e: any) {
       toast.error(e.response?.data?.detail || 'Error')
     } finally { setSubmitting(false) }
@@ -226,7 +230,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       await pagosApi.modificarReceptor(pagoSeleccionado.id, nuevoReceptor)
       toast.success('Receptor actualizado')
       setModalReceptor(false)
-      cargarPagos()
+      cargarPagos(false)
     } catch (e: any) {
       toast.error(e.response?.data?.detail || 'Error')
     } finally { setSubmitting(false) }
@@ -278,7 +282,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       })
       toast.success('Pago no programado registrado')
       setModalConfirmarNoProgramado(false)
-      cargarPagos()
+      cargarPagos(false)
     } catch (e: any) {
       toast.error(e.response?.data?.detail || 'Error')
     } finally { setSubmitting(false) }
