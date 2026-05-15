@@ -174,12 +174,23 @@ async def refresh(
     if not usuario:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no encontrado")
 
-    # Rotar refresh token (revocar el anterior, emitir uno nuevo)
-    _revoked_refresh_tokens.add(refresh_token)
-    nuevo_refresh = crear_refresh_token(str(usuario.id))
+    # DECISIÓN TÉCNICA: NO rotamos el refresh token en cada refresh.
+    #
+    # Rotar (revocar el anterior + emitir uno nuevo) causaba una condición de
+    # carrera: dos requests que refrescaban casi simultáneamente — el polling
+    # del Header + una acción del usuario, o dos pestañas abiertas — enviaban
+    # el MISMO refresh token. El primero lo revocaba; el segundo llegaba con un
+    # token recién revocado → 401 → el frontend cerraba sesión a un usuario que
+    # estaba usando el sistema activamente.
+    #
+    # En su lugar: el refresh token se mantiene estable durante sus 7 días y
+    # solo se emite un nuevo access token. La cookie se re-emite con el MISMO
+    # valor para extender su expiración (sliding window) sin invalidar nada.
+    # El refresh token solo se invalida en logout (se agrega a
+    # _revoked_refresh_tokens y se borra la cookie).
     nuevo_access = crear_access_token(str(usuario.id))
 
-    set_refresh_cookie(response, nuevo_refresh)
+    set_refresh_cookie(response, refresh_token)
 
     from app.schemas.usuario import UsuarioResponse
     return TokenResponse(
