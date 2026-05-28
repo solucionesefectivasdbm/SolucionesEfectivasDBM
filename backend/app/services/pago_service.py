@@ -347,5 +347,20 @@ class PagoService:
         if credito.saldo_capital <= 0:
             credito.activo = False
             credito.saldo_capital = Decimal("0.00")
+            return pago
+
+        # Recalcular intereses esperados ahora que el saldo cambió:
+        # - saldo_intereses del crédito (proyección con nuevo saldo_capital).
+        # - cuota actual pendiente: su interes_a_pagar (y monto_a_pagar)
+        #   debe reflejar el nuevo saldo_capital. Para abono_capital esto
+        #   es clave porque el interés se calcula sobre el saldo vigente.
+        #   Para cuota_fija no cambia nada (interés fijo sobre capital_prestado),
+        #   pero la llamada es idempotente.
+        from app.services.credito_service import (
+            recalcular_cuota_actual_si_no_pagada,
+            recalcular_saldo_intereses,
+        )
+        await recalcular_saldo_intereses(db, credito)
+        await recalcular_cuota_actual_si_no_pagada(db, credito)
 
         return pago
