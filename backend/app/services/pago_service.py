@@ -26,7 +26,98 @@ from app.schemas.pago import RegistrarPagoRequest, RegistrarPagoResponse
 from app.services.credito_service import generar_siguiente_cuota
 
 
+TOL = Decimal("0.01")
+_Q = Decimal("0.01")
+
+
 class PagoService:
+
+    @staticmethod
+    def _aplicar_reduccion_saldos(
+        credito: Credito,
+        capital_pagado: Decimal,
+        interes_pagado: Decimal,
+    ) -> None:
+        """
+        Función canónica de reducción de saldos.
+
+        Aplica el pago sobre saldo_capital y saldo_intereses con piso 0
+        y quantize ROUND_HALF_UP. Es el único lugar donde se mutan
+        saldo_capital / saldo_intereses — ninguna rama lo hace directamente.
+        """
+        credito.saldo_capital = max(
+            Decimal("0.00"),
+            (credito.saldo_capital - capital_pagado).quantize(_Q, rounding=ROUND_HALF_UP),
+        )
+        credito.saldo_intereses = max(
+            Decimal("0.00"),
+            (credito.saldo_intereses - interes_pagado).quantize(_Q, rounding=ROUND_HALF_UP),
+        )
+
+    @staticmethod
+    def _validar_split(
+        pago: "Pago",
+        capital_pagado: Decimal,
+        interes_pagado: Decimal,
+        es_excedente: bool,
+    ) -> None:
+        """
+        Valida el split del usuario antes de aplicar cualquier reducción.
+
+        Reglas (decisión de negocio — reparto libre en parciales):
+        - capital_pagado >= 0 e interes_pagado >= 0 (siempre).
+        - Exacto: abs(total - monto_a_pagar) <= TOL.
+          En exacto: capital_pagado <= capital_a_pagar + TOL
+                     e interes_pagado <= interes_a_pagar + TOL.
+        - Parcial: total < monto_a_pagar — reparto libre, sin tope por componente.
+        - Excedente (es_excedente=True): total > monto_a_pagar — no se rechaza.
+
+        Raises:
+            ValueError: con mensaje descriptivo si el split es inválido.
+        """
+        if capital_pagado < Decimal("0.00"):
+            raise ValueError(
+                f"capital_pagado no puede ser negativo (recibido: {capital_pagado})"
+            )
+        if interes_pagado < Decimal("0.00"):
+            raise ValueError(
+                f"interes_pagado no puede ser negativo (recibido: {interes_pagado})"
+            )
+
+        total = (capital_pagado + interes_pagado).quantize(_Q, rounding=ROUND_HALF_UP)
+        monto = pago.monto_a_pagar
+
+        diferencia = abs(total - monto)
+
+        if es_excedente:
+            # Flujo de excedente: total > monto_a_pagar. No se rechaza.
+            return
+
+        if diferencia <= TOL:
+            # Pago exacto (dentro de tolerancia de redondeo).
+            # En exacto se valida que cada componente no supere lo esperado + TOL.
+            if capital_pagado > pago.capital_a_pagar + TOL:
+                raise ValueError(
+                    f"En pago exacto, capital_pagado ({capital_pagado}) excede "
+                    f"capital_a_pagar ({pago.capital_a_pagar}) + tolerancia ({TOL})"
+                )
+            if interes_pagado > pago.interes_a_pagar + TOL:
+                raise ValueError(
+                    f"En pago exacto, interes_pagado ({interes_pagado}) excede "
+                    f"interes_a_pagar ({pago.interes_a_pagar}) + tolerancia ({TOL})"
+                )
+            return
+
+        if total < monto:
+            # Pago parcial: reparto libre, sin tope por componente.
+            return
+
+        # total > monto y es_excedente=False → split inválido
+        raise ValueError(
+            f"El total pagado ({total}) supera monto_a_pagar ({monto}) "
+            "pero el pago no fue marcado como excedente. "
+            "Use el flujo confirmar-excedente."
+        )
 
     @staticmethod
     async def registrar_pago(
@@ -75,30 +166,23 @@ class PagoService:
         request: RegistrarPagoRequest,
         fecha_hoy: date,
     ) -> RegistrarPagoResponse:
-        """Procesa pago exacto: marca pagado, actualiza saldos, genera siguiente cuota."""
+        """Procesa pago exacto: valida split, marca pagado, actualiza saldos, genera siguiente cuota."""
+        PagoService._validar_split(
+            pago,
+            capital_pagado=request.capital_pagado,
+            interes_pagado=request.interes_pagado,
+            es_excedente=False,
+        )
+
         pago.capital_pagado = request.capital_pagado
         pago.interes_pagado = request.interes_pagado
         pago.pagado = True
         pago.fecha_pago_real = fecha_hoy
 
-        # Actualizar saldos del crédito
-        credito.saldo_capital = (credito.saldo_capital - request.capital_pagado).quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_UP
-        )
-        if credito.saldo_capital < 0:
-            credito.saldo_capital = Decimal("0.00")
+        PagoService._aplicar_reduccion_saldos(credito, request.capital_pagado, request.interes_pagado)
 
-        credito.saldo_intereses = max(
-            Decimal("0.00"),
-            (credito.saldo_intereses - request.interes_pagado).quantize(
-                Decimal("0.01"), rounding=ROUND_HALF_UP
-            ),
-        )
-
-        # Verificar cierre de crédito
         await PagoService._verificar_cierre_credito(db, credito, pago)
 
-        # Generar siguiente cuota si el crédito sigue activo
         if credito.activo:
             nueva_cuota = await generar_siguiente_cuota(
                 db=db,
@@ -124,6 +208,13 @@ class PagoService:
         monto_pagado: Decimal,
         fecha_hoy: date,
     ) -> RegistrarPagoResponse:
+        PagoService._validar_split(
+            pago,
+            capital_pagado=request.capital_pagado,
+            interes_pagado=request.interes_pagado,
+            es_excedente=False,
+        )
+
         pago.capital_pagado = request.capital_pagado
         pago.interes_pagado = request.interes_pagado
         pago.pagado = True
@@ -133,19 +224,7 @@ class PagoService:
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
 
-        # Actualizar saldos
-        credito.saldo_capital = max(
-            Decimal("0.00"),
-            (credito.saldo_capital - request.capital_pagado).quantize(
-                Decimal("0.01"), rounding=ROUND_HALF_UP
-            ),
-        )
-        credito.saldo_intereses = max(
-            Decimal("0.00"),
-            (credito.saldo_intereses - request.interes_pagado).quantize(
-                Decimal("0.01"), rounding=ROUND_HALF_UP
-            ),
-        )
+        PagoService._aplicar_reduccion_saldos(credito, request.capital_pagado, request.interes_pagado)
 
         # REGLAS DE ARRASTRE:
         # - Cuotas tipo ABONO (abono_capital quincenal/etc.): nunca arrastran
@@ -186,7 +265,7 @@ class PagoService:
         from app.schemas.pago import PagoResponse
         return RegistrarPagoResponse(
             pago=PagoResponse.model_validate(pago),
-            mensaje=f"Pago registrado. El abono redujo el saldo capital.",
+            mensaje=f"Pago parcial registrado. Faltante: {faltante}.",
         )
 
     @staticmethod
@@ -202,6 +281,13 @@ class PagoService:
         Paso 2 del flujo de excedente: aplica la decisión del usuario
         y completa el pago.
         """
+        PagoService._validar_split(
+            pago,
+            capital_pagado=request.capital_pagado,
+            interes_pagado=request.interes_pagado,
+            es_excedente=True,
+        )
+
         monto_pagado = request.capital_pagado + request.interes_pagado
         excedente = (monto_pagado - pago.monto_a_pagar).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
@@ -213,33 +299,22 @@ class PagoService:
         pago.fecha_pago_real = fecha_hoy
         pago.es_excedente_a = destino
 
-        # Aplicar excedente al destino elegido
+        # Reconstruir los montos de reducción desde el desglose esperado de la cuota
+        # más el excedente dirigido por destino.  pago.capital_pagado/interes_pagado
+        # se guardan tal como el usuario reportó (auditoría), pero la REDUCCIÓN se
+        # calcula desde los valores esperados para que destino sea autoritativo.
         if destino == DestinoExcedente.capital:
-            credito.saldo_capital = max(
-                Decimal("0.00"),
-                (credito.saldo_capital - pago.capital_a_pagar - excedente).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
-                ),
+            reducir_capital = (pago.capital_a_pagar + excedente).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
             )
-            credito.saldo_intereses = max(
-                Decimal("0.00"),
-                (credito.saldo_intereses - pago.interes_a_pagar).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
-                ),
+            reducir_interes = pago.interes_a_pagar
+        else:
+            reducir_capital = pago.capital_a_pagar
+            reducir_interes = (pago.interes_a_pagar + excedente).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
             )
-        else:  # intereses
-            credito.saldo_capital = max(
-                Decimal("0.00"),
-                (credito.saldo_capital - pago.capital_a_pagar).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
-                ),
-            )
-            credito.saldo_intereses = max(
-                Decimal("0.00"),
-                (credito.saldo_intereses - pago.interes_a_pagar - excedente).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
-                ),
-            )
+
+        PagoService._aplicar_reduccion_saldos(credito, reducir_capital, reducir_interes)
 
         await PagoService._verificar_cierre_credito(db, credito, pago)
 

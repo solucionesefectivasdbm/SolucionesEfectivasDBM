@@ -415,13 +415,16 @@ async def registrar_pago(
             detail="El pago debe ser validado por el recaudador antes de registrar montos"
         )
 
-    result = await PagoService.registrar_pago(
-        db=db,
-        pago=pago,
-        credito=credito,
-        request=body,
-        fecha_hoy=hoy_bogota(),
-    )
+    try:
+        result = await PagoService.registrar_pago(
+            db=db,
+            pago=pago,
+            credito=credito,
+            request=body,
+            fecha_hoy=hoy_bogota(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
     if not result.requiere_decision:
         await audit_service.registrar_actualizacion_campos(
@@ -463,14 +466,17 @@ async def confirmar_excedente(
         interes_pagado=body.interes_pagado,
     )
 
-    result = await PagoService.confirmar_excedente(
-        db=db,
-        pago=pago,
-        credito=credito,
-        request=montos,
-        destino=DestinoExcedente(body.destino_excedente),
-        fecha_hoy=hoy_bogota(),
-    )
+    try:
+        result = await PagoService.confirmar_excedente(
+            db=db,
+            pago=pago,
+            credito=credito,
+            request=montos,
+            destino=DestinoExcedente(body.destino_excedente),
+            fecha_hoy=hoy_bogota(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
     await audit_service.registrar_actualizacion_campos(
         db=db, entidad="pagos", entidad_id=pago.id,
@@ -635,14 +641,17 @@ async def registrar_pago_no_programado(
     gestor = (await db.execute(select(Gestor).where(Gestor.id == cliente.gestor_id))).scalar_one_or_none()
     receptor_id = gestor.receptor_id if gestor else None
 
-    pago = await PagoService.registrar_pago_no_programado(
-        db=db,
-        credito=credito,
-        monto=body.monto,
-        destino=body.destino,
-        fecha_pago=body.fecha_pago,
-        receptor_id=receptor_id,
-    )
+    try:
+        pago = await PagoService.registrar_pago_no_programado(
+            db=db,
+            credito=credito,
+            monto=body.monto,
+            destino=body.destino,
+            fecha_pago=body.fecha_pago,
+            receptor_id=receptor_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
     await audit_service.registrar_creacion(
         db=db, entidad="pagos", entidad_id=pago.id,

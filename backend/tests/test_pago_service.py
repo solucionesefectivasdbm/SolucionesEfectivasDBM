@@ -17,6 +17,29 @@ from app.models.pago import DestinoExcedente, Pago, TipoCuota
 from app.schemas.pago import RegistrarPagoRequest
 from app.services.pago_service import PagoService
 
+# ---------------------------------------------------------------------------
+# Helpers adicionales para tests de caracterización y Batch B
+# ---------------------------------------------------------------------------
+
+def make_credito_abono(
+    periodicidad=Periodicidad.mensual,
+    saldo_capital=Decimal("2000.00"),
+    saldo_intereses=Decimal("60.00"),
+    tasa=Decimal("0.0300"),
+) -> Credito:
+    """Crédito abono_capital para tests unitarios."""
+    c = Credito()
+    c.id = uuid.uuid4()
+    c.tipo_credito = TipoCredito.abono_capital
+    c.capital_prestado = saldo_capital
+    c.saldo_capital = saldo_capital
+    c.saldo_intereses = saldo_intereses
+    c.tasa_interes_mensual = tasa
+    c.numero_cuotas = None
+    c.periodicidad = periodicidad
+    c.activo = True
+    return c
+
 
 def make_credito(
     tipo=TipoCredito.cuota_fija,
@@ -218,8 +241,12 @@ class TestPagoExcedente:
             )
 
         # Excedente: 150000 - 100000 = 50000 va a capital
-        # Capital reducido: 1000000 - 70000 (capital cuota) - 50000 (excedente) = 880000
+        # reducir_capital = capital_a_pagar(70000) + excedente(50000) = 120000
+        # reducir_interes = interes_a_pagar(30000)
+        # saldo_capital: 1000000 - 120000 = 880000
+        # saldo_intereses: 30000 - 30000 = 0  (destino no toca intereses extra)
         assert credito.saldo_capital == Decimal("880000.00")
+        assert credito.saldo_intereses == Decimal("0.00")
         assert pago.pagado is True
         assert pago.es_excedente_a == DestinoExcedente.capital
 
@@ -248,7 +275,11 @@ class TestPagoExcedente:
             )
 
         # Excedente: 120000 - 100000 = 20000 va a intereses
-        # saldo_intereses: 30000 - 30000 (interes cuota) - 20000 (excedente) = -20000 → 0
+        # reducir_capital = capital_a_pagar(70000)           (destino no toca capital extra)
+        # reducir_interes = interes_a_pagar(30000) + excedente(20000) = 50000
+        # saldo_capital:    1000000 - 70000 = 930000
+        # saldo_intereses:  30000 - 50000 → max(0, -20000) = 0
+        assert credito.saldo_capital == Decimal("930000.00")
         assert credito.saldo_intereses == Decimal("0.00")
         assert pago.es_excedente_a == DestinoExcedente.intereses
 
@@ -321,3 +352,379 @@ class TestPropagacionReceptor:
         # No debería lanzar excepción
         await _propagar_receptor_a_pagos(db, gestor_id, nuevo_receptor)
         assert db.execute.called
+
+
+# ---------------------------------------------------------------------------
+# BATCH A — Tests de caracterización (documentan bugs ACTUALES con xfail)
+# ---------------------------------------------------------------------------
+
+class TestCaracterizacionRecalcularSaldoIntereses:
+    """
+    T-01: documenta el bug de recalcular_saldo_intereses para abono_capital.
+
+    El bug: para abono_capital, nuevo_saldo = (saldo_capital * tasa) - total_interes_pagado_historico.
+    Esto es incorrecto: cada período de interés es independiente, no se debe restar el histórico.
+    Después de pagar 3 cuotas de $60 (total $180), recalcular produce saldo_intereses negativo.
+
+    Estos tests quedarán en xfail hasta que se aplique el fix en Batch C (T-09).
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.xfail(
+        reason="BUG: recalcular_saldo_intereses resta todo el interés histórico "
+               "del período calculado, produciendo saldo_intereses negativo o incorrecto "
+               "para abono_capital mensual. Fix en Batch C (T-09).",
+        strict=True,
+    )
+    async def test_recalcular_saldo_intereses_abono_capital_mensual_no_resta_historico(self):
+        """
+        ABONO CAPITAL MENSUAL: tras pagar varias cuotas de interés,
+        recalcular_saldo_intereses debe retornar el interés del PRÓXIMO período
+        (saldo_capital * tasa), sin restar el histórico ya pagado.
+
+        Escenario: saldo_capital=2000, tasa=3%, interés por período=60.
+        Histórico pagado: 3 cuotas de interés = 180.
+        Bug actual: saldo_intereses = 60 - 180 = -120 → recortado a 0.
+        Correcto: saldo_intereses = saldo_capital_vigente * tasa = 60.
+        """
+        from unittest.mock import AsyncMock, patch
+        from sqlalchemy import select
+        from app.services.credito_service import recalcular_saldo_intereses
+
+        credito = make_credito_abono(
+            periodicidad=Periodicidad.mensual,
+            saldo_capital=Decimal("2000.00"),
+            saldo_intereses=Decimal("60.00"),
+            tasa=Decimal("0.0300"),
+        )
+
+        # Simular 3 cuotas de interés ya pagadas (total = 180)
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=AsyncMock(scalar=lambda: Decimal("180.00")))
+
+        await recalcular_saldo_intereses(db, credito)
+
+        # CORRECTO: debe quedar el interés del próximo período = 2000 * 0.03 = 60
+        # BUG ACTUAL: queda 0.00 (porque 60 - 180 = -120, recortado a 0)
+        assert credito.saldo_intereses == Decimal("60.00"), (
+            f"Esperado 60.00, obtenido {credito.saldo_intereses} "
+            "(bug: resta histórico del período calculado)"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.xfail(
+        reason="BUG: recalcular_saldo_intereses resta todo el interés histórico "
+               "del período calculado, produciendo saldo_intereses incorrecto "
+               "para abono_capital quincenal. Fix en Batch C (T-09).",
+        strict=True,
+    )
+    async def test_recalcular_saldo_intereses_abono_capital_quincenal_no_resta_historico(self):
+        """
+        ABONO CAPITAL QUINCENAL: similar al mensual pero la tasa es sobre saldo_capital
+        sin dividir por 2 (la función usa solo tasa, no tasa/ppm para abono_capital).
+        Histórico pagado: 4 cuotas de interés quincenal = 4 * 60 = 240.
+        Bug actual: saldo_intereses = 60 - 240 = -180 → 0.
+        Correcto: saldo_intereses = saldo_capital * tasa = 60.
+        """
+        from app.services.credito_service import recalcular_saldo_intereses
+
+        credito = make_credito_abono(
+            periodicidad=Periodicidad.quincenal,
+            saldo_capital=Decimal("2000.00"),
+            saldo_intereses=Decimal("60.00"),
+            tasa=Decimal("0.0300"),
+        )
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=AsyncMock(scalar=lambda: Decimal("240.00")))
+
+        await recalcular_saldo_intereses(db, credito)
+
+        assert credito.saldo_intereses == Decimal("60.00"), (
+            f"Esperado 60.00, obtenido {credito.saldo_intereses} "
+            "(bug: resta histórico del período calculado)"
+        )
+
+
+class TestCaracterizacionPagoNoProgramadoDobleReduccion:
+    """
+    T-02: documenta la doble reducción en registrar_pago_no_programado.
+
+    El bug: el método primero reduce credito.saldo_capital manualmente (líneas 312-316),
+    luego llama a recalcular_saldo_intereses y recalcular_cuota_actual_si_no_pagada.
+    Para abono_capital, recalcular_saldo_intereses usa el saldo_capital YA reducido
+    pero resta todo el histórico, produciendo saldo_intereses=0 en vez del próximo período.
+    Además, si hubiera lógica que recalcula capital, habría doble descuento.
+
+    El test usa un mock de DB para aislar la lógica sin SQLite.
+    Se marca xfail hasta que se aplique Batch C (T-10).
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.xfail(
+        reason="BUG: registrar_pago_no_programado reduce saldo_capital manualmente "
+               "y luego recalcular_saldo_intereses produce saldo_intereses=0 "
+               "porque resta el histórico del período calculado (doble manejo). "
+               "Fix en Batch C (T-10).",
+        strict=True,
+    )
+    async def test_pago_no_programado_reduce_capital_exactamente_una_vez(self):
+        """
+        DADO un crédito abono_capital mensual con saldo_capital=2000.
+        Y un pago no programado de 500 a capital.
+        CUANDO se ejecuta registrar_pago_no_programado.
+        ENTONCES saldo_capital queda en 1500 (reducido exactamente una vez).
+        Y saldo_intereses queda en 1500 * 0.03 = 45 (próximo período, no 0).
+
+        Bug actual: saldo_capital queda bien en 1500, pero saldo_intereses queda en 0
+        porque recalcular_saldo_intereses hace (1500 * 0.03) - historico_pagado,
+        donde historico_pagado puede superar 45.
+        """
+        import uuid
+        from unittest.mock import AsyncMock, patch, MagicMock
+        from sqlalchemy.ext.asyncio import AsyncSession
+        from app.models.pago import DestinoExcedente
+        from app.services.pago_service import PagoService
+
+        credito = make_credito_abono(
+            periodicidad=Periodicidad.mensual,
+            saldo_capital=Decimal("2000.00"),
+            saldo_intereses=Decimal("60.00"),
+            tasa=Decimal("0.0300"),
+        )
+
+        db = AsyncMock(spec=AsyncSession)
+
+        # Simular: max_cuota query → 5, historico interes pagado → 180
+        call_count = 0
+        async def mock_execute(stmt, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            result = AsyncMock()
+            if call_count == 1:
+                # Query para max numero_cuota
+                result.scalar.return_value = 5
+            elif call_count == 2:
+                # Query sum(interes_pagado) para recalcular_saldo_intereses
+                result.scalar.return_value = Decimal("180.00")
+            else:
+                # recalcular_cuota_actual_si_no_pagada → no hay cuota pendiente
+                result.scalar_one_or_none.return_value = None
+            return result
+
+        db.execute = mock_execute
+        db.add = MagicMock()
+        db.flush = AsyncMock()
+
+        await PagoService.registrar_pago_no_programado(
+            db=db,
+            credito=credito,
+            monto=Decimal("500.00"),
+            destino=DestinoExcedente.capital,
+            fecha_pago=date(2026, 6, 1),
+            receptor_id=None,
+        )
+
+        # saldo_capital debe haber bajado exactamente 500 (una sola vez)
+        assert credito.saldo_capital == Decimal("1500.00"), (
+            f"saldo_capital={credito.saldo_capital}, esperado 1500.00"
+        )
+        # saldo_intereses debe ser el próximo período: 1500 * 0.03 = 45
+        # BUG ACTUAL: queda en 0 porque (1500*0.03) - 180 = 45 - 180 = -135 → 0
+        assert credito.saldo_intereses == Decimal("45.00"), (
+            f"saldo_intereses={credito.saldo_intereses}, esperado 45.00 "
+            "(bug: resta historico en recalcular_saldo_intereses)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# BATCH B — Función canónica + validación split
+# ---------------------------------------------------------------------------
+
+class TestAplicarReduccionSaldos:
+    """
+    T-05: Tests unitarios de _aplicar_reduccion_saldos.
+    Verifica piso 0, quantize ROUND_HALF_UP, mismo delta independiente de rama.
+    """
+
+    def test_reduccion_normal_cuota_fija(self):
+        """Reducción estándar: capital e interés reducidos correctamente."""
+        credito = make_credito(
+            saldo_capital=Decimal("1000.00"),
+            saldo_intereses=Decimal("50.00"),
+        )
+        PagoService._aplicar_reduccion_saldos(credito, Decimal("100.00"), Decimal("50.00"))
+        assert credito.saldo_capital == Decimal("900.00")
+        assert credito.saldo_intereses == Decimal("0.00")
+
+    def test_reduccion_piso_cero_capital(self):
+        """Si capital_pagado > saldo_capital, el resultado es 0.00 (no negativo)."""
+        credito = make_credito(
+            saldo_capital=Decimal("50.00"),
+            saldo_intereses=Decimal("10.00"),
+        )
+        PagoService._aplicar_reduccion_saldos(credito, Decimal("100.00"), Decimal("5.00"))
+        assert credito.saldo_capital == Decimal("0.00")
+        assert credito.saldo_intereses == Decimal("5.00")
+
+    def test_reduccion_piso_cero_interes(self):
+        """Si interes_pagado > saldo_intereses, el resultado es 0.00."""
+        credito = make_credito(
+            saldo_capital=Decimal("500.00"),
+            saldo_intereses=Decimal("10.00"),
+        )
+        PagoService._aplicar_reduccion_saldos(credito, Decimal("50.00"), Decimal("100.00"))
+        assert credito.saldo_capital == Decimal("450.00")
+        assert credito.saldo_intereses == Decimal("0.00")
+
+    def test_reduccion_quantize_round_half_up(self):
+        """El resultado se redondea con ROUND_HALF_UP a 2 decimales."""
+        credito = make_credito(
+            saldo_capital=Decimal("1000.005"),
+            saldo_intereses=Decimal("10.005"),
+        )
+        PagoService._aplicar_reduccion_saldos(credito, Decimal("0.00"), Decimal("0.00"))
+        assert credito.saldo_capital == Decimal("1000.01")
+        assert credito.saldo_intereses == Decimal("10.01")
+
+    def test_reduccion_abono_capital_mensual(self):
+        """Abono capital mensual: capital e interés reducidos correctamente."""
+        credito = make_credito_abono(
+            periodicidad=Periodicidad.mensual,
+            saldo_capital=Decimal("2000.00"),
+            saldo_intereses=Decimal("40.00"),
+        )
+        PagoService._aplicar_reduccion_saldos(credito, Decimal("200.00"), Decimal("40.00"))
+        assert credito.saldo_capital == Decimal("1800.00")
+        assert credito.saldo_intereses == Decimal("0.00")
+
+    def test_reduccion_abono_capital_quincenal_solo_interes(self):
+        """Abono capital quincenal en cuota de solo interés: capital no cambia."""
+        credito = make_credito_abono(
+            periodicidad=Periodicidad.quincenal,
+            saldo_capital=Decimal("2000.00"),
+            saldo_intereses=Decimal("30.00"),
+        )
+        PagoService._aplicar_reduccion_saldos(credito, Decimal("0.00"), Decimal("30.00"))
+        assert credito.saldo_capital == Decimal("2000.00")
+        assert credito.saldo_intereses == Decimal("0.00")
+
+    def test_mismo_delta_independiente_del_input_de_rama(self):
+        """
+        Mismo input produce mismo delta, sin importar desde qué rama se llame.
+        Verificado ejecutando la función 3 veces con créditos independientes
+        con el mismo estado inicial.
+        """
+        def credito_base():
+            return make_credito(
+                saldo_capital=Decimal("1000.00"),
+                saldo_intereses=Decimal("50.00"),
+            )
+
+        capital_in = Decimal("100.00")
+        interes_in = Decimal("50.00")
+
+        c1 = credito_base()
+        c2 = credito_base()
+        c3 = credito_base()
+
+        PagoService._aplicar_reduccion_saldos(c1, capital_in, interes_in)
+        PagoService._aplicar_reduccion_saldos(c2, capital_in, interes_in)
+        PagoService._aplicar_reduccion_saldos(c3, capital_in, interes_in)
+
+        assert c1.saldo_capital == c2.saldo_capital == c3.saldo_capital
+        assert c1.saldo_intereses == c2.saldo_intereses == c3.saldo_intereses
+
+
+class TestValidarSplit:
+    """
+    T-06: Tests unitarios de _validar_split.
+    Cubre: exacto válido, exacto con componente excedido, negativo,
+    parcial válido (reparto libre), tolerancia, excedente no rechazado.
+    """
+
+    def _make_pago_split(
+        self,
+        monto_a_pagar=Decimal("150.00"),
+        capital_a_pagar=Decimal("100.00"),
+        interes_a_pagar=Decimal("50.00"),
+    ) -> Pago:
+        p = make_pago(
+            monto_a_pagar=monto_a_pagar,
+            capital=capital_a_pagar,
+            interes=interes_a_pagar,
+        )
+        return p
+
+    def test_exacto_valido_pasa(self):
+        """Split exacto con componentes correctos: no lanza."""
+        pago = self._make_pago_split()
+        # No debe lanzar
+        PagoService._validar_split(
+            pago,
+            capital_pagado=Decimal("100.00"),
+            interes_pagado=Decimal("50.00"),
+            es_excedente=False,
+        )
+
+    def test_exacto_componente_capital_excedido_lanza(self):
+        """
+        Pago exacto: total cuadra pero capital supera capital_a_pagar + TOL.
+        Debe lanzar ValueError.
+        """
+        pago = self._make_pago_split()
+        with pytest.raises(ValueError, match="capital"):
+            PagoService._validar_split(
+                pago,
+                capital_pagado=Decimal("150.00"),
+                interes_pagado=Decimal("0.00"),
+                es_excedente=False,
+            )
+
+    def test_componente_negativo_lanza(self):
+        """Cualquier componente negativo lanza ValueError."""
+        pago = self._make_pago_split()
+        with pytest.raises(ValueError):
+            PagoService._validar_split(
+                pago,
+                capital_pagado=Decimal("50.00"),
+                interes_pagado=Decimal("-10.00"),
+                es_excedente=False,
+            )
+
+    def test_parcial_valido_pasa(self):
+        """Parcial con reparto libre (todo a capital): no lanza."""
+        pago = self._make_pago_split()
+        # Total = 100 < 150 (parcial). Reparto libre: todo a capital.
+        # No debe lanzar aunque capital_pagado > capital_a_pagar esperado.
+        PagoService._validar_split(
+            pago,
+            capital_pagado=Decimal("100.00"),
+            interes_pagado=Decimal("0.00"),
+            es_excedente=False,
+        )
+
+    def test_exacto_dentro_de_tolerancia_pasa(self):
+        """Diferencia <= 0.01 se acepta como pago exacto."""
+        pago = self._make_pago_split(monto_a_pagar=Decimal("150.00"))
+        # Total = 149.995 → diferencia = 0.005 <= 0.01
+        PagoService._validar_split(
+            pago,
+            capital_pagado=Decimal("100.00"),
+            interes_pagado=Decimal("49.995"),
+            es_excedente=False,
+        )
+
+    def test_excedente_no_rechazado(self):
+        """
+        Excedente (total > monto_a_pagar) con es_excedente=True no lanza.
+        Es el flujo de 2 pasos que maneja confirmar_excedente.
+        """
+        pago = self._make_pago_split()
+        # No debe lanzar
+        PagoService._validar_split(
+            pago,
+            capital_pagado=Decimal("150.00"),
+            interes_pagado=Decimal("50.00"),
+            es_excedente=True,
+        )
