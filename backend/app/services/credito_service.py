@@ -542,15 +542,17 @@ async def recalcular_saldo_intereses(
         ppm = Decimal(_periodos_por_mes(credito.periodicidad))
         num_meses = Decimal(credito.numero_cuotas) / ppm
         nuevo_total = credito.capital_prestado * credito.tasa_interes_mensual * num_meses
+        nuevo_saldo = nuevo_total - Decimal(total_interes_pagado)
+        if nuevo_saldo < Decimal("0.00"):
+            nuevo_saldo = Decimal("0.00")
+        credito.saldo_intereses = nuevo_saldo.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     else:
-        # Abono capital — usamos saldo_capital actual y la tasa para estimar
-        # el interés del próximo periodo (es lo que la lógica de creación hace).
-        nuevo_total = credito.saldo_capital * credito.tasa_interes_mensual
-
-    nuevo_saldo = nuevo_total - Decimal(total_interes_pagado)
-    if nuevo_saldo < 0:
-        nuevo_saldo = Decimal("0.00")
-    credito.saldo_intereses = nuevo_saldo.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        # Abono capital — cada período de interés es independiente: el saldo de intereses
+        # del próximo período es saldo_capital_vigente * tasa, sin restar el histórico pagado
+        # (el histórico ya se consumió en cuotas cerradas de períodos anteriores).
+        credito.saldo_intereses = calcular_interes_periodo(
+            credito.saldo_capital, credito.tasa_interes_mensual
+        )
 
 
 async def recalcular_cuota_actual_si_no_pagada(

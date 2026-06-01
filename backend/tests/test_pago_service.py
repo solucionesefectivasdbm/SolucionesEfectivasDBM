@@ -11,6 +11,7 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.credito import Credito, TipoCredito, Periodicidad
 from app.models.pago import DestinoExcedente, Pago, TipoCuota
@@ -370,12 +371,6 @@ class TestCaracterizacionRecalcularSaldoIntereses:
     """
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason="BUG: recalcular_saldo_intereses resta todo el interés histórico "
-               "del período calculado, produciendo saldo_intereses negativo o incorrecto "
-               "para abono_capital mensual. Fix en Batch C (T-09).",
-        strict=True,
-    )
     async def test_recalcular_saldo_intereses_abono_capital_mensual_no_resta_historico(self):
         """
         ABONO CAPITAL MENSUAL: tras pagar varias cuotas de interés,
@@ -412,12 +407,6 @@ class TestCaracterizacionRecalcularSaldoIntereses:
         )
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason="BUG: recalcular_saldo_intereses resta todo el interés histórico "
-               "del período calculado, produciendo saldo_intereses incorrecto "
-               "para abono_capital quincenal. Fix en Batch C (T-09).",
-        strict=True,
-    )
     async def test_recalcular_saldo_intereses_abono_capital_quincenal_no_resta_historico(self):
         """
         ABONO CAPITAL QUINCENAL: similar al mensual pero la tasa es sobre saldo_capital
@@ -461,13 +450,6 @@ class TestCaracterizacionPagoNoProgramadoDobleReduccion:
     """
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason="BUG: registrar_pago_no_programado reduce saldo_capital manualmente "
-               "y luego recalcular_saldo_intereses produce saldo_intereses=0 "
-               "porque resta el histórico del período calculado (doble manejo). "
-               "Fix en Batch C (T-10).",
-        strict=True,
-    )
     async def test_pago_no_programado_reduce_capital_exactamente_una_vez(self):
         """
         DADO un crédito abono_capital mensual con saldo_capital=2000.
@@ -495,18 +477,17 @@ class TestCaracterizacionPagoNoProgramadoDobleReduccion:
 
         db = AsyncMock(spec=AsyncSession)
 
-        # Simular: max_cuota query → 5, historico interes pagado → 180
+        # Simular: max_cuota query → 5; recalcular_cuota_actual_si_no_pagada → None
+        # Nota: tras T-09, recalcular_saldo_intereses para abono_capital NO consulta DB
+        # (calcula directo: saldo_capital * tasa), por lo que solo hay 2 queries.
         call_count = 0
         async def mock_execute(stmt, *args, **kwargs):
             nonlocal call_count
             call_count += 1
-            result = AsyncMock()
+            result = MagicMock()
             if call_count == 1:
-                # Query para max numero_cuota
+                # Query para max numero_cuota → devuelve 5
                 result.scalar.return_value = 5
-            elif call_count == 2:
-                # Query sum(interes_pagado) para recalcular_saldo_intereses
-                result.scalar.return_value = Decimal("180.00")
             else:
                 # recalcular_cuota_actual_si_no_pagada → no hay cuota pendiente
                 result.scalar_one_or_none.return_value = None
@@ -727,4 +708,272 @@ class TestValidarSplit:
             capital_pagado=Decimal("150.00"),
             interes_pagado=Decimal("50.00"),
             es_excedente=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# BATCH C — Fix recalcular_saldo_intereses + pago no programado
+# ---------------------------------------------------------------------------
+
+class TestRecalcularSaldoInteresesAbonoCaptial:
+    """
+    T-12: Tests unitarios para recalcular_saldo_intereses en créditos abono_capital.
+
+    Verifica que:
+    - El saldo de intereses se recarga como saldo_capital_vigente * tasa (próximo período),
+      sin restar el histórico de interés pagado.
+    - Funciona correctamente para periodicidad mensual y quincenal.
+    - Cuando saldo_capital == 0, el saldo de intereses queda en 0.00.
+    """
+
+    @pytest.mark.asyncio
+    async def test_mensual_recarga_sin_restar_historico(self):
+        """
+        Abono capital mensual: con saldo_capital=2000 y tasa=3%,
+        recalcular debe producir 2000*0.03=60 sin importar el histórico pagado.
+        """
+        from app.services.credito_service import recalcular_saldo_intereses
+
+        credito = make_credito_abono(
+            periodicidad=Periodicidad.mensual,
+            saldo_capital=Decimal("2000.00"),
+            saldo_intereses=Decimal("60.00"),
+            tasa=Decimal("0.0300"),
+        )
+
+        db = AsyncMock()
+        # El histórico (180) ya no se usa en la rama abono_capital, pero el mock
+        # cubre el caso por si la función aún consultara DB en el futuro.
+        db.execute = AsyncMock(return_value=MagicMock(scalar=MagicMock(return_value=Decimal("180.00"))))
+
+        await recalcular_saldo_intereses(db, credito)
+
+        assert credito.saldo_intereses == Decimal("60.00"), (
+            f"Esperado 60.00, obtenido {credito.saldo_intereses}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_quincenal_recarga_sin_restar_historico(self):
+        """
+        Abono capital quincenal: el interés del próximo período es saldo_capital * tasa
+        (igual que mensual; la alternancia interes/abono ya la maneja _siguiente_cuota_abono_capital).
+        Con saldo_capital=2000, tasa=3%: 2000*0.03=60.
+        """
+        from app.services.credito_service import recalcular_saldo_intereses
+
+        credito = make_credito_abono(
+            periodicidad=Periodicidad.quincenal,
+            saldo_capital=Decimal("2000.00"),
+            saldo_intereses=Decimal("60.00"),
+            tasa=Decimal("0.0300"),
+        )
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=MagicMock(scalar=MagicMock(return_value=Decimal("240.00"))))
+
+        await recalcular_saldo_intereses(db, credito)
+
+        assert credito.saldo_intereses == Decimal("60.00"), (
+            f"Esperado 60.00, obtenido {credito.saldo_intereses}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_capital_cero_no_recarga_interes(self):
+        """
+        Cuando saldo_capital == 0, no hay interés que cargar: saldo_intereses debe quedar 0.00.
+        Esto ocurre cuando el último abono lleva el capital a cero.
+        """
+        from app.services.credito_service import recalcular_saldo_intereses
+
+        credito = make_credito_abono(
+            periodicidad=Periodicidad.mensual,
+            saldo_capital=Decimal("0.00"),
+            saldo_intereses=Decimal("0.00"),
+            tasa=Decimal("0.0300"),
+        )
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=MagicMock(scalar=MagicMock(return_value=Decimal("0.00"))))
+
+        await recalcular_saldo_intereses(db, credito)
+
+        assert credito.saldo_intereses == Decimal("0.00"), (
+            f"Esperado 0.00, obtenido {credito.saldo_intereses}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cuota_fija_conserva_formula_historica(self):
+        """
+        cuota_fija: la fórmula existente (total_interes - historico_pagado) se conserva intacta.
+        Con capital=1000, tasa=3%, 12 cuotas mensuales: total_interes = 1000*0.03*12 = 360.
+        Si se han pagado 60 de interés: saldo_intereses = 360 - 60 = 300.
+        """
+        from app.services.credito_service import recalcular_saldo_intereses
+
+        credito = make_credito(
+            tipo=TipoCredito.cuota_fija,
+            saldo_capital=Decimal("1000.00"),
+            saldo_intereses=Decimal("300.00"),
+            numero_cuotas=12,
+            tasa=Decimal("0.0300"),
+        )
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=MagicMock(scalar=MagicMock(return_value=Decimal("60.00"))))
+
+        await recalcular_saldo_intereses(db, credito)
+
+        # total = 1000 * 0.03 * (12/1) = 360; historico = 60; saldo = 300
+        assert credito.saldo_intereses == Decimal("300.00"), (
+            f"Esperado 300.00, obtenido {credito.saldo_intereses}"
+        )
+
+
+class TestPagoNoProgramadoReduceUnaVez:
+    """
+    T-11: Verifica que registrar_pago_no_programado reduce saldos exactamente una vez
+    para créditos cuota_fija y abono_capital, y que saldo_intereses refleja el
+    próximo período (no 0) en abono_capital.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cuota_fija_reduce_capital_exactamente_una_vez(self):
+        """
+        cuota_fija: pago no programado de 100 a capital sobre saldo_capital=1000.
+        Resultado esperado: saldo_capital=900, saldo_intereses sin cambio (cuota_fija
+        recalcula igual porque la fórmula no depende de saldo_capital).
+        """
+        credito = make_credito(
+            tipo=TipoCredito.cuota_fija,
+            saldo_capital=Decimal("1000.00"),
+            saldo_intereses=Decimal("50.00"),
+            numero_cuotas=12,
+            tasa=Decimal("0.0300"),
+        )
+
+        call_count = 0
+        async def mock_execute(stmt, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            result = MagicMock()
+            if call_count == 1:
+                result.scalar.return_value = 3  # max_cuota = 3
+            elif call_count == 2:
+                # recalcular_saldo_intereses cuota_fija consulta historico
+                result.scalar.return_value = Decimal("30.00")
+            else:
+                result.scalar_one_or_none.return_value = None
+            return result
+
+        db = AsyncMock(spec=AsyncSession)
+        db.execute = mock_execute
+        db.add = MagicMock()
+        db.flush = AsyncMock()
+
+        await PagoService.registrar_pago_no_programado(
+            db=db,
+            credito=credito,
+            monto=Decimal("100.00"),
+            destino=DestinoExcedente.capital,
+            fecha_pago=date(2026, 6, 1),
+            receptor_id=None,
+        )
+
+        assert credito.saldo_capital == Decimal("900.00"), (
+            f"saldo_capital={credito.saldo_capital}, esperado 900.00"
+        )
+
+    @pytest.mark.asyncio
+    async def test_abono_capital_reduce_y_recarga_interes(self):
+        """
+        abono_capital mensual: pago no programado de 500 a capital sobre saldo_capital=2000.
+        Resultado esperado: saldo_capital=1500, saldo_intereses=1500*0.03=45.
+        La reducción ocurre una sola vez vía _aplicar_reduccion_saldos.
+        """
+        credito = make_credito_abono(
+            periodicidad=Periodicidad.mensual,
+            saldo_capital=Decimal("2000.00"),
+            saldo_intereses=Decimal("60.00"),
+            tasa=Decimal("0.0300"),
+        )
+
+        call_count = 0
+        async def mock_execute(stmt, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            result = MagicMock()
+            if call_count == 1:
+                result.scalar.return_value = 5  # max_cuota = 5
+            else:
+                # recalcular_cuota_actual_si_no_pagada → sin cuota pendiente
+                result.scalar_one_or_none.return_value = None
+            return result
+
+        db = AsyncMock(spec=AsyncSession)
+        db.execute = mock_execute
+        db.add = MagicMock()
+        db.flush = AsyncMock()
+
+        await PagoService.registrar_pago_no_programado(
+            db=db,
+            credito=credito,
+            monto=Decimal("500.00"),
+            destino=DestinoExcedente.capital,
+            fecha_pago=date(2026, 6, 1),
+            receptor_id=None,
+        )
+
+        assert credito.saldo_capital == Decimal("1500.00"), (
+            f"saldo_capital={credito.saldo_capital}, esperado 1500.00"
+        )
+        assert credito.saldo_intereses == Decimal("45.00"), (
+            f"saldo_intereses={credito.saldo_intereses}, esperado 45.00"
+        )
+
+    @pytest.mark.asyncio
+    async def test_pago_a_intereses_no_toca_capital(self):
+        """
+        Pago no programado destinado a intereses: saldo_capital no debe cambiar,
+        saldo_intereses se reduce por el monto pagado.
+        """
+        credito = make_credito_abono(
+            periodicidad=Periodicidad.mensual,
+            saldo_capital=Decimal("2000.00"),
+            saldo_intereses=Decimal("60.00"),
+            tasa=Decimal("0.0300"),
+        )
+
+        call_count = 0
+        async def mock_execute(stmt, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            result = MagicMock()
+            if call_count == 1:
+                result.scalar.return_value = 2  # max_cuota = 2
+            else:
+                result.scalar_one_or_none.return_value = None
+            return result
+
+        db = AsyncMock(spec=AsyncSession)
+        db.execute = mock_execute
+        db.add = MagicMock()
+        db.flush = AsyncMock()
+
+        await PagoService.registrar_pago_no_programado(
+            db=db,
+            credito=credito,
+            monto=Decimal("60.00"),
+            destino=DestinoExcedente.intereses,
+            fecha_pago=date(2026, 6, 1),
+            receptor_id=None,
+        )
+
+        # Capital no debe haber cambiado
+        assert credito.saldo_capital == Decimal("2000.00"), (
+            f"saldo_capital={credito.saldo_capital}, esperado 2000.00 (no debe bajar)"
+        )
+        # Intereses deben llegar a 0 (60 - 60 = 0) y luego recalcular_saldo_intereses
+        # los recarga: 2000 * 0.03 = 60
+        assert credito.saldo_intereses == Decimal("60.00"), (
+            f"saldo_intereses={credito.saldo_intereses}, esperado 60.00 (recargado tras pago a intereses)"
         )

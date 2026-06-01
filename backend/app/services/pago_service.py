@@ -384,21 +384,18 @@ class PagoService:
         )
         max_cuota = result.scalar() or 0
 
+        # 1. Determinar el split según destino
         if destino == DestinoExcedente.capital:
-            credito.saldo_capital = max(
-                Decimal("0.00"),
-                (credito.saldo_capital - monto).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
-            )
             capital_pago = monto
             interes_pago = Decimal("0.00")
         else:
-            credito.saldo_intereses = max(
-                Decimal("0.00"),
-                (credito.saldo_intereses - monto).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
-            )
             capital_pago = Decimal("0.00")
             interes_pago = monto
 
+        # 2. Reducir saldos una única vez vía la función canónica
+        PagoService._aplicar_reduccion_saldos(credito, capital_pago, interes_pago)
+
+        # 3. Crear y persistir el pago
         from app.utils.momentos import get_momento
         pago = Pago(
             credito_id=credito.id,
@@ -418,7 +415,7 @@ class PagoService:
         db.add(pago)
         await db.flush()  # Asegura que pago.id esté disponible
 
-        # Verificar cierre por saldo
+        # 4. Verificar cierre por saldo
         if credito.saldo_capital <= 0:
             credito.activo = False
             credito.saldo_capital = Decimal("0.00")
