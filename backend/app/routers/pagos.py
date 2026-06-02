@@ -401,7 +401,7 @@ async def registrar_pago(
     Si hay excedente, retorna requiere_decision=True para que el
     frontend muestre el modal de decisión.
     """
-    pago, credito = await _get_pago_con_credito(db, pago_id)
+    pago, credito = await _get_pago_con_credito(db, pago_id, lock=True)
 
     if pago.pagado:
         raise HTTPException(status_code=422, detail="Esta cuota ya fue pagada")
@@ -453,7 +453,7 @@ async def confirmar_excedente(
     current_user: Usuario = Depends(require_role("admin", "registrador")),
     db: AsyncSession = Depends(get_db),
 ):
-    pago, credito = await _get_pago_con_credito(db, pago_id)
+    pago, credito = await _get_pago_con_credito(db, pago_id, lock=True)
 
     if pago.pagado:
         raise HTTPException(status_code=422, detail="Esta cuota ya fue pagada")
@@ -630,8 +630,12 @@ async def registrar_pago_no_programado(
     Registra un pago no programado sobre un crédito.
     No afecta las cuotas programadas existentes.
     """
+    # FOR UPDATE: serializa con otros pagos sobre el mismo crédito (evita
+    # lost updates en saldo_capital / saldo_intereses).
     credito = (await db.execute(
-        select(Credito).where(Credito.id == credito_id, Credito.deleted_at == None)  # noqa: E711
+        select(Credito)
+        .where(Credito.id == credito_id, Credito.deleted_at == None)  # noqa: E711
+        .with_for_update()
     )).scalar_one_or_none()
     if not credito:
         raise HTTPException(status_code=404, detail="Crédito no encontrado")
@@ -737,17 +741,37 @@ async def alertas_vencidos(
 async def _get_pago_con_credito(
     db: AsyncSession,
     pago_id: uuid.UUID,
+    lock: bool = False,
 ) -> tuple[Pago, Credito]:
+    """
+    Carga el pago y su crédito asociado.
+
+    lock=True bloquea la fila del crédito con SELECT ... FOR UPDATE. Se usa en
+    las operaciones que mutan saldos (registrar pago, confirmar excedente) para
+    serializar pagos concurrentes sobre el mismo crédito y evitar lost updates
+    en saldo_capital / saldo_intereses.
+
+    DECISIÓN: se lockea el crédito y LUEGO se refresca el pago. Así, si una
+    transacción concurrente ya registró esta misma cuota, al adquirir el lock
+    (que ella libera al comitear) releemos el pago con su estado real —
+    `pago.pagado` ya en True — y el guard del endpoint lo rechaza.
+    """
     pago = (await db.execute(
         select(Pago).where(Pago.id == pago_id, Pago.deleted_at == None)  # noqa: E711
     )).scalar_one_or_none()
     if not pago:
         raise HTTPException(status_code=404, detail="Pago no encontrado")
 
-    credito = (await db.execute(
-        select(Credito).where(Credito.id == pago.credito_id)
-    )).scalar_one_or_none()
+    credito_q = select(Credito).where(Credito.id == pago.credito_id)
+    if lock:
+        credito_q = credito_q.with_for_update()
+    credito = (await db.execute(credito_q)).scalar_one_or_none()
     if not credito:
         raise HTTPException(status_code=404, detail="Crédito asociado no encontrado")
+
+    if lock:
+        # Releer el pago ya con el lock del crédito tomado, para observar el
+        # estado comiteado por cualquier transacción concurrente que terminó.
+        await db.refresh(pago)
 
     return pago, credito
