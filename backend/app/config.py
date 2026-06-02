@@ -66,7 +66,11 @@ class Settings(BaseSettings):
 
     @property
     def is_production(self) -> bool:
-        return self.environment == "production"
+        # Tolerante a mayúsculas y espacios: un typo en la env var
+        # (p.ej. "Production" o " production ") no debe dejar la app en
+        # modo desarrollo por accidente — eso desactivaría cookies secure,
+        # ocultaría /docs y saltearía el guard del SECRET_KEY.
+        return self.environment.strip().lower() == "production"
 
     @model_validator(mode="after")
     def _validar_secret_key_produccion(self) -> "Settings":

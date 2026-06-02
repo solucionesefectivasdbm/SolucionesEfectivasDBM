@@ -80,3 +80,13 @@ class TestSecretKeyGuard:
     def test_default_permitido_en_desarrollo(self):
         s = Settings(environment="development", secret_key=INSECURE_SECRET_KEY)
         assert s.is_production is False
+
+    def test_is_production_tolera_mayusculas_y_espacios(self):
+        clave = "una-clave-larga-unica-y-privada-123456"
+        assert Settings(environment="Production", secret_key=clave).is_production is True
+        assert Settings(environment="  PRODUCTION  ", secret_key=clave).is_production is True
+
+    def test_guard_se_activa_con_environment_no_canonico(self):
+        # "Production" debe contar como producción → el guard del default dispara.
+        with pytest.raises(ValueError):
+            Settings(environment="Production", secret_key=INSECURE_SECRET_KEY)
