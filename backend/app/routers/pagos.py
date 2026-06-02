@@ -49,6 +49,42 @@ from app.utils.momentos import get_momento, get_periodo_momento
 router = APIRouter(prefix="/pagos", tags=["Pagos"])
 
 
+def _pago_row_a_dict(row) -> dict:
+    """
+    Convierte una fila del listado (columnas de Pago + nombre de cliente +
+    número de crédito) en el dict que consume PagoResponse.
+
+    Evita hidratar el ORM completo de Pago y serializar dos veces
+    (model_validate + model_dump por fila): se arma el dict directo desde las
+    columnas. La validación a PagoResponse ocurre solo sobre los items de la
+    página, no sobre todas las filas.
+    """
+    return {
+        "id": row.id,
+        "credito_id": row.credito_id,
+        "numero_cuota": row.numero_cuota,
+        "tipo_cuota": row.tipo_cuota,
+        "monto_a_pagar": row.monto_a_pagar,
+        "capital_a_pagar": row.capital_a_pagar,
+        "interes_a_pagar": row.interes_a_pagar,
+        "capital_pagado": row.capital_pagado,
+        "interes_pagado": row.interes_pagado,
+        "momento": row.momento,
+        "fecha_maxima": row.fecha_maxima,
+        "receptor_id": row.receptor_id,
+        "pagado": row.pagado,
+        "validado_recaudador": row.validado_recaudador,
+        "fecha_pago_real": row.fecha_pago_real,
+        "es_excedente_a": row.es_excedente_a,
+        "es_ultimo_pago": row.es_ultimo_pago,
+        "tipo_validacion": row.tipo_validacion,
+        "cliente_nombre": f"{row.cliente_nombre} {row.cliente_apellidos}",
+        "numero_credito_cliente": row.numero_credito_cliente,
+        "es_proyectada": False,
+        "razon_bloqueo": None,
+    }
+
+
 @router.get("", response_model=PaginatedResponse[PagoResponse])
 async def listar_pagos(
     anio: int = Query(..., description="Año (obligatorio)"),
@@ -85,7 +121,17 @@ async def listar_pagos(
         fecha_fin = date(anio, mes, ultimo_dia)
 
     query = (
-        select(Pago)
+        select(
+            Pago.id, Pago.credito_id, Pago.numero_cuota, Pago.tipo_cuota,
+            Pago.monto_a_pagar, Pago.capital_a_pagar, Pago.interes_a_pagar,
+            Pago.capital_pagado, Pago.interes_pagado, Pago.momento, Pago.fecha_maxima,
+            Pago.receptor_id, Pago.pagado, Pago.validado_recaudador,
+            Pago.fecha_pago_real, Pago.es_excedente_a, Pago.es_ultimo_pago,
+            Pago.tipo_validacion,
+            Cliente.nombre.label("cliente_nombre"),
+            Cliente.apellidos.label("cliente_apellidos"),
+            Credito.numero_credito_cliente.label("numero_credito_cliente"),
+        )
         .join(Credito, Pago.credito_id == Credito.id)
         .join(Cliente, Credito.cliente_id == Cliente.id)
         .where(
@@ -130,23 +176,14 @@ async def listar_pagos(
 
     # Traer TODAS las cuotas reales (sin paginar), con datos del cliente y crédito.
     # Necesitamos todas para mergearlas con las virtuales y paginar en memoria.
-    query_ext = (
-        query.add_columns(
-            Cliente.nombre.label("cliente_nombre"),
-            Cliente.apellidos.label("cliente_apellidos"),
-            Credito.numero_credito_cliente,
-        )
-        .order_by(Cliente.nombre, Cliente.apellidos, Pago.numero_cuota, Pago.id)
+    # Se arma el dict directo desde las columnas (sin ORM completo ni doble
+    # serialización); la validación a PagoResponse ocurre solo en la página.
+    query = query.order_by(
+        Cliente.nombre, Cliente.apellidos, Pago.numero_cuota, Pago.id
     )
-    rows = (await db.execute(query_ext)).all()
+    rows = (await db.execute(query)).all()
 
-    reales: list[dict] = []
-    for row in rows:
-        pago = row[0]
-        data = PagoResponse.model_validate(pago).model_dump()
-        data["cliente_nombre"] = f"{row.cliente_nombre} {row.cliente_apellidos}"
-        data["numero_credito_cliente"] = row.numero_credito_cliente
-        reales.append(data)
+    reales: list[dict] = [_pago_row_a_dict(row) for row in rows]
 
     # ── Filas virtuales (cuotas proyectadas que deberían existir pero no se
     #    han generado por estar bloqueadas detrás de una cuota pendiente) ──
