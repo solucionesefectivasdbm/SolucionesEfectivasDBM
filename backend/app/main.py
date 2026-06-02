@@ -75,7 +75,7 @@ async def root():
 async def startup_create_tables():
     """Crea las tablas de la BD si no existen y aplica migraciones mínimas de esquema."""
     from app.database import engine, Base
-    from app.models import cliente, credito, pago, gestor, receptor, audit_log, usuario
+    from app.models import cliente, credito, pago, gestor, receptor, audit_log, usuario, token_revocado
     from sqlalchemy import text
 
     async with engine.begin() as conn:

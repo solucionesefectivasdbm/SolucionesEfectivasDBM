@@ -6,7 +6,13 @@ automática de tipos. En producción (Railway) las variables se configuran
 en el dashboard; en desarrollo se leen desde .env
 """
 from functools import lru_cache
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Valor por defecto inseguro del secret_key. Se rechaza explícitamente en
+# producción (ver _validar_secret_key_produccion) para evitar que la app
+# arranque firmando JWTs con una clave pública conocida.
+INSECURE_SECRET_KEY = "cambia_esto_en_produccion"
 
 
 class Settings(BaseSettings):
@@ -20,7 +26,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://user:password@localhost/soluciones_efectivas"
 
     # JWT
-    secret_key: str = "cambia_esto_en_produccion"
+    secret_key: str = INSECURE_SECRET_KEY
     access_token_expire_minutes: int = 60
     refresh_token_expire_days: int = 7
 
@@ -61,6 +67,23 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @model_validator(mode="after")
+    def _validar_secret_key_produccion(self) -> "Settings":
+        """
+        Impide arrancar en producción con el secret_key por defecto.
+
+        Sin este guard, si la variable de entorno SECRET_KEY falta en el
+        deploy, la app booteaba firmando JWTs con una clave pública conocida,
+        permitiendo forjar tokens de cualquier usuario (incluido admin).
+        """
+        if self.is_production and self.secret_key == INSECURE_SECRET_KEY:
+            raise ValueError(
+                "SECRET_KEY no puede usar el valor por defecto en producción. "
+                "Configure una clave secreta única y privada en las variables "
+                "de entorno antes de desplegar."
+            )
+        return self
 
 
 @lru_cache

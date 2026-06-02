@@ -6,17 +6,26 @@ que JS no pueda accederlo (mitiga XSS). El access token se retorna
 en el body JSON para que el frontend lo guarde en memoria (Zustand),
 nunca en localStorage.
 
-Rate limiting: slowapi limita a 10 intentos fallidos por IP en 15 min.
-Bloqueo de 30 min al superar el límite (configurado en config.py).
+Rate limiting de login: se rastrean los intentos FALLIDOS por IP en un
+almacén en memoria. Al acumular `login_max_attempts` fallos dentro de una
+ventana de `login_block_minutes` (config.py), la IP recibe 429 hasta que
+los fallos envejezcan fuera de la ventana. Un login exitoso limpia el
+contador de esa IP.
+
+DECISIÓN: el almacén es en memoria, consistente con _revoked_refresh_tokens.
+Funciona para un despliegue de una sola instancia (MVP). Con múltiples
+instancias, migrar este estado a Redis.
 """
+import hashlib
 import logging
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
@@ -24,6 +33,7 @@ logger = logging.getLogger(__name__)
 from app.config import get_settings
 from app.database import get_db
 from app.dependencies import get_current_user, get_client_ip
+from app.models.token_revocado import TokenRevocado
 from app.models.usuario import Usuario
 from app.schemas.auth import LoginRequest, RefreshRequest, TokenResponse
 
@@ -31,10 +41,77 @@ router = APIRouter(prefix="/auth", tags=["Autenticación"])
 settings = get_settings()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=settings.bcrypt_rounds)
 
-# Almacén en memoria de refresh tokens revocados
-# DECISIÓN: En producción con múltiples instancias, usar Redis.
-# Para MVP en Render con una sola instancia, este set en memoria funciona.
-_revoked_refresh_tokens: set[str] = set()
+# Blocklist de refresh tokens revocados — persistida en DB (tabla
+# tokens_revocados). Sobrevive reinicios y funciona con múltiples instancias.
+# Ver app/models/token_revocado.py para la decisión técnica completa.
+
+
+def _hash_token(token: str) -> str:
+    """SHA-256 hex de un token. No guardamos el token crudo en la blocklist."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+async def _revocar_refresh_token(db: AsyncSession, token: str) -> None:
+    """
+    Agrega el refresh token a la blocklist (idempotente) y purga de paso los
+    registros cuyo token ya expiró. El commit lo hace get_db al cerrar el request.
+    """
+    token_hash = _hash_token(token)
+
+    ya_revocado = (await db.execute(
+        select(TokenRevocado.id).where(TokenRevocado.token_hash == token_hash)
+    )).scalar_one_or_none()
+
+    if ya_revocado is None:
+        try:
+            payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+        except JWTError:
+            payload = None
+        # Solo registramos tokens válidos y con exp: un token inválido o expirado
+        # ya lo rechaza el propio /refresh, no hace falta bloquearlo.
+        if payload is not None and "exp" in payload:
+            expires_at = datetime.fromtimestamp(payload["exp"], timezone.utc).replace(tzinfo=None)
+            db.add(TokenRevocado(token_hash=token_hash, expires_at=expires_at))
+
+    # Housekeeping: borrar registros cuyo token ya expiró (el JWT ya es inválido solo).
+    ahora_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    await db.execute(delete(TokenRevocado).where(TokenRevocado.expires_at <= ahora_utc))
+
+
+async def _refresh_token_revocado(db: AsyncSession, token: str) -> bool:
+    """True si el refresh token está en la blocklist persistida."""
+    existe = (await db.execute(
+        select(TokenRevocado.id).where(TokenRevocado.token_hash == _hash_token(token))
+    )).scalar_one_or_none()
+    return existe is not None
+
+# Rate limiting de login: timestamps (UTC) de intentos fallidos por IP.
+_failed_login_attempts: dict[str, list[datetime]] = defaultdict(list)
+
+
+def _login_bloqueado(ip: str) -> bool:
+    """
+    True si `ip` acumuló al menos `login_max_attempts` fallos dentro de la
+    ventana de `login_block_minutes`. Poda los fallos vencidos al consultar.
+    """
+    ahora = datetime.now(timezone.utc)
+    ventana = timedelta(minutes=settings.login_block_minutes)
+    recientes = [t for t in _failed_login_attempts.get(ip, []) if ahora - t < ventana]
+    if recientes:
+        _failed_login_attempts[ip] = recientes
+    else:
+        _failed_login_attempts.pop(ip, None)
+    return len(recientes) >= settings.login_max_attempts
+
+
+def _registrar_fallo_login(ip: str) -> None:
+    """Registra un intento de login fallido para `ip`."""
+    _failed_login_attempts[ip].append(datetime.now(timezone.utc))
+
+
+def _limpiar_fallos_login(ip: str) -> None:
+    """Limpia el contador de fallos de `ip` (tras un login exitoso)."""
+    _failed_login_attempts.pop(ip, None)
 
 
 def crear_access_token(user_id: str) -> str:
@@ -76,6 +153,19 @@ async def login(
     """
     Autentica al usuario y retorna access_token + refresh_token en cookie.
     """
+    ip = get_client_ip(request)
+
+    # Rate limiting: rechazar si la IP superó el máximo de intentos fallidos.
+    if _login_bloqueado(ip):
+        logger.warning("LOGIN BLOCKED — demasiados intentos fallidos (ip=%s)", ip)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                "Demasiados intentos fallidos. Intente nuevamente en "
+                f"{settings.login_block_minutes} minutos."
+            ),
+        )
+
     # Buscar usuario
     result = await db.execute(
         select(Usuario).where(
@@ -88,7 +178,8 @@ async def login(
     # Logs detallados para diagnosticar problemas de login en producción.
     # No exponen información sensible al cliente — solo a Railway logs.
     if not usuario:
-        logger.warning("LOGIN FAIL — usuario no encontrado: %r (ip=%s)", body.username, get_client_ip(request))
+        _registrar_fallo_login(ip)
+        logger.warning("LOGIN FAIL — usuario no encontrado: %r (ip=%s)", body.username, ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Credenciales incorrectas",
@@ -104,6 +195,7 @@ async def login(
         )
 
     if not password_ok:
+        _registrar_fallo_login(ip)
         logger.warning(
             "LOGIN FAIL — password no coincide para %s (must_change=%s, activo=%s)",
             body.username, usuario.must_change_password, usuario.activo,
@@ -120,6 +212,8 @@ async def login(
             detail="Usuario deshabilitado. Contacte al administrador.",
         )
 
+    # Login exitoso: limpiar el contador de fallos de esta IP.
+    _limpiar_fallos_login(ip)
     logger.info("LOGIN OK — %s (must_change=%s)", body.username, usuario.must_change_password)
 
     access_token = crear_access_token(str(usuario.id))
@@ -150,7 +244,7 @@ async def refresh(
             detail="Refresh token no encontrado",
         )
 
-    if refresh_token in _revoked_refresh_tokens:
+    if await _refresh_token_revocado(db, refresh_token):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Refresh token revocado",
@@ -204,11 +298,12 @@ async def logout(
     request: Request,
     response: Response,
     current_user: Usuario = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Invalida el refresh token y limpia la cookie."""
     refresh_token = request.cookies.get("refresh_token")
     if refresh_token:
-        _revoked_refresh_tokens.add(refresh_token)
+        await _revocar_refresh_token(db, refresh_token)
 
     response.delete_cookie(
         "refresh_token",
