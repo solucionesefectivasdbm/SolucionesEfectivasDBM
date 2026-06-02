@@ -25,41 +25,46 @@ from app.utils.fechas import (
 
 
 class TestCalcularCuotaFija:
-    """Tests de amortización francesa."""
+    """Tests de cuota fija con interés simple.
+
+    Fórmula: interes_total = capital * tasa_mensual * (num_cuotas / periodos_por_mes)
+             cuota = (capital + interes_total) / num_cuotas
+    """
 
     def test_cuota_ejemplo_basico(self):
         """
-        Préstamo: 1,000,000 COP a 3% mensual, 12 cuotas.
-        Cuota esperada ≈ 100,462 COP (verificado con calculadora financiera).
+        Préstamo: 1,000,000 COP a 3% mensual, 12 cuotas mensuales.
+        Interés simple: 1,000,000 * 0.03 * 12 = 360,000 de interés total.
+        Cuota = (1,000,000 + 360,000) / 12 = 113,333.33 COP.
         """
         capital = Decimal("1000000")
         tasa = Decimal("0.0300")
-        cuota = calcular_cuota_fija(capital, tasa, 12)
+        cuota = calcular_cuota_fija(capital, tasa, 12, Periodicidad.mensual)
         # Tolerancia de ±1 COP por redondeo
-        assert abs(cuota - Decimal("100462.13")) < Decimal("1.00")
+        assert abs(cuota - Decimal("113333.33")) < Decimal("1.00")
 
     def test_cuota_tasa_cero(self):
         """Con tasa 0%, la cuota es simplemente capital/n."""
         capital = Decimal("1200000")
-        cuota = calcular_cuota_fija(capital, Decimal("0"), 12)
+        cuota = calcular_cuota_fija(capital, Decimal("0"), 12, Periodicidad.mensual)
         assert cuota == Decimal("100000.00")
 
     def test_cuota_una_sola_cuota(self):
         """Con 1 cuota, el monto es capital + un período de interés."""
         capital = Decimal("1000000")
         tasa = Decimal("0.0300")
-        cuota = calcular_cuota_fija(capital, tasa, 1)
+        cuota = calcular_cuota_fija(capital, tasa, 1, Periodicidad.mensual)
         esperada = Decimal("1000000") * (1 + Decimal("0.0300"))
         assert abs(cuota - esperada) < Decimal("0.01")
 
     def test_cuota_es_decimal_no_float(self):
         """El resultado debe ser Decimal para evitar errores de punto flotante."""
-        cuota = calcular_cuota_fija(Decimal("500000"), Decimal("0.0250"), 6)
+        cuota = calcular_cuota_fija(Decimal("500000"), Decimal("0.0250"), 6, Periodicidad.mensual)
         assert isinstance(cuota, Decimal)
 
     def test_cuota_dos_decimales(self):
         """El resultado debe tener exactamente 2 decimales."""
-        cuota = calcular_cuota_fija(Decimal("750000"), Decimal("0.0350"), 24)
+        cuota = calcular_cuota_fija(Decimal("750000"), Decimal("0.0350"), 24, Periodicidad.mensual)
         assert cuota == cuota.quantize(Decimal("0.01"))
 
 
