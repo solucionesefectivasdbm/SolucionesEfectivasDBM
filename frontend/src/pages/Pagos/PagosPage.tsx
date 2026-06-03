@@ -396,6 +396,8 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                       <th className="table-header">Monto</th>
                       <th className="table-header">Capital</th>
                       <th className="table-header">Interés</th>
+                      <th className="table-header">Cap. pagado</th>
+                      <th className="table-header">Int. pagado</th>
                       <th className="table-header">Fecha Máx.</th>
                       <th className="table-header">Momento</th>
                       <th className="table-header">Estado</th>
@@ -429,6 +431,8 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                         <td className="table-cell font-semibold text-primary-600">{formatCOP(p.monto_a_pagar)}</td>
                         <td className="table-cell text-gray-600">{formatCOP(p.capital_a_pagar)}</td>
                         <td className="table-cell text-gray-600">{formatCOP(p.interes_a_pagar)}</td>
+                        <td className="table-cell text-green-700">{formatCOP(p.capital_pagado)}</td>
+                        <td className="table-cell text-green-700">{formatCOP(p.interes_pagado)}</td>
                         <td className="table-cell">
                           <span className={clsx('text-xs', isVencido(p) && 'text-danger font-bold')}>
                             {formatFecha(p.fecha_maxima)}
