@@ -397,7 +397,8 @@ export default function ClientesPage() {
                               <th className="table-header">Monto</th>
                               <th className="table-header">Capital</th>
                               <th className="table-header">Interés</th>
-                              <th className="table-header">Pagado</th>
+                              <th className="table-header">Cap. pagado</th>
+                              <th className="table-header">Int. pagado</th>
                               <th className="table-header">Fecha Máx.</th>
                               <th className="table-header">Estado</th>
                             </tr>
@@ -410,7 +411,8 @@ export default function ClientesPage() {
                                 <td className="table-cell">{formatCOP(p.monto_a_pagar)}</td>
                                 <td className="table-cell">{formatCOP(p.capital_a_pagar)}</td>
                                 <td className="table-cell">{formatCOP(p.interes_a_pagar)}</td>
-                                <td className="table-cell">{formatCOP(p.capital_pagado + p.interes_pagado)}</td>
+                                <td className="table-cell">{formatCOP(p.capital_pagado)}</td>
+                                <td className="table-cell">{formatCOP(p.interes_pagado)}</td>
                                 <td className="table-cell">{formatFecha(p.fecha_maxima)}</td>
                                 <td className="table-cell">
                                   {p.pagado ? <span className="badge-success">Pagado</span> : <span className="badge-warning">Pendiente</span>}
