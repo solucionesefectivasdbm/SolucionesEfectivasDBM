@@ -114,7 +114,7 @@ class TestMigracionRecalculo:
 
     @pytest.mark.asyncio
     async def test_abono_capital_saldo_inflado_se_corrige(self, client_admin_db, db_session):
-        # abono_capital: saldo_capital=2000 (debería 1500), saldo_intereses=60 (debería 1500*0.03=45).
+        # abono_capital: saldo_capital=2000 (debería 1500); saldo_intereses NO aplica → 0.
         credito = await _credito(
             db_session,
             tipo_credito=TipoCredito.abono_capital,
@@ -129,7 +129,8 @@ class TestMigracionRecalculo:
         assert r.status_code == 200, r.text
 
         assert credito.saldo_capital == Decimal("1500.00"), credito.saldo_capital
-        assert credito.saldo_intereses == Decimal("45.00"), credito.saldo_intereses
+        # abono_capital no lleva saldo de intereses acumulado.
+        assert credito.saldo_intereses == Decimal("0.00"), credito.saldo_intereses
 
     @pytest.mark.asyncio
     async def test_credito_ya_correcto_no_se_toca(self, client_admin_db, db_session):

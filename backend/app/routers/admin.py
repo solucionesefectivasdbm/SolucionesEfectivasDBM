@@ -40,14 +40,15 @@ async def recalcular_saldos_migracion(
     Algoritmo:
     - saldo_capital = max(0, capital_prestado − Σ capital_pagado)
     - saldo_intereses (cuota_fija) = capital*tasa*(n/ppm) − Σ interes_pagado
-    - saldo_intereses (abono_capital) = calcular_interes_periodo(saldo_capital_nuevo, tasa)
+    - saldo_intereses (abono_capital) = 0 (no lleva saldo acumulado; el interés
+      total es indeterminado y se cobra por cuota)
 
     Registra cada cambio en audit_log. Retorna resumen completo.
 
     ENDPOINT TEMPORAL — eliminar tras ejecutar en producción.
     """
     # Importar helpers aquí para evitar circular dependency
-    from app.services.credito_service import calcular_interes_periodo, _periodos_por_mes
+    from app.services.credito_service import _periodos_por_mes
 
     # Traer créditos activos con sus pagos no eliminados en una sola query
     creditos_result = await db.execute(
@@ -101,10 +102,9 @@ async def recalcular_saldos_migracion(
             if nuevo_saldo_intereses < Decimal("0.00"):
                 nuevo_saldo_intereses = Decimal("0.00")
         else:
-            # abono_capital: próximo período calculado sobre el saldo_capital recalculado
-            nuevo_saldo_intereses = calcular_interes_periodo(
-                nuevo_saldo_capital, credito.tasa_interes_mensual
-            )
+            # abono_capital: NO lleva saldo de intereses acumulado (el total es
+            # indeterminado). El interés se cobra por cuota, no a nivel crédito.
+            nuevo_saldo_intereses = Decimal("0.00")
 
         # --- Detectar si cambió algo ---
         saldo_capital_anterior = Decimal(str(credito.saldo_capital))

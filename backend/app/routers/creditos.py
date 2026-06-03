@@ -156,7 +156,13 @@ async def crear_credito(
         fecha_inicial_pago=body.fecha_inicial_pago,
         periodicidad=body.periodicidad,
         saldo_capital=body.capital_prestado,
-        saldo_intereses=body.capital_prestado * body.tasa_interes_mensual * (Decimal(body.numero_cuotas) / Decimal(_periodos_por_mes(body.periodicidad))) if body.numero_cuotas else body.capital_prestado * body.tasa_interes_mensual,
+        # cuota_fija: el interés total se conoce desde el inicio → se lleva saldo.
+        # abono_capital: el interés total es indeterminado → NO lleva saldo (0).
+        # En ambos casos el interés de cada período se cobra en la cuota.
+        saldo_intereses=(
+            body.capital_prestado * body.tasa_interes_mensual
+            * (Decimal(body.numero_cuotas) / Decimal(_periodos_por_mes(body.periodicidad)))
+        ) if body.numero_cuotas else Decimal("0.00"),
         abono_minimo=body.abono_minimo,
         numero_cuotas=body.numero_cuotas,
         calcular_interes_dias_corridos=body.calcular_interes_dias_corridos,

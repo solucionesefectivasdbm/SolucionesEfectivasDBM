@@ -547,12 +547,11 @@ async def recalcular_saldo_intereses(
             nuevo_saldo = Decimal("0.00")
         credito.saldo_intereses = nuevo_saldo.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     else:
-        # Abono capital — cada período de interés es independiente: el saldo de intereses
-        # del próximo período es saldo_capital_vigente * tasa, sin restar el histórico pagado
-        # (el histórico ya se consumió en cuotas cerradas de períodos anteriores).
-        credito.saldo_intereses = calcular_interes_periodo(
-            credito.saldo_capital, credito.tasa_interes_mensual
-        )
+        # Abono capital — NO lleva saldo de intereses acumulado: el interés total es
+        # indeterminado (depende de cuánto tarde el cliente en bajar el capital). El
+        # interés se cobra período a período en la cuota (Pago.interes_a_pagar), no como
+        # un saldo a nivel crédito.
+        credito.saldo_intereses = Decimal("0.00")
 
 
 async def recalcular_cuota_actual_si_no_pagada(

@@ -401,9 +401,9 @@ class TestCaracterizacionRecalcularSaldoIntereses:
 
         # CORRECTO: debe quedar el interés del próximo período = 2000 * 0.03 = 60
         # BUG ACTUAL: queda 0.00 (porque 60 - 180 = -120, recortado a 0)
-        assert credito.saldo_intereses == Decimal("60.00"), (
-            f"Esperado 60.00, obtenido {credito.saldo_intereses} "
-            "(bug: resta histórico del período calculado)"
+        assert credito.saldo_intereses == Decimal("0.00"), (
+            f"Esperado 0.00, obtenido {credito.saldo_intereses} "
+            "(abono_capital no lleva saldo de intereses acumulado)"
         )
 
     @pytest.mark.asyncio
@@ -429,9 +429,9 @@ class TestCaracterizacionRecalcularSaldoIntereses:
 
         await recalcular_saldo_intereses(db, credito)
 
-        assert credito.saldo_intereses == Decimal("60.00"), (
-            f"Esperado 60.00, obtenido {credito.saldo_intereses} "
-            "(bug: resta histórico del período calculado)"
+        assert credito.saldo_intereses == Decimal("0.00"), (
+            f"Esperado 0.00, obtenido {credito.saldo_intereses} "
+            "(abono_capital no lleva saldo de intereses acumulado)"
         )
 
 
@@ -512,9 +512,9 @@ class TestCaracterizacionPagoNoProgramadoDobleReduccion:
         )
         # saldo_intereses debe ser el próximo período: 1500 * 0.03 = 45
         # BUG ACTUAL: queda en 0 porque (1500*0.03) - 180 = 45 - 180 = -135 → 0
-        assert credito.saldo_intereses == Decimal("45.00"), (
-            f"saldo_intereses={credito.saldo_intereses}, esperado 45.00 "
-            "(bug: resta historico en recalcular_saldo_intereses)"
+        assert credito.saldo_intereses == Decimal("0.00"), (
+            f"saldo_intereses={credito.saldo_intereses}, esperado 0.00 "
+            "(abono_capital no lleva saldo de intereses acumulado)"
         )
 
 
@@ -748,8 +748,8 @@ class TestRecalcularSaldoInteresesAbonoCaptial:
 
         await recalcular_saldo_intereses(db, credito)
 
-        assert credito.saldo_intereses == Decimal("60.00"), (
-            f"Esperado 60.00, obtenido {credito.saldo_intereses}"
+        assert credito.saldo_intereses == Decimal("0.00"), (
+            f"Esperado 0.00, obtenido {credito.saldo_intereses}"
         )
 
     @pytest.mark.asyncio
@@ -773,8 +773,8 @@ class TestRecalcularSaldoInteresesAbonoCaptial:
 
         await recalcular_saldo_intereses(db, credito)
 
-        assert credito.saldo_intereses == Decimal("60.00"), (
-            f"Esperado 60.00, obtenido {credito.saldo_intereses}"
+        assert credito.saldo_intereses == Decimal("0.00"), (
+            f"Esperado 0.00, obtenido {credito.saldo_intereses}"
         )
 
     @pytest.mark.asyncio
@@ -926,8 +926,9 @@ class TestPagoNoProgramadoReduceUnaVez:
         assert credito.saldo_capital == Decimal("1500.00"), (
             f"saldo_capital={credito.saldo_capital}, esperado 1500.00"
         )
-        assert credito.saldo_intereses == Decimal("45.00"), (
-            f"saldo_intereses={credito.saldo_intereses}, esperado 45.00"
+        assert credito.saldo_intereses == Decimal("0.00"), (
+            f"saldo_intereses={credito.saldo_intereses}, esperado 0.00 "
+            "(abono_capital no lleva saldo de intereses acumulado)"
         )
 
     @pytest.mark.asyncio
@@ -974,6 +975,7 @@ class TestPagoNoProgramadoReduceUnaVez:
         )
         # Intereses deben llegar a 0 (60 - 60 = 0) y luego recalcular_saldo_intereses
         # los recarga: 2000 * 0.03 = 60
-        assert credito.saldo_intereses == Decimal("60.00"), (
-            f"saldo_intereses={credito.saldo_intereses}, esperado 60.00 (recargado tras pago a intereses)"
+        assert credito.saldo_intereses == Decimal("0.00"), (
+            f"saldo_intereses={credito.saldo_intereses}, esperado 0.00 "
+            "(abono_capital no lleva saldo de intereses; el interés se cobra por cuota)"
         )

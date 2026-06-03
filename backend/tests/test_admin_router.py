@@ -60,19 +60,25 @@ async def client_recaudador(db_session):
 
 @pytest_asyncio.fixture
 async def client_admin(db_session):
-    """Cliente HTTP autenticado como admin."""
+    """Cliente HTTP autenticado como admin, con get_db apuntando a la DB de test."""
+    from app.database import get_db
     usuario = make_usuario(TipoUsuario.admin)
 
     async def override_user():
         return usuario
 
+    async def override_db():
+        yield db_session
+
     app.dependency_overrides[get_current_user] = override_user
+    app.dependency_overrides[get_db] = override_db
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
     ) as ac:
         yield ac
     app.dependency_overrides.pop(get_current_user, None)
+    app.dependency_overrides.pop(get_db, None)
 
 
 # ---------------------------------------------------------------------------
