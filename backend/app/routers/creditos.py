@@ -2,7 +2,7 @@
 import math
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import and_, func, or_, select
@@ -232,10 +232,27 @@ async def actualizar_credito(
     cambios = {}
     requiere_recalculo = False
 
-    if body.capital_prestado is not None:
+    # Solo recomputar si el capital REALMENTE cambió. El formulario de edición
+    # reenvía capital_prestado (pre-cargado) aunque el admin solo cambie la
+    # fecha; sin este guard, eso reseteaba saldo_capital al capital completo.
+    if body.capital_prestado is not None and body.capital_prestado != credito.capital_prestado:
         cambios["capital_prestado"] = (str(credito.capital_prestado), str(body.capital_prestado))
         credito.capital_prestado = body.capital_prestado
-        credito.saldo_capital = body.capital_prestado
+
+        # saldo_capital debe descontar el capital YA pagado, no resetearse al
+        # capital completo (si no, "resucita" el capital de las cuotas ya pagadas).
+        capital_pagado_total = (await db.execute(
+            select(func.coalesce(func.sum(Pago.capital_pagado), Decimal("0.00"))).where(
+                Pago.credito_id == credito.id,
+                Pago.deleted_at == None,  # noqa: E711
+            )
+        )).scalar() or Decimal("0.00")
+        saldo_capital_anterior = str(credito.saldo_capital)
+        nuevo_saldo = (body.capital_prestado - Decimal(str(capital_pagado_total))).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        credito.saldo_capital = max(Decimal("0.00"), nuevo_saldo)
+        cambios["saldo_capital"] = (saldo_capital_anterior, str(credito.saldo_capital))
         requiere_recalculo = True
 
     if body.tasa_interes_mensual is not None:
