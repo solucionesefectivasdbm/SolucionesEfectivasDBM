@@ -1,10 +1,11 @@
 """
 routers/admin.py — Endpoints de administración.
 
-ENDPOINT TEMPORAL — eliminar tras ejecutar en producción.
-Este router contiene el endpoint de migración one-shot para recalcular
-saldos desincronizados por los bugs corregidos en fix-reduccion-saldos
-(Batch A/B/C). Debe eliminarse en un commit posterior al deploy exitoso.
+ENDPOINTS TEMPORALES — eliminar tras ejecutar en producción.
+Este router contiene endpoints de migración one-shot:
+  - recalcular-saldos: corrige saldos desincronizados (fix-reduccion-saldos, Batch A/B/C).
+  - anclar-fechas: backfill de anchor_dia_1/2 y re-anclaje de cuotas pendientes.
+Deben eliminarse en commits posteriores a sus respectivos deploys exitosos.
 """
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
@@ -15,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import get_client_ip, require_role
-from app.models.credito import Credito, TipoCredito
+from app.models.credito import Credito, Periodicidad, TipoCredito
 from app.models.pago import Pago
 from app.models.usuario import Usuario
 from app.services import audit_service
@@ -153,4 +154,145 @@ async def recalcular_saldos_migracion(
         "total_revisados": total_revisados,
         "total_corregidos": total_corregidos,
         "corregidos": detalles,
+    }
+
+
+# ---------------------------------------------------------------------------
+# ENDPOINT TEMPORAL — eliminar tras ejecutar en producción
+# ---------------------------------------------------------------------------
+@router.post("/migracion/anclar-fechas")
+async def anclar_fechas_migracion(
+    request: Request,
+    current_user: Usuario = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+    client_ip: str = Depends(get_client_ip),
+) -> dict[str, Any]:
+    """
+    Backfill idempotente: deriva anchor_dia_1/anchor_dia_2 para créditos
+    ACTIVOS mensual/quincenal y re-ancla sus cuotas pendientes.
+
+    Algoritmo por crédito activo (deleted_at IS NULL, activo=True):
+    - semanal/diario: ignorados (anchors permanecen NULL).
+    - mensual: anchor_dia_1 = fecha_inicial_pago.day; anchor_dia_2 = NULL.
+    - quincenal: deriva la pareja desde los primeros 2 días DISTINTOS de
+      Pago.fecha_maxima (deleted_at IS NULL). Si <2 días → flagged como
+      requiere_revision_manual, no se recalcula.
+    - Idempotencia: crédito con anchor_dia_1 ya establecido → saltado
+      (se cuenta en total_saltados, no se re-aplica).
+    - Después de anclar, recalcula cuotas pendientes via recalcular_cuotas_futuras
+      usando desde_fecha = siguiente fecha ancla desde la última cuota PAGADA,
+      o fecha_inicial_pago si ninguna pagada.
+    - Solo cambian fecha_maxima/momento; capital/interes/monto NO se tocan.
+
+    Retorna resumen: total_revisados, total_anclados, total_saltados,
+    requiere_revision_manual (lista de credito_id como str).
+
+    ENDPOINT TEMPORAL — eliminar tras ejecutar en producción.
+    """
+    from app.services.credito_service import recalcular_cuotas_futuras
+    from app.utils.fechas import siguiente_fecha_maxima
+
+    creditos_result = await db.execute(
+        select(Credito).where(
+            Credito.deleted_at == None,  # noqa: E711
+            Credito.activo == True,  # noqa: E712
+        )
+    )
+    creditos = creditos_result.scalars().all()
+
+    total_revisados = 0
+    total_anclados = 0
+    total_saltados = 0
+    requiere_revision_manual: list[str] = []
+
+    for credito in creditos:
+        total_revisados += 1
+
+        # semanal/diario: leave untouched
+        if credito.periodicidad in (Periodicidad.semanal, Periodicidad.diario):
+            total_saltados += 1
+            continue
+
+        # Idempotency gate: skip if anchor already set
+        if credito.anchor_dia_1 is not None:
+            total_saltados += 1
+            continue
+
+        # --- Derive anchors ---
+        if credito.periodicidad == Periodicidad.mensual:
+            credito.anchor_dia_1 = credito.fecha_inicial_pago.day
+            credito.anchor_dia_2 = None
+
+        elif credito.periodicidad == Periodicidad.quincenal:
+            # Walk cuotas in chronological order and collect the first 2 distinct days.
+            # Using chronological order avoids picking up drifted-date days from
+            # later pending cuotas before we have seen the original cadence days.
+            pagos_result = await db.execute(
+                select(Pago.fecha_maxima)
+                .where(
+                    Pago.credito_id == credito.id,
+                    Pago.deleted_at == None,  # noqa: E711
+                )
+                .order_by(Pago.fecha_maxima)
+            )
+            fechas_maxima = pagos_result.scalars().all()
+            seen_days: list[int] = []
+            for f in fechas_maxima:
+                if f.day not in seen_days:
+                    seen_days.append(f.day)
+                if len(seen_days) == 2:
+                    break
+            distinct_days = sorted(seen_days)
+
+            if len(distinct_days) < 2:
+                # Cannot derive pair — flag for manual review
+                requiere_revision_manual.append(str(credito.id))
+                continue
+
+            credito.anchor_dia_1 = distinct_days[0]
+            credito.anchor_dia_2 = distinct_days[1]
+
+        # --- Compute desde_fecha for recalc ---
+        # Last PAID cuota's fecha_maxima (deleted_at IS NULL)
+        ultima_pagada_result = await db.execute(
+            select(func.max(Pago.fecha_maxima)).where(
+                Pago.credito_id == credito.id,
+                Pago.pagado == True,  # noqa: E712
+                Pago.deleted_at == None,  # noqa: E711
+            )
+        )
+        ultima_pagada: Any = ultima_pagada_result.scalar()
+
+        if ultima_pagada is None:
+            # No paid cuotas: start from fecha_inicial_pago (first cuota keeps its date)
+            desde_fecha = credito.fecha_inicial_pago
+        else:
+            # Advance one anchor step from last paid cuota
+            desde_fecha = siguiente_fecha_maxima(ultima_pagada, credito)
+
+        # --- Re-anchor pending cuotas ---
+        await recalcular_cuotas_futuras(db, credito, desde_fecha)
+
+        # --- Audit log ---
+        await audit_service.registrar_actualizacion_campos(
+            db=db,
+            entidad="creditos",
+            entidad_id=credito.id,
+            usuario_id=current_user.id,
+            ip_origen=client_ip,
+            cambios={
+                "anchor_fechas": (
+                    "null",
+                    f"anchor_dia_1={credito.anchor_dia_1}, anchor_dia_2={credito.anchor_dia_2}",
+                )
+            },
+        )
+
+        total_anclados += 1
+
+    return {
+        "total_revisados": total_revisados,
+        "total_anclados": total_anclados,
+        "total_saltados": total_saltados,
+        "requiere_revision_manual": requiere_revision_manual,
     }
