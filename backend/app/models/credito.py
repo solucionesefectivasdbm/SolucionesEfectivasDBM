@@ -62,6 +62,15 @@ class Credito(AuditMixin, Base):
     periodicidad: Mapped[Periodicidad] = mapped_column(
         Enum(Periodicidad, name="periodicidad_enum"), nullable=False
     )
+    anchor_dia_1: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True,
+        comment="Dia-del-mes ancla (1-31). mensual: el dia unico. "
+                "quincenal: el dia mas temprano (d1<d2). NULL para semanal/diario y legacy."
+    )
+    anchor_dia_2: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True,
+        comment="Segundo dia-del-mes ancla (1-31), solo quincenal (d1<d2). NULL en el resto."
+    )
     saldo_capital: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     saldo_intereses: Mapped[Decimal] = mapped_column(
         Numeric(15, 2), nullable=False, default=Decimal("0.00")
