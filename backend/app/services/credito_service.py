@@ -390,7 +390,7 @@ async def generar_siguiente_cuota(
         return None
 
     siguiente_numero = cuota_anterior.numero_cuota + 1
-    fecha_maxima = siguiente_fecha_maxima(cuota_anterior.fecha_maxima, credito.periodicidad)
+    fecha_maxima = siguiente_fecha_maxima(cuota_anterior.fecha_maxima, credito)
     momento = get_momento(fecha_maxima)
 
     if credito.tipo_credito == TipoCredito.cuota_fija:
@@ -667,4 +667,4 @@ async def recalcular_cuotas_futuras(
     for cuota in cuotas_futuras:
         cuota.fecha_maxima = fecha_actual
         cuota.momento = get_momento(fecha_actual)
-        fecha_actual = siguiente_fecha_maxima(fecha_actual, credito.periodicidad)
+        fecha_actual = siguiente_fecha_maxima(fecha_actual, credito)

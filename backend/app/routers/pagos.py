@@ -44,6 +44,7 @@ from app.schemas.pago import (
 )
 from app.services import audit_service
 from app.services.pago_service import PagoService
+from app.utils.fechas import siguiente_fecha_maxima
 from app.utils.momentos import get_momento, get_periodo_momento
 
 router = APIRouter(prefix="/pagos", tags=["Pagos"])
@@ -314,19 +315,11 @@ async def _calcular_virtuales(
             if actual is None or nc > actual:
                 bloqueador_map[cid] = nc
 
-    delta_dias = {
-        Periodicidad.mensual: 30,
-        Periodicidad.quincenal: 14,
-        Periodicidad.semanal: 7,
-        Periodicidad.diario: 1,
-    }
-
     virtuales: list[dict] = []
 
     for row in creditos_rows:
         credito = row[0]
         cliente_nombre = f"{row.cliente_nombre} {row.cliente_apellidos}"
-        delta = delta_dias[credito.periodicidad]
         ppm = Decimal(_periodos_por_mes(credito.periodicidad))
 
         existentes = existentes_map.get(credito.id, set())
@@ -339,12 +332,14 @@ async def _calcular_virtuales(
             continue
 
         # Proyectar cuota por cuota hasta exceder fecha_fin.
+        # Anchor-aware: mensual/quincenal use the anchor chain;
+        # semanal/diario use siguiente_fecha_maxima (timedelta).
         n = 1
+        fecha_proy = credito.fecha_inicial_pago  # cuota #1 date
         # Safety cap
         max_iter = 2000
         while max_iter > 0:
             max_iter -= 1
-            fecha_proy = credito.fecha_inicial_pago + timedelta(days=(n - 1) * delta)
             if fecha_proy > fecha_fin:
                 break
             if (
@@ -419,6 +414,8 @@ async def _calcular_virtuales(
                     "razon_bloqueo": f"Cuota #{bloqueador} pendiente",
                 })
 
+            # Advance to next cuota date using anchor-aware function
+            fecha_proy = siguiente_fecha_maxima(fecha_proy, credito)
             n += 1
 
     return virtuales

@@ -12,7 +12,10 @@ from decimal import Decimal
 
 import pytest
 
-from app.models.credito import Periodicidad
+import uuid
+from datetime import datetime
+
+from app.models.credito import Credito, Periodicidad, TipoCredito
 from app.services.credito_service import (
     calcular_cuota_fija,
     calcular_interes_periodo,
@@ -22,6 +25,30 @@ from app.utils.fechas import (
     debe_usar_dias_corridos,
     siguiente_fecha_maxima,
 )
+
+
+def _credito_fixture(periodicidad: Periodicidad, anchor_dia_1=None, anchor_dia_2=None) -> Credito:
+    """Minimal in-memory Credito for date function tests (no DB required)."""
+    return Credito(
+        id=uuid.uuid4(),
+        cliente_id=uuid.uuid4(),
+        numero_credito_cliente="TEST-CR-001",
+        tipo_credito=TipoCredito.cuota_fija,
+        capital_prestado=Decimal("1000000.00"),
+        tasa_interes_mensual=Decimal("0.0300"),
+        fecha_apertura=date(2026, 1, 1),
+        fecha_inicial_pago=date(2026, 1, 15),
+        periodicidad=periodicidad,
+        saldo_capital=Decimal("1000000.00"),
+        saldo_intereses=Decimal("0.00"),
+        numero_cuotas=12,
+        calcular_interes_dias_corridos=False,
+        activo=True,
+        created_at=datetime(2026, 1, 1),
+        updated_at=datetime(2026, 1, 1),
+        anchor_dia_1=anchor_dia_1,
+        anchor_dia_2=anchor_dia_2,
+    )
 
 
 class TestCalcularCuotaFija:
@@ -149,30 +176,45 @@ class TestDebUsarDiasCorridos:
 
 
 class TestSiguienteFechaMaxima:
-    """Tests para generación de fechas según periodicidad."""
+    """Tests para generación de fechas según periodicidad (anchor-aware).
 
-    def test_mensual_suma_30_dias(self):
-        fecha = date(2026, 1, 15)
-        siguiente = siguiente_fecha_maxima(fecha, Periodicidad.mensual)
-        assert siguiente == date(2026, 2, 14)
+    REWRITTEN from old +30/+14 timedelta tests to use the new anchor-aware
+    signature: siguiente_fecha_maxima(fecha_anterior, credito).
+    Spec: REQ-2.1, REQ-2.2, CAP-4.
+    """
 
-    def test_quincenal_suma_14_dias(self):
-        fecha = date(2026, 1, 15)
-        siguiente = siguiente_fecha_maxima(fecha, Periodicidad.quincenal)
-        assert siguiente == date(2026, 1, 29)
-
-    def test_semanal_suma_7_dias(self):
-        fecha = date(2026, 1, 15)
-        siguiente = siguiente_fecha_maxima(fecha, Periodicidad.semanal)
-        assert siguiente == date(2026, 1, 22)
-
-    def test_diario_suma_1_dia(self):
-        fecha = date(2026, 1, 15)
-        siguiente = siguiente_fecha_maxima(fecha, Periodicidad.diario)
-        assert siguiente == date(2026, 1, 16)
+    def test_mensual_anchor_mismo_dia_del_mes(self):
+        """Scenario 2.1.a: mensual anchor 15, Jan-15 → Feb-15 (same day)."""
+        credito = _credito_fixture(Periodicidad.mensual, anchor_dia_1=15)
+        resultado = siguiente_fecha_maxima(date(2026, 1, 15), credito)
+        assert resultado == date(2026, 2, 15)
 
     def test_mensual_cruce_anio(self):
-        """30 de diciembre + 30 días = 29 de enero del año siguiente."""
-        fecha = date(2026, 12, 30)
-        siguiente = siguiente_fecha_maxima(fecha, Periodicidad.mensual)
-        assert siguiente == date(2027, 1, 29)
+        """Scenario 2.2.a: mensual anchor 15, Dec-15 → Jan-15 next year."""
+        credito = _credito_fixture(Periodicidad.mensual, anchor_dia_1=15)
+        resultado = siguiente_fecha_maxima(date(2026, 12, 15), credito)
+        assert resultado == date(2027, 1, 15)
+
+    def test_quincenal_d1_a_d2_mismo_mes(self):
+        """Scenario 3.1.a: quincenal 15/30, Mar-15 → Mar-30."""
+        credito = _credito_fixture(Periodicidad.quincenal, anchor_dia_1=15, anchor_dia_2=30)
+        resultado = siguiente_fecha_maxima(date(2026, 3, 15), credito)
+        assert resultado == date(2026, 3, 30)
+
+    def test_quincenal_d2_a_d1_mes_siguiente(self):
+        """Scenario 3.1.b: quincenal 15/30, Mar-30 → Apr-15."""
+        credito = _credito_fixture(Periodicidad.quincenal, anchor_dia_1=15, anchor_dia_2=30)
+        resultado = siguiente_fecha_maxima(date(2026, 3, 30), credito)
+        assert resultado == date(2026, 4, 15)
+
+    def test_semanal_suma_7_dias(self):
+        """Scenario 4.1.a: semanal advances by +7 days (unchanged semantics)."""
+        credito = _credito_fixture(Periodicidad.semanal)
+        resultado = siguiente_fecha_maxima(date(2026, 1, 15), credito)
+        assert resultado == date(2026, 1, 22)
+
+    def test_diario_suma_1_dia(self):
+        """Scenario 4.2.a: diario advances by +1 day (unchanged semantics)."""
+        credito = _credito_fixture(Periodicidad.diario)
+        resultado = siguiente_fecha_maxima(date(2026, 1, 15), credito)
+        assert resultado == date(2026, 1, 16)

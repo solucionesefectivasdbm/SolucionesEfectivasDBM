@@ -1,39 +1,96 @@
 """
 utils/fechas.py — Generación de fechas_maxima según periodicidad.
 
-DECISIÓN TÉCNICA: Usamos timedelta simple (no relativedelta de dateutil)
-porque los requerimientos definen períodos fijos en días (30, 14, 7, 1),
-no "1 mes calendario". Esto es intencional: evita ambigüedad en meses
-cortos (febrero) y garantiza consistencia en todos los cálculos.
+DECISIÓN TÉCNICA (original): Usamos timedelta simple para semanal/diario.
+DECISIÓN TÉCNICA (anchor): mensual y quincenal usan anchor_dia_1/anchor_dia_2
+del crédito para anclar la cuota al mismo día del mes cada período, con clamp
+via calendar.monthrange para meses cortos (Febrero, Abril, etc.).
+stdlib only — no dateutil.
 
 Zona horaria: todas las funciones de "ahora" usan America/Bogota (UTC-5).
 Railway y la BD corren en UTC, pero el negocio opera en hora colombiana.
 """
+import calendar
 from datetime import date, datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 from app.models.credito import Periodicidad
 from app.utils.tz import TZ_BOGOTA, ahora_bogota, hoy_bogota  # re-exportar
 
+if TYPE_CHECKING:
+    from app.models.credito import Credito
 
-def siguiente_fecha_maxima(fecha_anterior: date, periodicidad: Periodicidad) -> date:
+
+def _fecha_en_dia_ancla(anio: int, mes: int, dia_ancla: int) -> date:
+    """Returns date(anio, mes, dia_ancla) clamped to the last day of the month."""
+    ultimo_dia = calendar.monthrange(anio, mes)[1]
+    return date(anio, mes, min(dia_ancla, ultimo_dia))
+
+
+def _avanzar_mes(anio: int, mes: int) -> tuple[int, int]:
+    """Advances (anio, mes) by one calendar month, rolling over December→January."""
+    mes += 1
+    if mes > 12:
+        mes = 1
+        anio += 1
+    return anio, mes
+
+
+def _siguiente_mensual(fecha_anterior: date, dia_ancla: int) -> date:
+    """Next mensual due date: one month forward, clamped to dia_ancla."""
+    anio, mes = _avanzar_mes(fecha_anterior.year, fecha_anterior.month)
+    return _fecha_en_dia_ancla(anio, mes, dia_ancla)
+
+
+def _siguiente_quincenal(fecha_anterior: date, d1: int, d2: int) -> date:
+    """Next quincenal due date using anchor alternation.
+
+    d1 < d2. The next date is the smallest anchor-date strictly greater than
+    fecha_anterior. Comparison uses the CLAMPED candidate date (not .day ==
+    d2) so that short-month clamps alternate correctly.
     """
-    Calcula la próxima fecha_maxima dado la fecha anterior y la periodicidad.
+    cand_d2 = _fecha_en_dia_ancla(fecha_anterior.year, fecha_anterior.month, d2)
+    if fecha_anterior < cand_d2:
+        return cand_d2  # d2 anchor still in the future this month
+    # fecha_anterior >= cand_d2 → move to d1 in the next month
+    anio, mes = _avanzar_mes(fecha_anterior.year, fecha_anterior.month)
+    return _fecha_en_dia_ancla(anio, mes, d1)
+
+
+def siguiente_fecha_maxima(fecha_anterior: date, credito: "Credito") -> date:
+    """
+    Calcula la próxima fecha_maxima dado la fecha anterior y el crédito.
+
+    DECISIÓN TÉCNICA: mensual y quincenal usan anchor_dia_1/anchor_dia_2 del
+    crédito para anclar la fecha al día correcto del mes. semanal/diario siguen
+    usando timedelta fijo (+7, +1) y no consultan los campos anchor.
+
+    Retrocompatibilidad: si un crédito mensual/quincenal aún no tiene anchors
+    asignados (NULL — créditos legacy pre-migración), se usa el comportamiento
+    anterior (+30/+14 días) como fallback seguro hasta que el endpoint de
+    backfill POST /admin/migracion/anclar-fechas popule los anchors.
 
     Args:
         fecha_anterior: La fecha_maxima de la cuota anterior
                         (o fecha_inicial_pago para la primera cuota).
-        periodicidad: mensual/quincenal/semanal/diario
+        credito: El objeto Credito con periodicidad y campos anchor.
 
     Returns:
         La fecha_maxima de la siguiente cuota.
     """
-    delta_map = {
-        Periodicidad.mensual: 30,
-        Periodicidad.quincenal: 14,
-        Periodicidad.semanal: 7,
-        Periodicidad.diario: 1,
-    }
-    dias = delta_map[periodicidad]
+    p = credito.periodicidad
+    if p == Periodicidad.mensual:
+        if credito.anchor_dia_1 is not None:
+            return _siguiente_mensual(fecha_anterior, credito.anchor_dia_1)
+        # Legacy fallback: no anchor yet
+        return fecha_anterior + timedelta(days=30)
+    if p == Periodicidad.quincenal:
+        if credito.anchor_dia_1 is not None and credito.anchor_dia_2 is not None:
+            return _siguiente_quincenal(fecha_anterior, credito.anchor_dia_1, credito.anchor_dia_2)
+        # Legacy fallback: no anchor yet
+        return fecha_anterior + timedelta(days=14)
+    # semanal/diario: timedelta fixo, anchors ignorados
+    dias = 7 if p == Periodicidad.semanal else 1
     return fecha_anterior + timedelta(days=dias)
 
 
