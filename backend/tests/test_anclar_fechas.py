@@ -351,6 +351,8 @@ class TestAnclarFechasQuincenalInsufficientData:
             "Quincenal with <2 distinct cuota days must be in requiere_revision_manual"
         )
 
+        # anchor_dia_1 must be seeded from fecha_inicial_pago.day (REQ-5.3a)
+        assert credito.anchor_dia_1 == credito.fecha_inicial_pago.day
         # anchor_dia_2 must remain NULL (not guessed) — credito in identity map
         assert credito.anchor_dia_2 is None
 
@@ -457,6 +459,40 @@ class TestAnclarFechasIdempotency:
 
         # State is identical (anchor unchanged)
         assert credito.anchor_dia_1 == anchor1_after
+
+    @pytest.mark.asyncio
+    async def test_quincenal_flaggeado_skipeado_en_segunda_ejecucion(
+        self, client_admin: AsyncClient, db_session
+    ):
+        """REQ-8.1a (quincenal): flagged quincenal with anchor_dia_1 seeded is skipped on re-run."""
+        credito = await _credito(
+            db_session,
+            periodicidad=Periodicidad.quincenal,
+            fecha_inicial_pago=date(2025, 11, 15),
+        )
+        # Only one cuota → flagged on first run
+        await _cuota(db_session, credito, 1, date(2025, 11, 15))
+
+        # First run — must flag and seed anchor_dia_1
+        r1 = await client_admin.post(ENDPOINT)
+        assert r1.status_code == 200, r1.text
+        data1 = r1.json()
+        assert str(credito.id) in data1["requiere_revision_manual"]
+        assert credito.anchor_dia_1 == 15  # seeded
+        assert credito.anchor_dia_2 is None
+
+        # Second run — anchor_dia_1 is not None → idempotency gate skips this credit
+        r2 = await client_admin.post(ENDPOINT)
+        assert r2.status_code == 200, r2.text
+        data2 = r2.json()
+
+        # Credit must NOT appear again in requiere_revision_manual on second run
+        assert str(credito.id) not in data2["requiere_revision_manual"], (
+            "Flagged quincenal with anchor_dia_1 seeded must be skipped (not re-flagged) on re-run"
+        )
+        # State unchanged
+        assert credito.anchor_dia_1 == 15
+        assert credito.anchor_dia_2 is None
 
     @pytest.mark.asyncio
     async def test_segunda_ejecucion_estado_identico(

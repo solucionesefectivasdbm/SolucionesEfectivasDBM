@@ -245,7 +245,10 @@ async def anclar_fechas_migracion(
             distinct_days = sorted(seen_days)
 
             if len(distinct_days) < 2:
-                # Cannot derive pair — flag for manual review
+                # Cannot derive pair — seed anchor_dia_1 from fecha_inicial_pago so
+                # that a re-run recognises this credit as already-seen (idempotency gate).
+                # anchor_dia_2 stays None; still flagged; recalc is skipped.
+                credito.anchor_dia_1 = credito.fecha_inicial_pago.day
                 requiere_revision_manual.append(str(credito.id))
                 continue
 
