@@ -218,3 +218,162 @@ class TestSiguienteFechaMaxima:
         credito = _credito_fixture(Periodicidad.diario)
         resultado = siguiente_fecha_maxima(date(2026, 1, 15), credito)
         assert resultado == date(2026, 1, 16)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GROUP D — recalcular_cuotas_futuras anchor behavior (async DB)
+# Spec: CAP-6, REQ-6.1–6.5
+# ─────────────────────────────────────────────────────────────────────────────
+
+from app.services.credito_service import recalcular_cuotas_futuras
+from app.models.pago import Pago, TipoCuota
+from app.utils.momentos import get_momento
+
+
+async def _credito_db(db_session, periodicidad, anchor_dia_1=None, anchor_dia_2=None, **kwargs):
+    """Persist a minimal Credito to the test DB."""
+    defaults = dict(
+        id=uuid.uuid4(),
+        cliente_id=uuid.uuid4(),
+        numero_credito_cliente=f"RCALC-{uuid.uuid4().hex[:8]}-CR-001",
+        tipo_credito=TipoCredito.cuota_fija,
+        capital_prestado=Decimal("1200000.00"),
+        tasa_interes_mensual=Decimal("0.0300"),
+        fecha_apertura=date(2026, 1, 1),
+        fecha_inicial_pago=date(2026, 1, 20),
+        periodicidad=periodicidad,
+        saldo_capital=Decimal("1200000.00"),
+        saldo_intereses=Decimal("0.00"),
+        numero_cuotas=12,
+        activo=True,
+        anchor_dia_1=anchor_dia_1,
+        anchor_dia_2=anchor_dia_2,
+    )
+    defaults.update(kwargs)
+    credito = Credito(**defaults)
+    db_session.add(credito)
+    await db_session.flush()
+    return credito
+
+
+async def _pago_db(db_session, credito, numero, fecha_maxima, pagado=False, capital=None, interes=None):
+    """Persist a Pago to the test DB."""
+    cap = capital or Decimal("100000.00")
+    intr = interes or Decimal("30000.00")
+    pago = Pago(
+        id=uuid.uuid4(),
+        credito_id=credito.id,
+        numero_cuota=numero,
+        tipo_cuota=TipoCuota.programada,
+        monto_a_pagar=cap + intr,
+        capital_a_pagar=cap,
+        interes_a_pagar=intr,
+        capital_pagado=cap if pagado else Decimal("0.00"),
+        interes_pagado=intr if pagado else Decimal("0.00"),
+        fecha_maxima=fecha_maxima,
+        momento=get_momento(fecha_maxima),
+        pagado=pagado,
+    )
+    db_session.add(pago)
+    await db_session.flush()
+    return pago
+
+
+class TestRecalcularCuotasFuturasAnchor:
+    """CAP-6: recalcular_cuotas_futuras re-anchors pending cuotas; amounts unchanged."""
+
+    @pytest.mark.asyncio
+    async def test_6_1_a_mensual_re_anchor_drifted_dates(self, db_session):
+        """Scenario 6.1.a: mensual anchor_dia_1=20, drifted dates corrected."""
+        credito = await _credito_db(
+            db_session, Periodicidad.mensual, anchor_dia_1=20,
+            fecha_inicial_pago=date(2026, 1, 20)
+        )
+        # Paid cuota 1
+        await _pago_db(db_session, credito, 1, date(2026, 1, 20), pagado=True)
+        # Pending cuotas with drifted dates
+        cuota2 = await _pago_db(db_session, credito, 2, date(2026, 2, 19))
+        cuota3 = await _pago_db(db_session, credito, 3, date(2026, 3, 21))
+        cuota4 = await _pago_db(db_session, credito, 4, date(2026, 4, 20))
+
+        await recalcular_cuotas_futuras(db_session, credito, date(2026, 2, 20))
+
+        assert cuota2.fecha_maxima == date(2026, 2, 20)
+        assert cuota3.fecha_maxima == date(2026, 3, 20)
+        assert cuota4.fecha_maxima == date(2026, 4, 20)
+
+    @pytest.mark.asyncio
+    async def test_6_2_a_quincenal_re_anchor_with_alternation(self, db_session):
+        """Scenario 6.2.a: quincenal d1=15 d2=30, drifted pending cuotas corrected."""
+        credito = await _credito_db(
+            db_session, Periodicidad.quincenal, anchor_dia_1=15, anchor_dia_2=30,
+            fecha_inicial_pago=date(2026, 3, 15),
+            tipo_credito=TipoCredito.abono_capital, numero_cuotas=None,
+        )
+        # Last paid: Mar-15
+        await _pago_db(db_session, credito, 1, date(2026, 3, 15), pagado=True)
+        # Drifted pending cuotas
+        cuota2 = await _pago_db(db_session, credito, 2, date(2026, 3, 29))
+        cuota3 = await _pago_db(db_session, credito, 3, date(2026, 4, 12))
+
+        await recalcular_cuotas_futuras(db_session, credito, date(2026, 3, 30))
+
+        assert cuota2.fecha_maxima == date(2026, 3, 30)
+        assert cuota3.fecha_maxima == date(2026, 4, 15)
+
+    @pytest.mark.asyncio
+    async def test_6_3_a_amounts_invariant(self, db_session):
+        """Scenario 6.3.a: amounts and saldos unchanged after recalcular."""
+        credito = await _credito_db(
+            db_session, Periodicidad.mensual, anchor_dia_1=20,
+        )
+        cuota = await _pago_db(
+            db_session, credito, 1, date(2026, 2, 19),
+            capital=Decimal("100000.00"), interes=Decimal("30000.00")
+        )
+        original_capital = cuota.capital_a_pagar
+        original_interes = cuota.interes_a_pagar
+        original_monto = cuota.monto_a_pagar
+
+        await recalcular_cuotas_futuras(db_session, credito, date(2026, 2, 20))
+
+        # Dates changed
+        assert cuota.fecha_maxima == date(2026, 2, 20)
+        # Amounts unchanged
+        assert cuota.capital_a_pagar == original_capital
+        assert cuota.interes_a_pagar == original_interes
+        assert cuota.monto_a_pagar == original_monto
+
+    @pytest.mark.asyncio
+    async def test_6_4_a_paid_cuotas_untouched(self, db_session):
+        """Scenario 6.4.a: paid cuotas keep their historical fecha_maxima."""
+        credito = await _credito_db(
+            db_session, Periodicidad.mensual, anchor_dia_1=20,
+        )
+        cuota_pagada = await _pago_db(
+            db_session, credito, 1, date(2026, 1, 18), pagado=True
+        )
+        cuota_pendiente = await _pago_db(
+            db_session, credito, 2, date(2026, 2, 19)
+        )
+
+        await recalcular_cuotas_futuras(db_session, credito, date(2026, 2, 20))
+
+        # Paid cuota date is historical and must NOT change
+        assert cuota_pagada.fecha_maxima == date(2026, 1, 18)
+        # Pending cuota date is corrected
+        assert cuota_pendiente.fecha_maxima == date(2026, 2, 20)
+
+    @pytest.mark.asyncio
+    async def test_6_5_a_momento_recomputed(self, db_session):
+        """Scenario 6.5.a: momento is recomputed for corrected fecha_maxima."""
+        credito = await _credito_db(
+            db_session, Periodicidad.mensual, anchor_dia_1=20,
+        )
+        cuota = await _pago_db(db_session, credito, 1, date(2026, 2, 19))
+        old_momento = cuota.momento
+
+        await recalcular_cuotas_futuras(db_session, credito, date(2026, 2, 20))
+
+        assert cuota.fecha_maxima == date(2026, 2, 20)
+        assert cuota.momento == get_momento(date(2026, 2, 20))
