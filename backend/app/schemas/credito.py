@@ -14,10 +14,15 @@ class CreditoCreate(BaseModel):
     tasa_interes_mensual: Decimal
     fecha_apertura: date
     fecha_inicial_pago: date
+    fecha_inicial_pago_2: Optional[date] = None  # segunda fecha de pago, SOLO quincenal
     periodicidad: Periodicidad
     numero_cuotas: Optional[int] = None
     abono_minimo: Optional[Decimal] = None
     calcular_interes_dias_corridos: bool = False
+
+    # Derived anchor fields (populated by model_validator, not from payload)
+    anchor_dia_1: Optional[int] = None
+    anchor_dia_2: Optional[int] = None
 
     @field_validator("capital_prestado")
     @classmethod
@@ -48,6 +53,27 @@ class CreditoCreate(BaseModel):
         # fecha_inicial_pago no puede ser anterior a fecha_apertura
         if self.fecha_inicial_pago < self.fecha_apertura:
             raise ValueError("La fecha inicial de pago no puede ser anterior a la fecha de apertura")
+
+        # Quincenal: requires second date, must be distinct day, derive anchors
+        if self.periodicidad == Periodicidad.quincenal:
+            if self.fecha_inicial_pago_2 is None:
+                raise ValueError("quincenal requiere la segunda fecha de pago (fecha_inicial_pago_2)")
+            if self.fecha_inicial_pago_2 < self.fecha_apertura:
+                raise ValueError("La segunda fecha de pago no puede ser anterior a la apertura")
+            if self.fecha_inicial_pago_2.day == self.fecha_inicial_pago.day:
+                raise ValueError("Las dos fechas de pago deben caer en dias distintos del mes")
+            # Normalize: d1 < d2
+            d1, d2 = sorted([self.fecha_inicial_pago.day, self.fecha_inicial_pago_2.day])
+            self.anchor_dia_1 = d1
+            self.anchor_dia_2 = d2
+        elif self.periodicidad == Periodicidad.mensual:
+            # Mensual: derive anchor from fecha_inicial_pago.day; ignore fecha_inicial_pago_2
+            self.anchor_dia_1 = self.fecha_inicial_pago.day
+            self.anchor_dia_2 = None
+        else:
+            # semanal/diario: no anchors
+            self.anchor_dia_1 = None
+            self.anchor_dia_2 = None
 
         return self
 

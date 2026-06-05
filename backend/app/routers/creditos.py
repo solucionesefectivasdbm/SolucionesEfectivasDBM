@@ -155,6 +155,8 @@ async def crear_credito(
         fecha_apertura=body.fecha_apertura,
         fecha_inicial_pago=body.fecha_inicial_pago,
         periodicidad=body.periodicidad,
+        anchor_dia_1=body.anchor_dia_1,
+        anchor_dia_2=body.anchor_dia_2,
         saldo_capital=body.capital_prestado,
         # cuota_fija: el interés total se conoce desde el inicio → se lleva saldo.
         # abono_capital: el interés total es indeterminado → NO lleva saldo (0).
