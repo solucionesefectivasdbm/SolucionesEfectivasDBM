@@ -24,6 +24,13 @@ class CreditoCreate(BaseModel):
     anchor_dia_1: Optional[int] = None
     anchor_dia_2: Optional[int] = None
 
+    @field_validator("anchor_dia_1", "anchor_dia_2")
+    @classmethod
+    def validar_anchor_dia(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and not (1 <= v <= 31):
+            raise ValueError("anchor_dia debe estar entre 1 y 31")
+        return v
+
     @field_validator("capital_prestado")
     @classmethod
     def validar_capital(cls, v: Decimal) -> Decimal:

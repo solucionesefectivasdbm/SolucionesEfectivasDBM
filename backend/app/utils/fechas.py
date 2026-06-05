@@ -11,8 +11,11 @@ Zona horaria: todas las funciones de "ahora" usan America/Bogota (UTC-5).
 Railway y la BD corren en UTC, pero el negocio opera en hora colombiana.
 """
 import calendar
+import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 from app.models.credito import Periodicidad
 from app.utils.tz import TZ_BOGOTA, ahora_bogota, hoy_bogota  # re-exportar
@@ -82,12 +85,24 @@ def siguiente_fecha_maxima(fecha_anterior: date, credito: "Credito") -> date:
     if p == Periodicidad.mensual:
         if credito.anchor_dia_1 is not None:
             return _siguiente_mensual(fecha_anterior, credito.anchor_dia_1)
-        # Legacy fallback: no anchor yet
+        # Legacy fallback: no anchor yet — warn so ops can track backfill progress
+        credito_id = getattr(credito, "id", None)
+        logger.warning(
+            "siguiente_fecha_maxima: anchor NULL para credito_id=%s periodicidad=%s — usando fallback +30d",
+            credito_id,
+            p.value,
+        )
         return fecha_anterior + timedelta(days=30)
     if p == Periodicidad.quincenal:
         if credito.anchor_dia_1 is not None and credito.anchor_dia_2 is not None:
             return _siguiente_quincenal(fecha_anterior, credito.anchor_dia_1, credito.anchor_dia_2)
-        # Legacy fallback: no anchor yet
+        # Legacy fallback: no anchor yet — warn so ops can track backfill progress
+        credito_id = getattr(credito, "id", None)
+        logger.warning(
+            "siguiente_fecha_maxima: anchor NULL para credito_id=%s periodicidad=%s — usando fallback +14d",
+            credito_id,
+            p.value,
+        )
         return fecha_anterior + timedelta(days=14)
     # semanal/diario: timedelta fixo, anchors ignorados
     dias = 7 if p == Periodicidad.semanal else 1

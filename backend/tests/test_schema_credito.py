@@ -144,6 +144,56 @@ class TestQuincenalValidationErrors:
             CreditoCreate(**payload)
 
 
+class TestAnchorDayRangeValidation:
+    """REQ-1.3: anchor_dia_1/anchor_dia_2 must be in range [1, 31]."""
+
+    def test_anchor_day_0_rejected(self):
+        """REQ-1.3: anchor day 0 is invalid — fecha_inicial_pago with day=0 cannot be constructed;
+        verify via quincenal with anchor_dia_1 directly set to 0 fails validation."""
+        # Day 0 is not a valid calendar day. We test via a direct model construction
+        # that bypasses the model_validator to inject an out-of-range derived anchor.
+        # The field_validator on anchor_dia_1 must catch anchor = 0.
+        with pytest.raises(ValidationError):
+            CreditoCreate.model_validate({
+                "cliente_id": str(uuid.uuid4()),
+                "tipo_credito": "cuota_fija",
+                "capital_prestado": "1000000.00",
+                "tasa_interes_mensual": "0.0300",
+                "fecha_apertura": "2026-01-01",
+                "fecha_inicial_pago": "2026-01-20",
+                "periodicidad": "mensual",
+                "numero_cuotas": 12,
+                "anchor_dia_1": 0,  # out of range — must be rejected
+            })
+
+    def test_anchor_day_32_rejected(self):
+        """REQ-1.3: anchor day 32 is invalid — must raise ValidationError."""
+        with pytest.raises(ValidationError):
+            CreditoCreate.model_validate({
+                "cliente_id": str(uuid.uuid4()),
+                "tipo_credito": "cuota_fija",
+                "capital_prestado": "1000000.00",
+                "tasa_interes_mensual": "0.0300",
+                "fecha_apertura": "2026-01-01",
+                "fecha_inicial_pago": "2026-01-20",
+                "periodicidad": "mensual",
+                "numero_cuotas": 12,
+                "anchor_dia_1": 32,  # out of range — must be rejected
+            })
+
+    def test_anchor_days_1_and_31_accepted(self):
+        """REQ-1.3: boundary anchors 1 and 31 must be accepted."""
+        # Day 1 via mensual (fecha_inicial_pago on the 1st)
+        payload_d1 = _base_payload(fecha_inicial_pago="2026-01-01")
+        c1 = CreditoCreate(**payload_d1)
+        assert c1.anchor_dia_1 == 1
+
+        # Day 31 via mensual (fecha_inicial_pago on the 31st)
+        payload_d31 = _base_payload(fecha_inicial_pago="2026-01-31")
+        c31 = CreditoCreate(**payload_d31)
+        assert c31.anchor_dia_1 == 31
+
+
 class TestSemanalDiarioAnchorNull:
     """REQ-1.1.c, REQ-1.1.d: semanal and diario derive no anchors (both NULL)."""
 
