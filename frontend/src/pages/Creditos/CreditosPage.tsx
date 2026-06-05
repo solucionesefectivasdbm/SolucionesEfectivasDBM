@@ -13,6 +13,7 @@ import clsx from 'clsx'
 interface CreditoForm {
   cliente_id: string; tipo_credito: string; capital_prestado: number
   tasa_interes_mensual: number; fecha_apertura: string; fecha_inicial_pago: string
+  fecha_inicial_pago_2?: string
   periodicidad: string; numero_cuotas: number; calcular_interes_dias_corridos: boolean
   abono_minimo: number
 }
@@ -50,6 +51,8 @@ export default function CreditosPage() {
   const { register, handleSubmit, watch, reset, formState: { errors } } = useForm<CreditoForm>()
   const { register: regEdit, handleSubmit: handleEdit, reset: resetEdit } = useForm<EditForm>()
   const tipoCreditoWatch = watch('tipo_credito')
+  const periodicidadWatch = watch('periodicidad')
+  const fechaInicialPagoWatch = watch('fecha_inicial_pago')
 
   const cargar = useCallback(async () => {
     setLoading(true)
@@ -100,6 +103,9 @@ export default function CreditosPage() {
         numero_cuotas: datosPendientes.tipo_credito === 'cuota_fija' ? parseInt(String(datosPendientes.numero_cuotas)) : null,
         abono_minimo: datosPendientes.tipo_credito === 'abono_capital' && datosPendientes.abono_minimo
           ? parseFloat(String(datosPendientes.abono_minimo)) : null,
+        fecha_inicial_pago_2: datosPendientes.periodicidad === 'quincenal'
+          ? (datosPendientes.fecha_inicial_pago_2 || undefined)
+          : undefined,
       }
       await creditosApi.crear(payload)
       toast.success('Crédito creado')
@@ -134,6 +140,12 @@ export default function CreditosPage() {
       { label: 'Fecha inicial de pago', value: datosPendientes.fecha_inicial_pago },
       { label: 'Periodicidad', value: periodicidad },
     ]
+    if (datosPendientes.periodicidad === 'quincenal' && datosPendientes.fecha_inicial_pago_2) {
+      items.splice(items.findIndex(i => i.label === 'Periodicidad') + 1, 0, {
+        label: 'Segunda fecha de pago',
+        value: datosPendientes.fecha_inicial_pago_2,
+      })
+    }
     if (datosPendientes.tipo_credito === 'cuota_fija') {
       items.push({ label: 'Número de cuotas', value: String(datosPendientes.numero_cuotas) })
     }
@@ -364,6 +376,27 @@ export default function CreditosPage() {
               )}
             </select>
           </FormField>
+          {periodicidadWatch === 'quincenal' && (
+            <FormField label="Segunda fecha de pago" required error={errors.fecha_inicial_pago_2?.message}>
+              <input
+                {...register('fecha_inicial_pago_2', {
+                  required: periodicidadWatch === 'quincenal' ? 'Requerido para quincenal' : false,
+                  validate: (v) => {
+                    if (periodicidadWatch !== 'quincenal') return true
+                    if (!v) return 'Requerido para quincenal'
+                    if (fechaInicialPagoWatch && v) {
+                      const d1 = new Date(fechaInicialPagoWatch)
+                      const d2 = new Date(v)
+                      if (d1.getUTCDate() === d2.getUTCDate()) return 'Las dos fechas deben caer en días distintos del mes'
+                    }
+                    return true
+                  },
+                })}
+                type="date"
+                className={`input ${errors.fecha_inicial_pago_2 ? 'input-error' : ''}`}
+              />
+            </FormField>
+          )}
           {tipoCreditoWatch === 'cuota_fija' && (
             <FormField label="Número de cuotas" required>
               <input {...register('numero_cuotas', { required: tipoCreditoWatch === 'cuota_fija' })}
