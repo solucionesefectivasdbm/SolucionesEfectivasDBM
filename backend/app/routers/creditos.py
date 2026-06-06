@@ -222,8 +222,8 @@ async def actualizar_credito(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Solo Admin. Permite modificar capital, tasa y fecha del pago activo.
-    La modificación de fecha del pago activo recalcula todos los momentos/fechas futuros.
+    Solo Admin. Permite modificar capital, tasa y abono mínimo.
+    Para re-anclar fechas de pago usar PATCH /creditos/{id}/dias-pago.
     """
     credito = (await db.execute(
         select(Credito).where(Credito.id == credito_id, Credito.deleted_at == None)  # noqa: E711
@@ -286,11 +286,6 @@ async def actualizar_credito(
         recalculada = await recalcular_cuota_actual_si_no_pagada(db, credito)
         if recalculada:
             cambios["cuota_actual_recalculada"] = ("no", "si")
-
-    if body.fecha_pago_activo is not None:
-        # Esta modificación recalcula TODOS los pagos futuros
-        await recalcular_cuotas_futuras(db, credito, body.fecha_pago_activo)
-        cambios["fecha_pago_activo"] = (str(credito.fecha_inicial_pago), str(body.fecha_pago_activo))
 
     await audit_service.registrar_actualizacion_campos(
         db=db, entidad="creditos", entidad_id=credito.id,

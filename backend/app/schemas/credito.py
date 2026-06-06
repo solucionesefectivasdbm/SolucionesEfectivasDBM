@@ -90,7 +90,6 @@ class CreditoUpdate(BaseModel):
     capital_prestado: Optional[Decimal] = None
     tasa_interes_mensual: Optional[Decimal] = None
     abono_minimo: Optional[Decimal] = None  # Solo aplica a abono_capital
-    fecha_pago_activo: Optional[date] = None  # Recalcula todo el ciclo
 
     @field_validator("abono_minimo")
     @classmethod
