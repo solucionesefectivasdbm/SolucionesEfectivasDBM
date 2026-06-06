@@ -92,6 +92,8 @@ export interface Credito {
   numero_cuotas: number | null
   calcular_interes_dias_corridos: boolean
   activo: boolean
+  anchor_dia_1: number | null
+  anchor_dia_2: number | null
 }
 
 // ─── Pago ─────────────────────────────────────────────────────────────────────
