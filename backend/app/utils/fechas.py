@@ -70,8 +70,8 @@ def siguiente_fecha_maxima(fecha_anterior: date, credito: "Credito") -> date:
 
     Retrocompatibilidad: si un crédito mensual/quincenal aún no tiene anchors
     asignados (NULL — créditos legacy pre-migración), se usa el comportamiento
-    anterior (+30/+14 días) como fallback seguro hasta que el endpoint de
-    backfill POST /admin/migracion/anclar-fechas popule los anchors.
+    anterior (+30/+14 días) como fallback seguro. Los anchors se asignan al
+    crear/editar el crédito o vía la ventana de edición de días de pago.
 
     Args:
         fecha_anterior: La fecha_maxima de la cuota anterior

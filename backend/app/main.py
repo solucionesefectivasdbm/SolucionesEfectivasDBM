@@ -12,7 +12,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.routers import (
-    admin,
     auth,
     auditoria,
     clientes,
@@ -126,8 +125,6 @@ app.include_router(creditos.router, prefix=API_PREFIX)
 app.include_router(pagos.router, prefix=API_PREFIX)
 app.include_router(reportes.router, prefix=API_PREFIX)
 app.include_router(auditoria.router, prefix=API_PREFIX)
-# TEMPORAL — eliminar tras ejecutar migración en producción
-app.include_router(admin.router, prefix=API_PREFIX)
 
 
 @app.get("/health", tags=["Sistema"])
