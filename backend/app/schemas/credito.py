@@ -90,13 +90,25 @@ class CreditoUpdate(BaseModel):
     capital_prestado: Optional[Decimal] = None
     tasa_interes_mensual: Optional[Decimal] = None
     abono_minimo: Optional[Decimal] = None  # Solo aplica a abono_capital
-    fecha_pago_activo: Optional[date] = None  # Recalcula todo el ciclo
 
     @field_validator("abono_minimo")
     @classmethod
     def validar_abono_minimo(cls, v: Optional[Decimal]) -> Optional[Decimal]:
         if v is not None and v < 0:
             raise ValueError("El abono mínimo no puede ser negativo")
+        return v
+
+
+class DiasPagoUpdate(BaseModel):
+    """Payload for PATCH /creditos/{id}/dias-pago — edits anchor days only."""
+    anchor_dia_1: int
+    anchor_dia_2: Optional[int] = None
+
+    @field_validator("anchor_dia_1", "anchor_dia_2")
+    @classmethod
+    def _rango(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and not (1 <= v <= 31):
+            raise ValueError("anchor_dia debe estar entre 1 y 31")
         return v
 
 
@@ -118,3 +130,5 @@ class CreditoResponse(BaseModel):
     numero_cuotas: Optional[int]
     calcular_interes_dias_corridos: bool
     activo: bool
+    anchor_dia_1: Optional[int] = None
+    anchor_dia_2: Optional[int] = None
