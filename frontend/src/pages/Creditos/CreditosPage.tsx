@@ -25,8 +25,8 @@ interface EditForm {
 }
 
 interface DiasPagoForm {
-  anchor_dia_1: number
-  anchor_dia_2: number
+  anchor_dia_1: number | undefined
+  anchor_dia_2: number | undefined
 }
 
 export default function CreditosPage() {
@@ -308,8 +308,8 @@ export default function CreditosPage() {
                             <button onClick={() => {
                               setCreditoDias(c)
                               resetDias({
-                                anchor_dia_1: c.anchor_dia_1 ?? 1,
-                                anchor_dia_2: c.anchor_dia_2 ?? 1,
+                                anchor_dia_1: c.anchor_dia_1 ?? undefined,
+                                anchor_dia_2: c.anchor_dia_2 ?? undefined,
                               })
                               setModalDiasPago(true)
                             }}
@@ -509,6 +509,13 @@ export default function CreditosPage() {
           <p className="text-xs text-gray-500 bg-blue-50 border border-blue-200 rounded-lg p-3">
             Las cuotas pendientes se reprogramarán a los nuevos días. Los montos no cambian.
           </p>
+          {(creditoDias?.periodicidad === 'mensual'
+            ? creditoDias.anchor_dia_1 == null
+            : (creditoDias?.anchor_dia_1 == null || creditoDias?.anchor_dia_2 == null)) && (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+              Este crédito aún no tiene día de pago configurado.
+            </p>
+          )}
           <FormField label="Día de pago" required error={errorsDias.anchor_dia_1?.message}>
             <input
               {...regDias('anchor_dia_1', {
