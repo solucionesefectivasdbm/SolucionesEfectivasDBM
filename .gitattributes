@@ -1,0 +1,5 @@
+# Shell scripts and container entrypoints must keep LF endings so they run
+# correctly inside Linux containers regardless of the author's OS.
+*.sh text eol=lf
+Procfile text eol=lf
+Dockerfile text eol=lf
