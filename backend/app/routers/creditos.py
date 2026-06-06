@@ -1,7 +1,7 @@
 """routers/creditos.py — Gestión de créditos (cuota fija y abono a capital)."""
 import math
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -17,7 +17,7 @@ from app.models.gestor import Gestor
 from app.models.pago import Pago
 from app.models.usuario import TipoUsuario, Usuario
 from app.schemas.common import PaginatedResponse
-from app.schemas.credito import CreditoCreate, CreditoResponse, CreditoUpdate
+from app.schemas.credito import CreditoCreate, CreditoResponse, CreditoUpdate, DiasPagoUpdate
 from app.schemas.pago import PagoResponse
 from app.services.credito_service import _periodos_por_mes
 from app.services import audit_service
@@ -222,8 +222,8 @@ async def actualizar_credito(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Solo Admin. Permite modificar capital, tasa y fecha del pago activo.
-    La modificación de fecha del pago activo recalcula todos los momentos/fechas futuros.
+    Solo Admin. Permite modificar capital, tasa y abono mínimo.
+    Para re-anclar fechas de pago usar PATCH /creditos/{id}/dias-pago.
     """
     credito = (await db.execute(
         select(Credito).where(Credito.id == credito_id, Credito.deleted_at == None)  # noqa: E711
@@ -287,15 +287,102 @@ async def actualizar_credito(
         if recalculada:
             cambios["cuota_actual_recalculada"] = ("no", "si")
 
-    if body.fecha_pago_activo is not None:
-        # Esta modificación recalcula TODOS los pagos futuros
-        await recalcular_cuotas_futuras(db, credito, body.fecha_pago_activo)
-        cambios["fecha_pago_activo"] = (str(credito.fecha_inicial_pago), str(body.fecha_pago_activo))
-
     await audit_service.registrar_actualizacion_campos(
         db=db, entidad="creditos", entidad_id=credito.id,
         usuario_id=current_user.id, ip_origen=get_client_ip(request), cambios=cambios,
     )
+    return CreditoResponse.model_validate(credito)
+
+
+@router.patch("/{credito_id}/dias-pago", response_model=CreditoResponse)
+async def actualizar_dias_pago(
+    credito_id: uuid.UUID,
+    body: DiasPagoUpdate,
+    request: Request,
+    current_user: Usuario = Depends(require_role("admin", "registrador", "recaudador")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Admin / Registrador / Recaudador. Re-anchors pending cuota dates to new anchor days.
+    Only fecha_maxima/momento of PENDING cuotas change — paid cuotas and all amounts
+    remain untouched.
+    """
+    from app.models.credito import Periodicidad as Per
+    from app.utils.fechas import siguiente_fecha_maxima
+
+    credito = (await db.execute(
+        select(Credito).where(Credito.id == credito_id, Credito.deleted_at == None)  # noqa: E711
+    )).scalar_one_or_none()
+    if not credito:
+        raise HTTPException(status_code=404, detail="Crédito no encontrado")
+
+    if not credito.activo:
+        raise HTTPException(
+            status_code=422,
+            detail="No se puede modificar un crédito cerrado",
+        )
+
+    p = credito.periodicidad
+    if p in (Per.semanal, Per.diario):
+        raise HTTPException(
+            status_code=422,
+            detail="Editar días no aplica para esta periodicidad",
+        )
+
+    if p == Per.mensual:
+        if body.anchor_dia_2 is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="mensual no admite segundo día",
+            )
+        d1, d2 = body.anchor_dia_1, None
+    else:  # quincenal
+        if body.anchor_dia_2 is None:
+            raise HTTPException(
+                status_code=422,
+                detail="quincenal requiere segundo día",
+            )
+        if body.anchor_dia_1 == body.anchor_dia_2:
+            raise HTTPException(
+                status_code=422,
+                detail="los días deben ser distintos",
+            )
+        d1, d2 = sorted([body.anchor_dia_1, body.anchor_dia_2])
+
+    old1, old2 = credito.anchor_dia_1, credito.anchor_dia_2
+    credito.anchor_dia_1 = d1
+    credito.anchor_dia_2 = d2
+
+    # desde_fecha — mirror admin.py:258-277
+    ultima_pagada: date | None = (await db.execute(
+        select(func.max(Pago.fecha_maxima)).where(
+            Pago.credito_id == credito.id,
+            Pago.pagado == True,  # noqa: E712
+            Pago.deleted_at == None,  # noqa: E711
+        )
+    )).scalar()
+
+    if ultima_pagada is None:
+        desde_fecha = credito.fecha_inicial_pago
+    else:
+        desde_fecha = siguiente_fecha_maxima(ultima_pagada, credito)
+
+    await recalcular_cuotas_futuras(db, credito, desde_fecha)
+
+    await audit_service.registrar_actualizacion_campos(
+        db=db,
+        entidad="creditos",
+        entidad_id=credito.id,
+        usuario_id=current_user.id,
+        ip_origen=get_client_ip(request),
+        cambios={
+            "anchor_fechas": (
+                f"d1={old1},d2={old2}",
+                f"d1={d1},d2={d2}",
+            )
+        },
+    )
+
     return CreditoResponse.model_validate(credito)
 
 

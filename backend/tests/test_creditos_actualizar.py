@@ -86,16 +86,18 @@ async def _crear_credito_con_pago(db_session, sufijo: str) -> Credito:
 
 class TestActualizarCreditoSaldo:
     @pytest.mark.asyncio
-    async def test_cambio_de_fecha_no_resetea_saldo_capital(self, client_admin_db, db_session):
+    async def test_reenvio_capital_igual_no_resetea_saldo_capital(self, client_admin_db, db_session):
         """
-        Escenario reportado: el form reenvía capital_prestado (igual) al cambiar
-        la fecha. saldo_capital debe quedarse en 600, NO volver a 1000.
+        Escenario reportado: el form reenvía capital_prestado (igual al actual).
+        saldo_capital debe quedarse en 600, NO volver a 1000.
+        Note: fecha_pago_activo was removed from CreditoUpdate; day re-anchoring
+        is now handled exclusively by PATCH /creditos/{id}/dias-pago.
         """
         credito = await _crear_credito_con_pago(db_session, "fecha")
 
         r = await client_admin_db.patch(
             f"/api/v1/creditos/{credito.id}",
-            json={"capital_prestado": 1000, "fecha_pago_activo": "2026-04-01"},
+            json={"capital_prestado": 1000},
         )
         assert r.status_code == 200, r.text
         assert credito.saldo_capital == Decimal("600.00"), (
