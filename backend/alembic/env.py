@@ -26,12 +26,15 @@ target_metadata = Base.metadata
 
 
 def get_url():
-    """Lee DATABASE_URL desde variables de entorno en lugar de alembic.ini."""
-    import os
-    return os.getenv(
-        "DATABASE_URL",
-        "postgresql+asyncpg://postgres:soluciones2026@localhost/soluciones_efectivas"
-    )
+    """URL de la DB para migraciones async.
+
+    Reutiliza la MISMA normalizacion que la app (Settings.database_url_async),
+    que reescribe el prefijo 'postgresql://' / 'postgres://' que provee Railway
+    a 'postgresql+asyncpg://'. Sin esto, async_engine_from_config carga psycopg2
+    (driver sync) y falla con 'The asyncio extension requires an async driver'.
+    """
+    from app.config import get_settings
+    return get_settings().database_url_async
 
 
 def run_migrations_offline() -> None:
