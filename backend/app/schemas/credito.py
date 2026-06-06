@@ -100,6 +100,19 @@ class CreditoUpdate(BaseModel):
         return v
 
 
+class DiasPagoUpdate(BaseModel):
+    """Payload for PATCH /creditos/{id}/dias-pago — edits anchor days only."""
+    anchor_dia_1: int
+    anchor_dia_2: Optional[int] = None
+
+    @field_validator("anchor_dia_1", "anchor_dia_2")
+    @classmethod
+    def _rango(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and not (1 <= v <= 31):
+            raise ValueError("anchor_dia debe estar entre 1 y 31")
+        return v
+
+
 class CreditoResponse(BaseModel):
     model_config = {"from_attributes": True}
 
@@ -118,3 +131,5 @@ class CreditoResponse(BaseModel):
     numero_cuotas: Optional[int]
     calcular_interes_dias_corridos: bool
     activo: bool
+    anchor_dia_1: Optional[int] = None
+    anchor_dia_2: Optional[int] = None
