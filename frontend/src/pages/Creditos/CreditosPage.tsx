@@ -5,7 +5,7 @@ import { LoadingPage, EmptyState, Paginacion, FormField, ConfirmarCreacion, type
 import Modal from '@/components/ui/Modal'
 import { usePermissions } from '@/store/authStore'
 import type { Credito, Pago, Cliente, Gestor } from '@/types'
-import { Plus, Eye, Pencil, Search, Trash2 } from 'lucide-react'
+import { Plus, Eye, Pencil, Search, Trash2, CalendarDays } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -22,7 +22,11 @@ interface EditForm {
   capital_prestado: number
   tasa_interes_mensual: number
   abono_minimo: number
-  fecha_pago_activo: string
+}
+
+interface DiasPagoForm {
+  anchor_dia_1: number | undefined
+  anchor_dia_2: number | undefined
 }
 
 export default function CreditosPage() {
@@ -47,9 +51,12 @@ export default function CreditosPage() {
   const [soloActivos, setSoloActivos] = useState(true)
   const [busquedaCliente, setBusquedaCliente] = useState('')
   const [clienteSeleccionado, setClienteSeleccionado] = useState<Cliente | null>(null)
+  const [modalDiasPago, setModalDiasPago] = useState(false)
+  const [creditoDias, setCreditoDias] = useState<Credito | null>(null)
 
   const { register, handleSubmit, watch, reset, formState: { errors } } = useForm<CreditoForm>()
   const { register: regEdit, handleSubmit: handleEdit, reset: resetEdit } = useForm<EditForm>()
+  const { register: regDias, handleSubmit: handleDias, reset: resetDias, formState: { errors: errorsDias } } = useForm<DiasPagoForm>()
   const tipoCreditoWatch = watch('tipo_credito')
   const periodicidadWatch = watch('periodicidad')
   const fechaInicialPagoWatch = watch('fecha_inicial_pago')
@@ -175,7 +182,6 @@ export default function CreditosPage() {
       ) {
         payload.abono_minimo = parseFloat(String(data.abono_minimo))
       }
-      if (data.fecha_pago_activo) payload.fecha_pago_activo = data.fecha_pago_activo
       await creditosApi.actualizar(creditoActual.id, payload)
       toast.success('Crédito actualizado')
       setModalEditar(false)
@@ -195,6 +201,26 @@ export default function CreditosPage() {
       const detail = e.response?.data?.detail
       toast.error(Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error al eliminar')
     }
+  }
+
+  const onDiasPago = async (data: DiasPagoForm) => {
+    if (!creditoDias) return
+    setSubmitting(true)
+    try {
+      const payload: { anchor_dia_1: number; anchor_dia_2?: number } = {
+        anchor_dia_1: parseInt(String(data.anchor_dia_1)),
+      }
+      if (creditoDias.periodicidad === 'quincenal') {
+        payload.anchor_dia_2 = parseInt(String(data.anchor_dia_2))
+      }
+      await creditosApi.actualizarDiasPago(creditoDias.id, payload)
+      toast.success('Días de pago actualizados')
+      setModalDiasPago(false)
+      setCreditoDias(null)
+      cargar()
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || 'Error al actualizar días de pago')
+    } finally { setSubmitting(false) }
   }
 
   const TIPO_LABELS: Record<string, string> = { cuota_fija: 'Cuota Fija', abono_capital: 'Abono Capital' }
@@ -277,6 +303,20 @@ export default function CreditosPage() {
                             className="p-1.5 bg-primary-100 text-primary-700 rounded-lg hover:bg-primary-200" title="Ver cuotas">
                             <Eye size={13} />
                           </button>
+                          {(perms.isAdmin || perms.canCreate || perms.isRecaudador) && c.activo &&
+                            (c.periodicidad === 'mensual' || c.periodicidad === 'quincenal') && (
+                            <button onClick={() => {
+                              setCreditoDias(c)
+                              resetDias({
+                                anchor_dia_1: c.anchor_dia_1 ?? undefined,
+                                anchor_dia_2: c.anchor_dia_2 ?? undefined,
+                              })
+                              setModalDiasPago(true)
+                            }}
+                              className="p-1.5 bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200" title="Editar días de pago">
+                              <CalendarDays size={13} />
+                            </button>
+                          )}
                           {perms.isAdmin && c.activo && (
                             <>
                               <button onClick={() => {
@@ -285,7 +325,6 @@ export default function CreditosPage() {
                                   capital_prestado: c.capital_prestado,
                                   tasa_interes_mensual: c.tasa_interes_mensual * 100,
                                   abono_minimo: c.abono_minimo ?? 0,
-                                  fecha_pago_activo: '',
                                 })
                                 setModalEditar(true)
                               }}
@@ -454,13 +493,63 @@ export default function CreditosPage() {
                 defaultValue={creditoActual?.abono_minimo ?? 0} className="input" />
             </FormField>
           )}
-          <FormField label="Nueva fecha del pago activo">
-            <input {...regEdit('fecha_pago_activo')} type="date" className="input" />
-          </FormField>
           <div className="flex gap-3 justify-end">
             <button type="button" onClick={() => setModalEditar(false)} className="btn-ghost">Cancelar</button>
             <button type="submit" disabled={submitting} className="btn-primary">
               {submitting ? 'Guardando...' : 'Guardar cambios'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Modal Días de Pago */}
+      <Modal isOpen={modalDiasPago} onClose={() => { setModalDiasPago(false); setCreditoDias(null) }}
+        title="Editar días de pago">
+        <form onSubmit={handleDias(onDiasPago)} className="space-y-4">
+          <p className="text-xs text-gray-500 bg-blue-50 border border-blue-200 rounded-lg p-3">
+            Las cuotas pendientes se reprogramarán a los nuevos días. Los montos no cambian.
+          </p>
+          {(creditoDias?.periodicidad === 'mensual'
+            ? creditoDias.anchor_dia_1 == null
+            : (creditoDias?.anchor_dia_1 == null || creditoDias?.anchor_dia_2 == null)) && (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+              Este crédito aún no tiene día de pago configurado.
+            </p>
+          )}
+          <FormField label="Día de pago" required error={errorsDias.anchor_dia_1?.message}>
+            <input
+              {...regDias('anchor_dia_1', {
+                required: 'Requerido',
+                min: { value: 1, message: 'Mínimo 1' },
+                max: { value: 31, message: 'Máximo 31' },
+                valueAsNumber: true,
+              })}
+              type="number" min={1} max={31}
+              className={`input ${errorsDias.anchor_dia_1 ? 'input-error' : ''}`}
+            />
+          </FormField>
+          {creditoDias?.periodicidad === 'quincenal' && (
+            <FormField label="Segundo día de pago" required error={errorsDias.anchor_dia_2?.message}>
+              <input
+                {...regDias('anchor_dia_2', {
+                  required: 'Requerido para quincenal',
+                  min: { value: 1, message: 'Mínimo 1' },
+                  max: { value: 31, message: 'Máximo 31' },
+                  valueAsNumber: true,
+                  validate: (v, values) =>
+                    Number(v) !== Number(values.anchor_dia_1) || 'Los días deben ser distintos',
+                })}
+                type="number" min={1} max={31}
+                className={`input ${errorsDias.anchor_dia_2 ? 'input-error' : ''}`}
+              />
+            </FormField>
+          )}
+          <div className="flex gap-3 justify-end">
+            <button type="button" onClick={() => { setModalDiasPago(false); setCreditoDias(null) }} className="btn-ghost">
+              Cancelar
+            </button>
+            <button type="submit" disabled={submitting} className="btn-primary">
+              {submitting ? 'Guardando...' : 'Guardar días'}
             </button>
           </div>
         </form>
