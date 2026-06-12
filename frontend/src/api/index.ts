@@ -81,8 +81,15 @@ export const pagosApi = {
     sort_dir?: 'asc' | 'desc';
     gestor_id?: string; cliente_id?: string; receptor_id?: string;
     solo_periodicidad?: string; excluir_periodicidad?: string;
+    excluir_periodicidades?: string[];
     busqueda?: string; page?: number
-  }) => api.get<PaginatedResponse<Pago>>('/pagos', { params }),
+  }) => api.get<PaginatedResponse<Pago>>('/pagos', {
+    params,
+    // FastAPI list[Periodicidad] requires repeated keys (excluir_periodicidades=a&excluir_periodicidades=b).
+    // Axios default serialization emits brackets (key[]=a) which FastAPI does not bind.
+    // indexes: null forces repeated-key serialization without brackets, per-request only.
+    paramsSerializer: { indexes: null },
+  }),
 
   registrar: (pagoId: string, data: { capital_pagado: number; interes_pagado: number }) =>
     api.post<RegistrarPagoResponse>(`/pagos/${pagoId}/registrar`, data),

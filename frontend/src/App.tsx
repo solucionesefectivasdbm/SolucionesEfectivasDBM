@@ -58,6 +58,7 @@ export default function App() {
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="pagos" element={<PagosPage variante="regular" />} />
           <Route path="pagos/semanales" element={<PagosPage variante="semanal" />} />
+          <Route path="pagos/diarios" element={<PagosPage variante="diario" />} />
           <Route path="creditos" element={<CreditosPage />} />
           <Route path="clientes" element={<ClientesPage />} />
           <Route path="usuarios" element={<UsuariosPage />} />

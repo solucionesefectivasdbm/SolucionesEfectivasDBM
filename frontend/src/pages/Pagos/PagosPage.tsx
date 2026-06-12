@@ -11,7 +11,7 @@ import clsx from 'clsx'
 import { useNavigate } from 'react-router-dom'
 
 interface PagosPageProps {
-  variante?: 'regular' | 'semanal'
+  variante?: 'regular' | 'semanal' | 'diario'
 }
 
 export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
@@ -19,6 +19,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   const hoy = new Date()
   const navigate = useNavigate()
   const esSemanal = variante === 'semanal'
+  const esDiario = variante === 'diario'
 
   const [anio, setAnio] = useState(hoy.getFullYear())
   const [mes, setMes] = useState(hoy.getMonth() + 1)
@@ -66,8 +67,8 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   const [nuevoReceptor, setNuevoReceptor] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  // En la variante semanal, momento es opcional → filtros siempre completos.
-  const filtrosCompletos = esSemanal || momento !== ''
+  // En las variantes semanal y diario, momento es opcional → filtros siempre completos.
+  const filtrosCompletos = esSemanal || esDiario || momento !== ''
 
   const handleSortToggle = () => {
     setSortDir(prev => prev === 'asc' ? 'desc' : 'asc')
@@ -90,15 +91,15 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
         busqueda,
         page,
         gestor_id: filtroGestor || undefined,
-        solo_periodicidad: esSemanal ? 'semanal' : undefined,
-        excluir_periodicidad: esSemanal ? undefined : 'semanal',
+        solo_periodicidad: esSemanal ? 'semanal' : esDiario ? 'diario' : undefined,
+        excluir_periodicidades: (!esSemanal && !esDiario) ? ['semanal', 'diario'] : undefined,
       })
       setPagos(res.data.items)
       setTotal(res.data.total)
       setPages(res.data.pages)
     } catch { toast.error('Error al cargar pagos') }
     finally { if (mostrarSpinner) setLoading(false) }
-  }, [anio, mes, momento, sortDir, busqueda, page, filtroGestor, filtrosCompletos, esSemanal])
+  }, [anio, mes, momento, sortDir, busqueda, page, filtroGestor, filtrosCompletos, esSemanal, esDiario])
 
   useEffect(() => { cargarPagos() }, [cargarPagos])
 
@@ -308,17 +309,26 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
     <div className="space-y-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-black text-primary-600">
-          {esSemanal ? 'Pagos Semanales' : 'Módulo de Pagos'}
+          {esSemanal ? 'Pagos Semanales' : esDiario ? 'Pagos Diarios' : 'Módulo de Pagos'}
         </h1>
         <div className="flex items-center gap-2">
           {esSemanal ? (
             <button onClick={() => navigate('/pagos')} className="btn-ghost flex items-center gap-2">
               <ArrowLeft size={16} /> Volver a Pagos
             </button>
-          ) : (
-            <button onClick={() => navigate('/pagos/semanales')} className="btn-secondary flex items-center gap-2">
-              <CalendarDays size={16} /> Pagos Semanales
+          ) : esDiario ? (
+            <button onClick={() => navigate('/pagos')} className="btn-ghost flex items-center gap-2">
+              <ArrowLeft size={16} /> Volver a Pagos
             </button>
+          ) : (
+            <>
+              <button onClick={() => navigate('/pagos/semanales')} className="btn-secondary flex items-center gap-2">
+                <CalendarDays size={16} /> Pagos Semanales
+              </button>
+              <button onClick={() => navigate('/pagos/diarios')} className="btn-secondary flex items-center gap-2">
+                <CalendarDays size={16} /> Pagos Diarios
+              </button>
+            </>
           )}
           {perms.canRegistrarPago && (
             <button onClick={abrirNoProgramado} className="btn-primary flex items-center gap-2">
@@ -344,9 +354,9 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
             </select>
           </div>
           <div>
-            <label className="label">Momento {esSemanal ? '' : '*'}</label>
+            <label className="label">Momento {(esSemanal || esDiario) ? '(opcional)' : '*'}</label>
             <select className="input" value={momento} onChange={e => { setMomento(e.target.value); setPage(1) }}>
-              <option value="">{esSemanal ? 'Todos los del mes' : '-- Seleccionar --'}</option>
+              <option value="">{(esSemanal || esDiario) ? 'Todos los del mes' : '-- Seleccionar --'}</option>
               {MOMENTOS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
             </select>
           </div>
@@ -380,7 +390,9 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
           <p className="font-medium">
             {esSemanal
               ? 'Selecciona año y mes para ver los pagos semanales.'
-              : 'Selecciona año, mes y momento para ver los pagos.'}
+              : esDiario
+                ? 'Selecciona año y mes para ver los pagos diarios.'
+                : 'Selecciona año, mes y momento para ver los pagos.'}
           </p>
         </div>
       )}
