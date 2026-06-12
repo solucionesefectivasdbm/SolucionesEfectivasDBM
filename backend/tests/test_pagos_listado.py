@@ -51,9 +51,12 @@ def _mk_credito(
     cliente_id: uuid.UUID,
     numero_credito: str,
     periodicidad: Periodicidad = Periodicidad.mensual,
+    activo: bool = False,
+    fecha_inicial_pago: date = date(2026, 2, 1),
 ) -> Credito:
     # activo=False evita que _calcular_virtuales proyecte cuotas extras en los
     # tests de sort, manteniendo el recuento de items predecible.
+    # Pasar activo=True + fecha_inicial_pago en fixtures que necesitan virtuales.
     return Credito(
         id=uuid.uuid4(),
         cliente_id=cliente_id,
@@ -62,13 +65,13 @@ def _mk_credito(
         capital_prestado=Decimal("1000000.00"),
         tasa_interes_mensual=Decimal("0.0300"),
         fecha_apertura=date(2026, 1, 1),
-        fecha_inicial_pago=date(2026, 2, 1),
+        fecha_inicial_pago=fecha_inicial_pago,
         periodicidad=periodicidad,
         saldo_capital=Decimal("1000000.00"),
         saldo_intereses=Decimal("0.00"),
         numero_cuotas=12,
         calcular_interes_dias_corridos=False,
-        activo=False,
+        activo=activo,
     )
 
 
@@ -450,6 +453,59 @@ async def datos_periodicidades_mixtas(db_session):
     }
 
 
+@pytest_asyncio.fixture
+async def datos_virtuales_excluir_periodicidad(db_session):
+    """
+    Dos créditos ACTIVOS para verificar que excluir_periodicidades también suprime
+    filas virtuales (proyecciones de _calcular_virtuales):
+
+    cr_diario  — periodicidad=diario, activo=True, fecha_inicial_pago=2026-03-10
+                 Cuota #1 real (unpaid) en 2026-03-10 → bloqueador presente →
+                 _calcular_virtuales proyectaría cuota #2 en 2026-03-11 (dentro de marzo).
+                 Con excluir semanal+diario este crédito debe desaparecer por completo.
+
+    cr_control — periodicidad=mensual, activo=True, fecha_inicial_pago=2026-03-01
+                 Cuota #1 real (unpaid) en 2026-03-01 → bloqueador presente →
+                 virtual cuota #2 cae en 2026-03-31 (dentro de marzo, fallback +30d).
+                 NO excluido por la query regular → debe aparecer.
+    """
+    c_diario = _mk_cliente("Virt", "Diario", "910001")
+    c_control = _mk_cliente("Virt", "Control", "910002")
+    db_session.add_all([c_diario, c_control])
+    await db_session.flush()
+
+    cr_diario = _mk_credito(
+        c_diario.id,
+        f"CR-VD-{c_diario.id.hex[:6]}",
+        periodicidad=Periodicidad.diario,
+        activo=True,
+        fecha_inicial_pago=date(2026, 3, 10),
+    )
+    cr_control = _mk_credito(
+        c_control.id,
+        f"CR-VC-{c_control.id.hex[:6]}",
+        periodicidad=Periodicidad.mensual,
+        activo=True,
+        fecha_inicial_pago=date(2026, 3, 1),
+    )
+    db_session.add_all([cr_diario, cr_control])
+    await db_session.flush()
+
+    # Cuota #1 real para cada crédito, unpaid → establece el bloqueador en
+    # _calcular_virtuales y habilita la proyección de la cuota #2.
+    p_diario = _mk_pago(cr_diario.id, date(2026, 3, 10))
+    p_control = _mk_pago(cr_control.id, date(2026, 3, 1))
+    db_session.add_all([p_diario, p_control])
+    await db_session.flush()
+
+    return {
+        "cr_diario": cr_diario,
+        "cr_control": cr_control,
+        "p_diario": p_diario,
+        "p_control": p_control,
+    }
+
+
 class TestFiltroPeriodicidad:
     """Tests de filtrado por periodicidad en GET /pagos."""
 
@@ -514,3 +570,41 @@ class TestFiltroPeriodicidad:
         assert str(d["cr_semanal"].id) not in credito_ids
         assert str(d["cr_diario"].id) not in credito_ids
         assert str(d["cr_mensual"].id) in credito_ids
+
+    # 2.5 — excluir diario no filtra filas virtuales del crédito diario activo
+    @pytest.mark.asyncio
+    async def test_excluir_periodicidades_no_leak_virtuales(
+        self, client_admin_db: AsyncClient, datos_virtuales_excluir_periodicidad
+    ):
+        """Regular-view query (excluir semanal+diario) no debe exponer filas virtuales
+        de un crédito diario activo.
+
+        Escenario: crédito diario ACTIVO con cuota #1 real (unpaid) → _calcular_virtuales
+        proyectaría cuota #2 (fecha +1d) si el crédito no fuera excluido.
+        El crédito mensual de control (activo) produce cuota virtual #2 (+30d) → sí aparece.
+
+        RED: si se elimina el `excluir_set` guard en _calcular_virtuales, el crédito
+        diario aparece con filas virtuales → la aserción falla.
+        """
+        d = datos_virtuales_excluir_periodicidad
+        r = await client_admin_db.get(
+            "/api/v1/pagos",
+            params=[
+                ("anio", 2026),
+                ("mes", 3),
+                ("excluir_periodicidades", "semanal"),
+                ("excluir_periodicidades", "diario"),
+            ],
+        )
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        all_credito_ids = {i["credito_id"] for i in items}
+
+        # Crédito diario (activo) no debe aparecer — ni real ni virtual
+        assert str(d["cr_diario"].id) not in all_credito_ids, (
+            "El crédito diario activo filtró filas (reales o virtuales) hacia la vista regular"
+        )
+        # Crédito mensual de control sí debe aparecer (real + virtual dentro de marzo)
+        assert str(d["cr_control"].id) in all_credito_ids, (
+            "El crédito mensual de control no apareció en la respuesta"
+        )
