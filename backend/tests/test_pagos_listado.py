@@ -5,6 +5,7 @@ Cubre:
 - _pago_row_a_dict: mapea cada columna al campo correcto de PagoResponse,
   sin perder ni alterar datos (la optimización debe preservar la salida).
 - Smoke de integración: la query de solo-columnas compila y ejecuta vía HTTP.
+- Ordenamiento por fecha_maxima con parámetro sort_dir (asc/desc) y tiebreaker.
 """
 import uuid
 from datetime import date
@@ -19,10 +20,71 @@ from unittest.mock import MagicMock
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.main import app
-from app.models.pago import DestinoExcedente, TipoCuota
+from app.models.cliente import Cliente
+from app.models.credito import Credito, TipoCredito, Periodicidad
+from app.models.pago import DestinoExcedente, Pago, TipoCuota
 from app.models.usuario import TipoUsuario, Usuario
 from app.routers.pagos import _pago_row_a_dict
 from app.schemas.pago import PagoResponse
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers para construir objetos de dominio en tests de sort
+# ──────────────────────────────────────────────────────────────────────────────
+
+_FAKE_GESTOR_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+
+
+def _mk_cliente(nombre: str, apellidos: str, cedula: str) -> Cliente:
+    return Cliente(
+        id=uuid.uuid4(),
+        gestor_id=_FAKE_GESTOR_ID,
+        nombre=nombre,
+        apellidos=apellidos,
+        cedula=cedula,
+        telefono="3000000000",
+        direccion="Calle test",
+        al_dia=True,
+    )
+
+
+def _mk_credito(cliente_id: uuid.UUID, numero_credito: str) -> Credito:
+    # activo=False evita que _calcular_virtuales proyecte cuotas extras en los
+    # tests de sort, manteniendo el recuento de items predecible.
+    return Credito(
+        id=uuid.uuid4(),
+        cliente_id=cliente_id,
+        numero_credito_cliente=numero_credito,
+        tipo_credito=TipoCredito.cuota_fija,
+        capital_prestado=Decimal("1000000.00"),
+        tasa_interes_mensual=Decimal("0.0300"),
+        fecha_apertura=date(2026, 1, 1),
+        fecha_inicial_pago=date(2026, 2, 1),
+        periodicidad=Periodicidad.mensual,
+        saldo_capital=Decimal("1000000.00"),
+        saldo_intereses=Decimal("0.00"),
+        numero_cuotas=12,
+        calcular_interes_dias_corridos=False,
+        activo=False,
+    )
+
+
+def _mk_pago(credito_id: uuid.UUID, fecha_maxima: date, pago_id: uuid.UUID | None = None) -> Pago:
+    return Pago(
+        id=pago_id if pago_id is not None else uuid.uuid4(),
+        credito_id=credito_id,
+        numero_cuota=1,
+        tipo_cuota=TipoCuota.programada,
+        monto_a_pagar=Decimal("100000.00"),
+        capital_a_pagar=Decimal("70000.00"),
+        interes_a_pagar=Decimal("30000.00"),
+        capital_pagado=Decimal("0.00"),
+        interes_pagado=Decimal("0.00"),
+        momento="m2",
+        fecha_maxima=fecha_maxima,
+        pagado=False,
+        validado_recaudador=False,
+        es_ultimo_pago=False,
+    )
 
 
 def _fake_row(**overrides) -> SimpleNamespace:
@@ -122,3 +184,224 @@ class TestListarPagosIntegracion:
         data = r.json()
         assert data["items"] == []
         assert data["total"] == 0
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Fixtures de datos para tests de ordenamiento
+# ──────────────────────────────────────────────────────────────────────────────
+
+@pytest_asyncio.fixture
+async def datos_tres_fechas(db_session):
+    """
+    Inserta 3 pagos con fechas DISTINTAS donde el orden alfabético de clientes
+    NO coincide con el orden cronológico. Esto garantiza RED contra el sort actual
+    (por nombre de cliente).
+
+    "Carlos Medina"  → 2026-03-10  (2do alfabético, 1ro cronológico)
+    "Ana García"     → 2026-03-15  (1ro alfabético, 2do cronológico)
+    "Zeta Pérez"     → 2026-03-20  (3ro alfabético, 3ro cronológico)
+
+    Sort actual por nombre: [Ana(03-15), Carlos(03-10), Zeta(03-20)]
+    Sort esperado ASC:       [Carlos(03-10), Ana(03-15), Zeta(03-20)]
+    Sort esperado DESC:      [Zeta(03-20), Ana(03-15), Carlos(03-10)]
+    """
+    c1 = _mk_cliente("Carlos", "Medina", "100011")
+    c2 = _mk_cliente("Ana", "García", "200022")
+    c3 = _mk_cliente("Zeta", "Pérez", "300033")
+    db_session.add_all([c1, c2, c3])
+    await db_session.flush()
+
+    cr1 = _mk_credito(c1.id, f"Carlos Medina-CR-001-{c1.id.hex[:6]}")
+    cr2 = _mk_credito(c2.id, f"Ana García-CR-001-{c2.id.hex[:6]}")
+    cr3 = _mk_credito(c3.id, f"Zeta Pérez-CR-001-{c3.id.hex[:6]}")
+    db_session.add_all([cr1, cr2, cr3])
+    await db_session.flush()
+
+    p1 = _mk_pago(cr1.id, date(2026, 3, 10))   # Carlos, fecha más temprana
+    p2 = _mk_pago(cr2.id, date(2026, 3, 15))   # Ana, fecha media
+    p3 = _mk_pago(cr3.id, date(2026, 3, 20))   # Zeta, fecha más tardía
+    db_session.add_all([p1, p2, p3])
+    await db_session.flush()
+
+    return {"p_temprano": p1, "p_medio": p2, "p_tardio": p3}
+
+
+@pytest_asyncio.fixture
+async def datos_misma_fecha_nombres_distintos(db_session):
+    """
+    Inserta 2 pagos con la misma fecha y nombres de cliente distintos.
+    Ana García   → fecha_maxima = 2026-03-15  (nombre alphabetically first)
+    Beto López   → fecha_maxima = 2026-03-15
+    """
+    c1 = _mk_cliente("Ana", "García", "400044")
+    c2 = _mk_cliente("Beto", "López", "500055")
+    db_session.add_all([c1, c2])
+    await db_session.flush()
+
+    cr1 = _mk_credito(c1.id, f"Ana García-CR-002-{c1.id.hex[:6]}")
+    cr2 = _mk_credito(c2.id, f"Beto López-CR-002-{c2.id.hex[:6]}")
+    db_session.add_all([cr1, cr2])
+    await db_session.flush()
+
+    p1 = _mk_pago(cr1.id, date(2026, 3, 15))
+    p2 = _mk_pago(cr2.id, date(2026, 3, 15))
+    db_session.add_all([p1, p2])
+    await db_session.flush()
+
+    return {"p_ana": p1, "p_beto": p2}
+
+
+@pytest_asyncio.fixture
+async def datos_misma_fecha_mismo_cliente(db_session):
+    """
+    Inserta 2 pagos del mismo cliente (mismo nombre) con la misma fecha.
+    Para forzar RED contra el sort actual (que usa numero_cuota como tiebreaker):
+    - El pago con el id str-MENOR recibe numero_cuota=2
+    - El pago con el id str-MAYOR recibe numero_cuota=1
+    Así el sort actual (por nc) pone el de mayor id primero, y el test falla.
+    Con el nuevo sort (por str(id)) el de menor id va primero y el test pasa.
+    """
+    c1 = _mk_cliente("Darío", "Ruiz", "600066")
+    db_session.add(c1)
+    await db_session.flush()
+
+    cr1 = _mk_credito(c1.id, f"Darío Ruiz-CR-001-{c1.id.hex[:6]}")
+    cr2 = _mk_credito(c1.id, f"Darío Ruiz-CR-002-{c1.id.hex[:6]}")
+    db_session.add_all([cr1, cr2])
+    await db_session.flush()
+
+    pa = _mk_pago(cr1.id, date(2026, 3, 15))
+    pb = _mk_pago(cr2.id, date(2026, 3, 15))
+
+    # Assign numero_cuota so that str(id) order ≠ nc order
+    if str(pa.id) < str(pb.id):
+        # pa is menor → give it nc=2 so current sort puts it AFTER pb
+        pa.numero_cuota = 2
+        pb.numero_cuota = 1
+    else:
+        # pb is menor → give it nc=2 so current sort puts it AFTER pa
+        pa.numero_cuota = 1
+        pb.numero_cuota = 2
+
+    db_session.add_all([pa, pb])
+    await db_session.flush()
+
+    return {"pa": pa, "pb": pb}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Tests de ordenamiento — Fase 1 RED (TDD)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestOrdenPagosSort:
+    """Tests de sort_dir para el endpoint GET /pagos."""
+
+    # 1.1 — Sin sort_dir, orden ASC por fecha_maxima (default)
+    @pytest.mark.asyncio
+    async def test_sin_sort_dir_orden_asc_por_fecha(
+        self, client_admin_db: AsyncClient, datos_tres_fechas
+    ):
+        """Ausencia de sort_dir → rows ordenadas por fecha_maxima ASC.
+        RED: sort actual por nombre da [Ana(03-15), Carlos(03-10), Zeta(03-20)] ≠ ASC cronológico.
+        """
+        r = await client_admin_db.get("/api/v1/pagos?anio=2026&mes=3")
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        assert len(items) == 3
+        fechas = [i["fecha_maxima"] for i in items]
+        assert fechas == ["2026-03-10", "2026-03-15", "2026-03-20"]
+
+    # 1.2 — sort_dir=asc explícito
+    @pytest.mark.asyncio
+    async def test_sort_dir_asc_orden_fecha_asc(
+        self, client_admin_db: AsyncClient, datos_tres_fechas
+    ):
+        """sort_dir=asc → rows ordenadas por fecha_maxima ASC."""
+        r = await client_admin_db.get("/api/v1/pagos?anio=2026&mes=3&sort_dir=asc")
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        assert len(items) == 3
+        fechas = [i["fecha_maxima"] for i in items]
+        assert fechas == ["2026-03-10", "2026-03-15", "2026-03-20"]
+
+    # 1.3 — sort_dir=desc
+    @pytest.mark.asyncio
+    async def test_sort_dir_desc_orden_fecha_desc(
+        self, client_admin_db: AsyncClient, datos_tres_fechas
+    ):
+        """sort_dir=desc → rows ordenadas por fecha_maxima DESC.
+        RED: sort actual ignora sort_dir, da [Ana(03-15), Carlos(03-10), Zeta(03-20)] ≠ DESC.
+        """
+        r = await client_admin_db.get("/api/v1/pagos?anio=2026&mes=3&sort_dir=desc")
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        assert len(items) == 3
+        fechas = [i["fecha_maxima"] for i in items]
+        assert fechas == ["2026-03-20", "2026-03-15", "2026-03-10"]
+
+    # 1.4 — Tiebreaker: misma fecha, nombres distintos → orden alfabético
+    @pytest.mark.asyncio
+    async def test_tiebreaker_misma_fecha_orden_alfabetico(
+        self, client_admin_db: AsyncClient, datos_misma_fecha_nombres_distintos
+    ):
+        """Misma fecha_maxima, distintos clientes → orden alfabético por nombre."""
+        r = await client_admin_db.get("/api/v1/pagos?anio=2026&mes=3")
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        assert len(items) == 2
+        nombres = [i["cliente_nombre"] for i in items]
+        assert nombres[0].lower() < nombres[1].lower()  # Ana < Beto
+
+    # 1.5 — Tiebreaker permanece ASC bajo sort_dir=desc
+    @pytest.mark.asyncio
+    async def test_tiebreaker_sigue_asc_bajo_desc(
+        self, client_admin_db: AsyncClient, datos_misma_fecha_nombres_distintos
+    ):
+        """Misma fecha con sort_dir=desc → tiebreaker por nombre sigue siendo ASC."""
+        r = await client_admin_db.get("/api/v1/pagos?anio=2026&mes=3&sort_dir=desc")
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        assert len(items) == 2
+        nombres = [i["cliente_nombre"] for i in items]
+        assert nombres[0].lower() < nombres[1].lower()  # Ana < Beto incluso en desc
+
+    # 1.6 — Tiebreaker: misma fecha, mismo cliente → menor id primero
+    @pytest.mark.asyncio
+    async def test_tiebreaker_misma_fecha_mismo_cliente_menor_id_primero(
+        self, client_admin_db: AsyncClient, datos_misma_fecha_mismo_cliente
+    ):
+        """Misma fecha y mismo nombre de cliente → el de menor str(id) aparece primero.
+        RED: fixture asigna nc=2 al pago de menor id, nc=1 al de mayor id.
+        Sort actual usa nc como tiebreaker → pone mayor-id primero → test FALLA.
+        Sort nuevo usa str(id) → pone menor-id primero → test PASA.
+        """
+        r = await client_admin_db.get("/api/v1/pagos?anio=2026&mes=3")
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        assert len(items) == 2
+        assert items[0]["id"] < items[1]["id"]  # menor str(id) primero
+
+    # 1.7 — sort_dir inválido → HTTP 400
+    @pytest.mark.asyncio
+    async def test_sort_dir_invalido_retorna_400(self, client_admin_db: AsyncClient):
+        """sort_dir=random → HTTP 400 con mensaje de error claro."""
+        r = await client_admin_db.get("/api/v1/pagos?anio=2026&mes=3&sort_dir=random")
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == "sort_dir inválido. Use asc o desc"
+
+    # 1.8 — Consistencia paginada: última fila página N ≤ primera fila página N+1
+    @pytest.mark.asyncio
+    async def test_orden_consistente_entre_paginas(
+        self, client_admin_db: AsyncClient, datos_tres_fechas
+    ):
+        """Con page_size=1, la fecha de página 1 ≤ la de página 2 bajo sort_dir=asc.
+        RED: sort actual por nombre da page1=[Ana(03-15)], page2=[Carlos(03-10)];
+        "2026-03-15" <= "2026-03-10" es falso → test FALLA.
+        """
+        r1 = await client_admin_db.get("/api/v1/pagos?anio=2026&mes=3&sort_dir=asc&page=1&page_size=1")
+        r2 = await client_admin_db.get("/api/v1/pagos?anio=2026&mes=3&sort_dir=asc&page=2&page_size=1")
+        assert r1.status_code == 200, r1.text
+        assert r2.status_code == 200, r2.text
+        fecha_p1 = r1.json()["items"][0]["fecha_maxima"]
+        fecha_p2 = r2.json()["items"][0]["fecha_maxima"]
+        assert fecha_p1 <= fecha_p2

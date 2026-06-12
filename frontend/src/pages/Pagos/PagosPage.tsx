@@ -5,7 +5,7 @@ import { LoadingPage, EmptyState, Paginacion, PagoBadge, ConfirmarCreacion, type
 import Modal from '@/components/ui/Modal'
 import { usePermissions } from '@/store/authStore'
 import type { Pago, Receptor, Credito, Gestor } from '@/types'
-import { Check, Calendar, User, Plus, Search, DollarSign, CalendarDays, ArrowLeft, RotateCcw } from 'lucide-react'
+import { Check, Calendar, User, Plus, Search, DollarSign, CalendarDays, ArrowLeft, RotateCcw, ChevronUp, ChevronDown } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 import { useNavigate } from 'react-router-dom'
@@ -32,6 +32,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   const [total, setTotal] = useState(0)
   const [pages, setPages] = useState(0)
   const [loading, setLoading] = useState(false)
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
 
   // Modales
   const [pagoSeleccionado, setPagoSeleccionado] = useState<Pago | null>(null)
@@ -68,6 +69,11 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   // En la variante semanal, momento es opcional → filtros siempre completos.
   const filtrosCompletos = esSemanal || momento !== ''
 
+  const handleSortToggle = () => {
+    setSortDir(prev => prev === 'asc' ? 'desc' : 'asc')
+    setPage(1)
+  }
+
   // mostrarSpinner=true para carga inicial y cambios de filtro (se quiere el
   // estado de carga). false para recargas tras una acción sobre un pago —
   // así la tabla no se desmonta y la posición de scroll se mantiene, evitando
@@ -80,6 +86,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
         anio,
         mes,
         momento: momento || undefined,
+        sort_dir: sortDir,
         busqueda,
         page,
         gestor_id: filtroGestor || undefined,
@@ -91,7 +98,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       setPages(res.data.pages)
     } catch { toast.error('Error al cargar pagos') }
     finally { if (mostrarSpinner) setLoading(false) }
-  }, [anio, mes, momento, busqueda, page, filtroGestor, filtrosCompletos, esSemanal])
+  }, [anio, mes, momento, sortDir, busqueda, page, filtroGestor, filtrosCompletos, esSemanal])
 
   useEffect(() => { cargarPagos() }, [cargarPagos])
 
@@ -389,6 +396,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                 <table className="w-full">
                   <thead>
                     <tr>
+                      <th className="table-header">Acciones</th>
                       <th className="table-header">Cuota</th>
                       <th className="table-header">Cliente</th>
                       <th className="table-header">Crédito</th>
@@ -398,10 +406,17 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                       <th className="table-header">Interés</th>
                       <th className="table-header">Cap. pagado</th>
                       <th className="table-header">Int. pagado</th>
-                      <th className="table-header">Fecha Máx.</th>
+                      <th
+                        className="table-header cursor-pointer select-none"
+                        onClick={handleSortToggle}
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          Fecha Máx.
+                          {sortDir === 'asc' ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                        </span>
+                      </th>
                       <th className="table-header">Momento</th>
                       <th className="table-header">Estado</th>
-                      <th className="table-header">Acciones</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -417,54 +432,6 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                         )}
                         title={p.es_proyectada ? `Proyectada — ${p.razon_bloqueo ?? ''}` : undefined}
                       >
-                        <td className="table-cell font-mono font-semibold">
-                          {p.es_proyectada && <span className="mr-1">🔒</span>}
-                          #{p.numero_cuota}
-                        </td>
-                        <td className={clsx('table-cell font-medium', p.es_proyectada ? 'text-gray-500' : 'text-gray-800')}>
-                          {p.cliente_nombre || '—'}
-                        </td>
-                        <td className="table-cell font-mono text-xs text-gray-500">{p.numero_credito_cliente || p.credito_id.slice(0, 8) + '...'}</td>
-                        <td className="table-cell">
-                          <span className="badge-info capitalize">{p.tipo_cuota.replace('_', ' ')}</span>
-                        </td>
-                        <td className="table-cell font-semibold text-primary-600">{formatCOP(p.monto_a_pagar)}</td>
-                        <td className="table-cell text-gray-600">{formatCOP(p.capital_a_pagar)}</td>
-                        <td className="table-cell text-gray-600">{formatCOP(p.interes_a_pagar)}</td>
-                        <td className="table-cell text-green-700">{formatCOP(p.capital_pagado)}</td>
-                        <td className="table-cell text-green-700">{formatCOP(p.interes_pagado)}</td>
-                        <td className="table-cell">
-                          <span className={clsx('text-xs', isVencido(p) && 'text-danger font-bold')}>
-                            {formatFecha(p.fecha_maxima)}
-                          </span>
-                        </td>
-                        <td className="table-cell">
-                          <span className="font-mono text-xs bg-primary-100 text-primary-700 px-2 py-0.5 rounded">
-                            {p.momento.toUpperCase()}
-                          </span>
-                        </td>
-                        <td className="table-cell">
-                          {p.es_proyectada ? (
-                            <span className="badge-warning" title={p.razon_bloqueo ?? ''}>Bloqueada</span>
-                          ) : (
-                            <PagoBadge pagado={p.pagado} validado={p.validado_recaudador} />
-                          )}
-                          {!p.es_proyectada && p.tipo_validacion && (
-                            <span
-                              className={clsx(
-                                'ml-1 text-xs px-2 py-0.5 rounded-full font-medium',
-                                p.tipo_validacion === 'completo' && 'bg-green-100 text-green-700',
-                                p.tipo_validacion === 'incompleto' && 'bg-yellow-100 text-yellow-700',
-                                p.tipo_validacion === 'con_excedente' && 'bg-blue-100 text-blue-700',
-                              )}
-                            >
-                              {p.tipo_validacion === 'con_excedente' ? 'Con excedente' :
-                                p.tipo_validacion.charAt(0).toUpperCase() + p.tipo_validacion.slice(1)}
-                            </span>
-                          )}
-                          {!p.es_proyectada && isVencido(p) && <span className="badge-danger ml-1">Vencido</span>}
-                          {p.es_ultimo_pago && <span className="badge-warning ml-1">Última</span>}
-                        </td>
                         <td className="table-cell">
                           <div className="flex items-center gap-1">
                             {p.es_proyectada && (
@@ -535,6 +502,54 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                               </button>
                             )}
                           </div>
+                        </td>
+                        <td className="table-cell font-mono font-semibold">
+                          {p.es_proyectada && <span className="mr-1">🔒</span>}
+                          #{p.numero_cuota}
+                        </td>
+                        <td className={clsx('table-cell font-medium', p.es_proyectada ? 'text-gray-500' : 'text-gray-800')}>
+                          {p.cliente_nombre || '—'}
+                        </td>
+                        <td className="table-cell font-mono text-xs text-gray-500">{p.numero_credito_cliente || p.credito_id.slice(0, 8) + '...'}</td>
+                        <td className="table-cell">
+                          <span className="badge-info capitalize">{p.tipo_cuota.replace('_', ' ')}</span>
+                        </td>
+                        <td className="table-cell font-semibold text-primary-600">{formatCOP(p.monto_a_pagar)}</td>
+                        <td className="table-cell text-gray-600">{formatCOP(p.capital_a_pagar)}</td>
+                        <td className="table-cell text-gray-600">{formatCOP(p.interes_a_pagar)}</td>
+                        <td className="table-cell text-green-700">{formatCOP(p.capital_pagado)}</td>
+                        <td className="table-cell text-green-700">{formatCOP(p.interes_pagado)}</td>
+                        <td className="table-cell">
+                          <span className={clsx('text-xs', isVencido(p) && 'text-danger font-bold')}>
+                            {formatFecha(p.fecha_maxima)}
+                          </span>
+                        </td>
+                        <td className="table-cell">
+                          <span className="font-mono text-xs bg-primary-100 text-primary-700 px-2 py-0.5 rounded">
+                            {p.momento.toUpperCase()}
+                          </span>
+                        </td>
+                        <td className="table-cell">
+                          {p.es_proyectada ? (
+                            <span className="badge-warning" title={p.razon_bloqueo ?? ''}>Bloqueada</span>
+                          ) : (
+                            <PagoBadge pagado={p.pagado} validado={p.validado_recaudador} />
+                          )}
+                          {!p.es_proyectada && p.tipo_validacion && (
+                            <span
+                              className={clsx(
+                                'ml-1 text-xs px-2 py-0.5 rounded-full font-medium',
+                                p.tipo_validacion === 'completo' && 'bg-green-100 text-green-700',
+                                p.tipo_validacion === 'incompleto' && 'bg-yellow-100 text-yellow-700',
+                                p.tipo_validacion === 'con_excedente' && 'bg-blue-100 text-blue-700',
+                              )}
+                            >
+                              {p.tipo_validacion === 'con_excedente' ? 'Con excedente' :
+                                p.tipo_validacion.charAt(0).toUpperCase() + p.tipo_validacion.slice(1)}
+                            </span>
+                          )}
+                          {!p.es_proyectada && isVencido(p) && <span className="badge-danger ml-1">Vencido</span>}
+                          {p.es_ultimo_pago && <span className="badge-warning ml-1">Última</span>}
                         </td>
                       </tr>
                     ))}
