@@ -15,7 +15,7 @@ import uuid
 from datetime import date, datetime, timezone
 from app.utils.fechas import hoy_bogota
 from decimal import Decimal
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from sqlalchemy import and_, func, or_, select
@@ -96,7 +96,8 @@ async def listar_pagos(
     cliente_id: uuid.UUID | None = Query(None),
     receptor_id: uuid.UUID | None = Query(None),
     solo_periodicidad: Periodicidad | None = Query(None, description="Filtrar solo créditos con esta periodicidad"),
-    excluir_periodicidad: Periodicidad | None = Query(None, description="Excluir créditos con esta periodicidad"),
+    excluir_periodicidad: Periodicidad | None = Query(None, description="Excluir créditos con esta periodicidad (legacy, singular)"),
+    excluir_periodicidades: Annotated[list[Periodicidad] | None, Query()] = None,
     busqueda: str = Query(""),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=50),
@@ -161,8 +162,15 @@ async def listar_pagos(
         query = query.where(Pago.receptor_id == receptor_id)
     if solo_periodicidad:
         query = query.where(Credito.periodicidad == solo_periodicidad)
+
+    # Construir el conjunto de exclusión unificado (legacy + multi-valor).
+    excluidas: set[Periodicidad] = set()
     if excluir_periodicidad:
-        query = query.where(Credito.periodicidad != excluir_periodicidad)
+        excluidas.add(excluir_periodicidad)
+    if excluir_periodicidades:
+        excluidas.update(excluir_periodicidades)
+    if excluidas:
+        query = query.where(Credito.periodicidad.notin_(excluidas))
     if busqueda:
         # Búsqueda por palabras: cada token debe aparecer en algún campo
         # (nombre, apellidos o cédula). Permite buscar por nombre completo.
@@ -204,7 +212,7 @@ async def listar_pagos(
         cliente_id_filtro=cliente_id,
         receptor_id_filtro=receptor_id,
         solo_periodicidad=solo_periodicidad,
-        excluir_periodicidad=excluir_periodicidad,
+        excluir_set=excluidas,
         busqueda=busqueda,
     )
 
@@ -239,7 +247,7 @@ async def _calcular_virtuales(
     cliente_id_filtro,
     receptor_id_filtro,
     solo_periodicidad,
-    excluir_periodicidad,
+    excluir_set: "set[Periodicidad] | None",
     busqueda: str,
 ) -> list[dict]:
     """
@@ -282,8 +290,8 @@ async def _calcular_virtuales(
         cq = cq.where(Credito.cliente_id == cliente_id_filtro)
     if solo_periodicidad:
         cq = cq.where(Credito.periodicidad == solo_periodicidad)
-    if excluir_periodicidad:
-        cq = cq.where(Credito.periodicidad != excluir_periodicidad)
+    if excluir_set:
+        cq = cq.where(Credito.periodicidad.notin_(excluir_set))
     if busqueda:
         terminos = [t for t in busqueda.strip().split() if t]
         if terminos:
