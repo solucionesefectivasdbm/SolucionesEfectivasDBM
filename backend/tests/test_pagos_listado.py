@@ -47,9 +47,16 @@ def _mk_cliente(nombre: str, apellidos: str, cedula: str) -> Cliente:
     )
 
 
-def _mk_credito(cliente_id: uuid.UUID, numero_credito: str) -> Credito:
+def _mk_credito(
+    cliente_id: uuid.UUID,
+    numero_credito: str,
+    periodicidad: Periodicidad = Periodicidad.mensual,
+    activo: bool = False,
+    fecha_inicial_pago: date = date(2026, 2, 1),
+) -> Credito:
     # activo=False evita que _calcular_virtuales proyecte cuotas extras en los
     # tests de sort, manteniendo el recuento de items predecible.
+    # Pasar activo=True + fecha_inicial_pago en fixtures que necesitan virtuales.
     return Credito(
         id=uuid.uuid4(),
         cliente_id=cliente_id,
@@ -58,13 +65,13 @@ def _mk_credito(cliente_id: uuid.UUID, numero_credito: str) -> Credito:
         capital_prestado=Decimal("1000000.00"),
         tasa_interes_mensual=Decimal("0.0300"),
         fecha_apertura=date(2026, 1, 1),
-        fecha_inicial_pago=date(2026, 2, 1),
-        periodicidad=Periodicidad.mensual,
+        fecha_inicial_pago=fecha_inicial_pago,
+        periodicidad=periodicidad,
         saldo_capital=Decimal("1000000.00"),
         saldo_intereses=Decimal("0.00"),
         numero_cuotas=12,
         calcular_interes_dias_corridos=False,
-        activo=False,
+        activo=activo,
     )
 
 
@@ -405,3 +412,199 @@ class TestOrdenPagosSort:
         fecha_p1 = r1.json()["items"][0]["fecha_maxima"]
         fecha_p2 = r2.json()["items"][0]["fecha_maxima"]
         assert fecha_p1 <= fecha_p2
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Fixtures y tests de filtro por periodicidad — TDD (daily-payments-button)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@pytest_asyncio.fixture
+async def datos_periodicidades_mixtas(db_session):
+    """
+    Inserta 3 clientes/créditos con periodicidades distintas (diario, semanal,
+    mensual) y un pago en el mes 3 de 2026 para cada uno.
+    activo=False suprime la proyección de virtuales.
+    """
+    c_diario = _mk_cliente("Test", "Diario", "900001")
+    c_semanal = _mk_cliente("Test", "Semanal", "900002")
+    c_mensual = _mk_cliente("Test", "Mensual", "900003")
+    db_session.add_all([c_diario, c_semanal, c_mensual])
+    await db_session.flush()
+
+    cr_diario = _mk_credito(c_diario.id, f"CR-DIA-{c_diario.id.hex[:6]}", Periodicidad.diario)
+    cr_semanal = _mk_credito(c_semanal.id, f"CR-SEM-{c_semanal.id.hex[:6]}", Periodicidad.semanal)
+    cr_mensual = _mk_credito(c_mensual.id, f"CR-MEN-{c_mensual.id.hex[:6]}", Periodicidad.mensual)
+    db_session.add_all([cr_diario, cr_semanal, cr_mensual])
+    await db_session.flush()
+
+    p_diario = _mk_pago(cr_diario.id, date(2026, 3, 15))
+    p_semanal = _mk_pago(cr_semanal.id, date(2026, 3, 15))
+    p_mensual = _mk_pago(cr_mensual.id, date(2026, 3, 15))
+    db_session.add_all([p_diario, p_semanal, p_mensual])
+    await db_session.flush()
+
+    return {
+        "cr_diario": cr_diario,
+        "cr_semanal": cr_semanal,
+        "cr_mensual": cr_mensual,
+        "p_diario": p_diario,
+        "p_semanal": p_semanal,
+        "p_mensual": p_mensual,
+    }
+
+
+@pytest_asyncio.fixture
+async def datos_virtuales_excluir_periodicidad(db_session):
+    """
+    Dos créditos ACTIVOS para verificar que excluir_periodicidades también suprime
+    filas virtuales (proyecciones de _calcular_virtuales):
+
+    cr_diario  — periodicidad=diario, activo=True, fecha_inicial_pago=2026-03-10
+                 Cuota #1 real (unpaid) en 2026-03-10 → bloqueador presente →
+                 _calcular_virtuales proyectaría cuota #2 en 2026-03-11 (dentro de marzo).
+                 Con excluir semanal+diario este crédito debe desaparecer por completo.
+
+    cr_control — periodicidad=mensual, activo=True, fecha_inicial_pago=2026-03-01
+                 Cuota #1 real (unpaid) en 2026-03-01 → bloqueador presente →
+                 virtual cuota #2 cae en 2026-03-31 (dentro de marzo, fallback +30d).
+                 NO excluido por la query regular → debe aparecer.
+    """
+    c_diario = _mk_cliente("Virt", "Diario", "910001")
+    c_control = _mk_cliente("Virt", "Control", "910002")
+    db_session.add_all([c_diario, c_control])
+    await db_session.flush()
+
+    cr_diario = _mk_credito(
+        c_diario.id,
+        f"CR-VD-{c_diario.id.hex[:6]}",
+        periodicidad=Periodicidad.diario,
+        activo=True,
+        fecha_inicial_pago=date(2026, 3, 10),
+    )
+    cr_control = _mk_credito(
+        c_control.id,
+        f"CR-VC-{c_control.id.hex[:6]}",
+        periodicidad=Periodicidad.mensual,
+        activo=True,
+        fecha_inicial_pago=date(2026, 3, 1),
+    )
+    db_session.add_all([cr_diario, cr_control])
+    await db_session.flush()
+
+    # Cuota #1 real para cada crédito, unpaid → establece el bloqueador en
+    # _calcular_virtuales y habilita la proyección de la cuota #2.
+    p_diario = _mk_pago(cr_diario.id, date(2026, 3, 10))
+    p_control = _mk_pago(cr_control.id, date(2026, 3, 1))
+    db_session.add_all([p_diario, p_control])
+    await db_session.flush()
+
+    return {
+        "cr_diario": cr_diario,
+        "cr_control": cr_control,
+        "p_diario": p_diario,
+        "p_control": p_control,
+    }
+
+
+class TestFiltroPeriodicidad:
+    """Tests de filtrado por periodicidad en GET /pagos."""
+
+    # 2.2 — solo_periodicidad=diario devuelve solo créditos diarios
+    @pytest.mark.asyncio
+    async def test_solo_periodicidad_diario(
+        self, client_admin_db: AsyncClient, datos_periodicidades_mixtas
+    ):
+        """solo_periodicidad=diario → solo items con periodicidad diario."""
+        r = await client_admin_db.get(
+            "/api/v1/pagos?anio=2026&mes=3&solo_periodicidad=diario"
+        )
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        assert len(items) >= 1
+        credito_ids = {i["credito_id"] for i in items}
+        d = datos_periodicidades_mixtas
+        assert str(d["cr_diario"].id) in credito_ids
+        assert str(d["cr_semanal"].id) not in credito_ids
+        assert str(d["cr_mensual"].id) not in credito_ids
+
+    # 2.3 — excluir_periodicidad=semanal (param legacy) excluye semanales
+    @pytest.mark.asyncio
+    async def test_excluir_periodicidad_legacy_semanal(
+        self, client_admin_db: AsyncClient, datos_periodicidades_mixtas
+    ):
+        """excluir_periodicidad=semanal (param singular legacy) → semanal ausente."""
+        r = await client_admin_db.get(
+            "/api/v1/pagos?anio=2026&mes=3&excluir_periodicidad=semanal"
+        )
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        credito_ids = {i["credito_id"] for i in items}
+        d = datos_periodicidades_mixtas
+        assert str(d["cr_semanal"].id) not in credito_ids
+        assert str(d["cr_diario"].id) in credito_ids
+        assert str(d["cr_mensual"].id) in credito_ids
+
+    # 2.4 — excluir_periodicidades multi-valor excluye todas las listadas
+    @pytest.mark.asyncio
+    async def test_excluir_periodicidades_multiple(
+        self, client_admin_db: AsyncClient, datos_periodicidades_mixtas
+    ):
+        """excluir_periodicidades=['semanal','diario'] → solo mensual presente.
+
+        RED: el param excluir_periodicidades no existe todavía → el backend lo
+        ignora y devuelve los tres créditos → la aserción falla.
+        """
+        r = await client_admin_db.get(
+            "/api/v1/pagos",
+            params=[
+                ("anio", 2026),
+                ("mes", 3),
+                ("excluir_periodicidades", "semanal"),
+                ("excluir_periodicidades", "diario"),
+            ],
+        )
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        credito_ids = {i["credito_id"] for i in items}
+        d = datos_periodicidades_mixtas
+        assert str(d["cr_semanal"].id) not in credito_ids
+        assert str(d["cr_diario"].id) not in credito_ids
+        assert str(d["cr_mensual"].id) in credito_ids
+
+    # 2.5 — excluir diario no filtra filas virtuales del crédito diario activo
+    @pytest.mark.asyncio
+    async def test_excluir_periodicidades_no_leak_virtuales(
+        self, client_admin_db: AsyncClient, datos_virtuales_excluir_periodicidad
+    ):
+        """Regular-view query (excluir semanal+diario) no debe exponer filas virtuales
+        de un crédito diario activo.
+
+        Escenario: crédito diario ACTIVO con cuota #1 real (unpaid) → _calcular_virtuales
+        proyectaría cuota #2 (fecha +1d) si el crédito no fuera excluido.
+        El crédito mensual de control (activo) produce cuota virtual #2 (+30d) → sí aparece.
+
+        RED: si se elimina el `excluir_set` guard en _calcular_virtuales, el crédito
+        diario aparece con filas virtuales → la aserción falla.
+        """
+        d = datos_virtuales_excluir_periodicidad
+        r = await client_admin_db.get(
+            "/api/v1/pagos",
+            params=[
+                ("anio", 2026),
+                ("mes", 3),
+                ("excluir_periodicidades", "semanal"),
+                ("excluir_periodicidades", "diario"),
+            ],
+        )
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        all_credito_ids = {i["credito_id"] for i in items}
+
+        # Crédito diario (activo) no debe aparecer — ni real ni virtual
+        assert str(d["cr_diario"].id) not in all_credito_ids, (
+            "El crédito diario activo filtró filas (reales o virtuales) hacia la vista regular"
+        )
+        # Crédito mensual de control sí debe aparecer (real + virtual dentro de marzo)
+        assert str(d["cr_control"].id) in all_credito_ids, (
+            "El crédito mensual de control no apareció en la respuesta"
+        )
