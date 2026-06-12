@@ -91,6 +91,7 @@ async def listar_pagos(
     anio: int = Query(..., description="Año (obligatorio)"),
     mes: int = Query(..., ge=1, le=12, description="Mes (obligatorio)"),
     momento: str | None = Query(None, description="m1..m5 (opcional). Si se omite, se filtra por todo el mes calendario."),
+    sort_dir: str = Query("asc", description="Dirección de orden por fecha_maxima: asc (default) o desc."),
     gestor_id: uuid.UUID | None = Query(None),
     cliente_id: uuid.UUID | None = Query(None),
     receptor_id: uuid.UUID | None = Query(None),
@@ -110,6 +111,8 @@ async def listar_pagos(
     """
     if momento is not None and momento not in ("m1", "m2", "m3", "m4", "m5"):
         raise HTTPException(status_code=400, detail="Momento inválido. Use m1..m5")
+    if sort_dir not in ("asc", "desc"):
+        raise HTTPException(status_code=400, detail="sort_dir inválido. Use asc o desc")
 
     # Calcular rango de fechas del período
     if momento:
@@ -179,8 +182,10 @@ async def listar_pagos(
     # Necesitamos todas para mergearlas con las virtuales y paginar en memoria.
     # Se arma el dict directo desde las columnas (sin ORM completo ni doble
     # serialización); la validación a PagoResponse ocurre solo en la página.
+    # El ORDER BY a nivel DB refleja el orden canónico para que el plan de
+    # ejecución sea predecible; el orden definitivo lo fija el sort en memoria.
     query = query.order_by(
-        Cliente.nombre, Cliente.apellidos, Pago.numero_cuota, Pago.id
+        Pago.fecha_maxima, Cliente.nombre, Cliente.apellidos, Pago.id
     )
     rows = (await db.execute(query)).all()
 
@@ -203,9 +208,14 @@ async def listar_pagos(
         busqueda=busqueda,
     )
 
-    # Merge + sort + paginar en memoria. Orden alfabético por nombre de cliente.
+    # Merge + sort + paginar en memoria.
+    # Dos sorts estables en cadena:
+    #   1ro (tiebreaker): nombre cliente ASC, id ASC — siempre ascendente.
+    #   2do (fecha + dirección): fecha_maxima con reverse según sort_dir.
+    # Python garantiza estabilidad, por lo que el 1ro sobrevive dentro de fechas iguales.
     todos = reales + virtuales
-    todos.sort(key=lambda x: ((x["cliente_nombre"] or "").lower(), x["numero_cuota"], str(x["id"])))
+    todos.sort(key=lambda x: ((x["cliente_nombre"] or "").lower(), str(x["id"])))
+    todos.sort(key=lambda x: x["fecha_maxima"], reverse=(sort_dir == "desc"))
 
     total = len(todos)
     inicio = (page - 1) * page_size

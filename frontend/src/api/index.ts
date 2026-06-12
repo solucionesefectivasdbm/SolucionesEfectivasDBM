@@ -78,6 +78,7 @@ export const creditosApi = {
 export const pagosApi = {
   listar: (params: {
     anio: number; mes: number; momento?: string;
+    sort_dir?: 'asc' | 'desc';
     gestor_id?: string; cliente_id?: string; receptor_id?: string;
     solo_periodicidad?: string; excluir_periodicidad?: string;
     busqueda?: string; page?: number
