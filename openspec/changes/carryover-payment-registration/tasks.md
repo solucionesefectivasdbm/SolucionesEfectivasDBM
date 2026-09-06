@@ -71,6 +71,17 @@ Chain strategy: stacked-to-main
 - [x] 7.2 `cd frontend && npx tsc --noEmit` — confirm no frontend diff
 - [x] 7.3 Confirm `capital_a_pagar + interes_a_pagar == monto_a_pagar` asserted across all new generated-row tests
 
+## Phase 7b: Verify remediation (first verify pass returned FAIL)
+
+The first `sdd-verify` pass raised 1 CRITICAL and 2 WARNING findings. Closing
+them required tests and documentation only; `backend/app` stayed byte-identical.
+
+- [x] 7b.1 RED/GREEN: `backend/tests/test_reportes_arrastre.py` (new) — CRITICAL. Requirement 6 had zero coverage. Calls `GET /api/v1/reportes` and asserts pending capital/interest totals rise by exactly the disaggregated arrastre (50.00/10.00) after a component correction, locking in the owner-accepted rise as intended behavior
+- [x] 7b.2 RED/GREEN: `TestExcedenteConArrastre` in `backend/tests/test_pago_service_arrastre.py` — WARNING. Requirement 3's above-base-plus-arrastre scenario was untested. Drives the real 2-step `registrar_pago` -> `confirmar_excedente` flow with exact `Decimal` assertions; corrects the module docstring that overstated coverage
+- [x] 7b.3 DOCS: amend spec Requirement 4 wording to match verified projector behavior, with an inline justification note. Traced against `_pago_parcial` and `_calcular_virtuales`: a partial payment always finalizes the blocking row and rolls forward atomically, so the projector can never observe unrealized arrastre. Documentation gap, not a behavioral defect — no production code changed
+- [x] 7b.4 REFACTOR: add `saldo_intereses` assertions to the backfill out-of-scope test; use `AsyncMock(spec=AsyncSession)` to remove a cosmetic `RuntimeWarning`
+- [x] 7b.5 Re-run `sdd-verify`: PASS, 0 CRITICAL / 0 WARNING, 246 passed / 0 failed, 16/16 spec scenarios covered
+
 ## Phase 8: Rollout & cleanup (PR 2, after prod deploy)
 
 - [ ] 8.1 Deploy PR 1; run `POST /pagos/admin/backfill-arrastre-componentes` once as admin in prod; verify affected credits accept exact arrastre payment
