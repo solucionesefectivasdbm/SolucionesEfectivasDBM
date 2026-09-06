@@ -87,6 +87,32 @@ def calcular_interes_periodo(capital: Decimal, tasa_mensual: Decimal) -> Decimal
     return (capital * tasa_mensual).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+_Q_ARRASTRE = Decimal("0.01")
+
+
+def desglosar_arrastre(
+    cuota_anterior: "Pago | None", saldo_pendiente: Decimal
+) -> tuple[Decimal, Decimal]:
+    """
+    Desglosa el arrastre (faltante de una cuota `cuota_fija` anterior) en sus
+    componentes de capital e interés, a partir de la cuota anterior persistida.
+
+    Retorna (arrastre_capital, arrastre_interes); la suma es EXACTAMENTE
+    igual a `saldo_pendiente` (el interés absorbe el residual), lo que
+    garantiza `capital_a_pagar + interes_a_pagar == monto_a_pagar` sin
+    deriva de redondeo, incluso cuando un componente fue sobrepagado.
+    """
+    total = (saldo_pendiente or Decimal("0.00")).quantize(_Q_ARRASTRE, rounding=ROUND_HALF_UP)
+    if cuota_anterior is None or total <= Decimal("0.00"):
+        return Decimal("0.00"), Decimal("0.00")
+
+    falta_cap = (cuota_anterior.capital_a_pagar - cuota_anterior.capital_pagado).quantize(
+        _Q_ARRASTRE, rounding=ROUND_HALF_UP
+    )
+    arr_cap = min(max(falta_cap, Decimal("0.00")), total)
+    return arr_cap, (total - arr_cap)
+
+
 async def generar_prefijo_cliente(db: AsyncSession, cliente) -> str:
     """
     Calcula el prefijo de número de crédito para un cliente, basado en su nombre.
@@ -395,7 +421,7 @@ async def generar_siguiente_cuota(
 
     if credito.tipo_credito == TipoCredito.cuota_fija:
         return _siguiente_cuota_fija(
-            credito, siguiente_numero, fecha_maxima, momento, receptor_id, saldo_pendiente
+            credito, cuota_anterior, siguiente_numero, fecha_maxima, momento, receptor_id, saldo_pendiente
         )
     else:
         return _siguiente_cuota_abono_capital(
@@ -405,6 +431,7 @@ async def generar_siguiente_cuota(
 
 def _siguiente_cuota_fija(
     credito: Credito,
+    cuota_anterior: Pago,
     numero: int,
     fecha_maxima: date,
     momento: str,
@@ -414,7 +441,8 @@ def _siguiente_cuota_fija(
     """
     Genera la siguiente cuota para crédito cuota_fija (interés simple).
     Cada cuota tiene la misma porción de capital e interés calculados
-    sobre el capital_prestado original.
+    sobre el capital_prestado original, más el arrastre (si lo hay)
+    desglosado por componente vía `desglosar_arrastre`.
     """
     capital_por_cuota = calcular_capital_cuota_fija(
         credito.capital_prestado, credito.numero_cuotas,
@@ -422,9 +450,11 @@ def _siguiente_cuota_fija(
     interes = calcular_interes_cuota_fija(
         credito.capital_prestado, credito.tasa_interes_mensual, credito.periodicidad,
     )
-    cuota_base = (capital_por_cuota + interes).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-    monto_total = cuota_base + saldo_pendiente
+    arr_cap, arr_int = desglosar_arrastre(cuota_anterior, saldo_pendiente)
+    capital_a_pagar = (capital_por_cuota + arr_cap).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    interes_a_pagar = (interes + arr_int).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    monto_total = (capital_a_pagar + interes_a_pagar).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     es_ultima = numero >= credito.numero_cuotas
 
     return Pago(
@@ -432,8 +462,8 @@ def _siguiente_cuota_fija(
         numero_cuota=numero,
         tipo_cuota=TipoCuota.programada,
         monto_a_pagar=monto_total,
-        capital_a_pagar=capital_por_cuota,
-        interes_a_pagar=interes,
+        capital_a_pagar=capital_a_pagar,
+        interes_a_pagar=interes_a_pagar,
         momento=momento,
         fecha_maxima=fecha_maxima,
         receptor_id=receptor_id,
@@ -604,6 +634,34 @@ async def recalcular_cuota_actual_si_no_pagada(
             interes = calcular_interes_cuota_fija(
                 credito.capital_prestado, credito.tasa_interes_mensual, credito.periodicidad,
             )
+
+        # Re-derivar el arrastre pendiente desde la cuota pagada inmediatamente
+        # anterior, para no sobrescribirlo con los valores base recalculados
+        # (mismo defecto de clase que el reset de saldo_capital en edición).
+        cuota_previa_pagada = (await db.execute(
+            select(Pago).where(
+                Pago.credito_id == credito.id,
+                Pago.numero_cuota < actual.numero_cuota,
+                Pago.pagado == True,  # noqa: E712
+                Pago.deleted_at == None,  # noqa: E711
+            ).order_by(Pago.numero_cuota.desc()).limit(1)
+        )).scalar_one_or_none()
+
+        saldo_pendiente = Decimal("0.00")
+        if cuota_previa_pagada is not None:
+            saldo_pendiente = max(
+                Decimal("0.00"),
+                (
+                    cuota_previa_pagada.monto_a_pagar
+                    - cuota_previa_pagada.capital_pagado
+                    - cuota_previa_pagada.interes_pagado
+                ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+            )
+        arr_cap, arr_int = desglosar_arrastre(cuota_previa_pagada, saldo_pendiente)
+
+        capital_x = (capital_x + arr_cap).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        interes = (interes + arr_int).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
         actual.tipo_cuota = TipoCuota.programada
         actual.capital_a_pagar = capital_x
         actual.interes_a_pagar = interes
