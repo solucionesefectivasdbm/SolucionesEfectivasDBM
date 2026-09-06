@@ -4,14 +4,16 @@ tests/test_pago_service_arrastre.py — Unmocked chained-partial payment tests.
 Root cause of the shipped defect: every existing test in `test_pago_service.py`
 mocks `generar_siguiente_cuota` with `return_value=None`, so the arrastre
 disaggregation was never exercised end to end through `PagoService`. These
-tests call `PagoService.registrar_pago` / `confirmar_excedente` with the REAL
-`generar_siguiente_cuota` (no mock/patch), proving the fix works through the
-actual payment-registration path.
+tests call `PagoService.registrar_pago` and `confirmar_excedente` with the
+REAL `generar_siguiente_cuota` (no mock/patch), proving the fix works through
+the actual payment-registration path. `TestExcedenteConArrastre` below is the
+only class that exercises `confirmar_excedente`; the other classes only call
+`registrar_pago`.
 
 `generar_siguiente_cuota` performs no DB I/O itself (it only builds a `Pago`
-in memory), so `db=AsyncMock()` is sufficient here — "unmocked" refers to
-NOT patching `generar_siguiente_cuota`/`_siguiente_cuota_fija`, not to using
-a real database.
+in memory), so `db=AsyncMock(spec=AsyncSession)` is sufficient here —
+"unmocked" refers to NOT patching `generar_siguiente_cuota`/
+`_siguiente_cuota_fija`, not to using a real database.
 """
 import uuid
 from datetime import date
@@ -19,11 +21,21 @@ from decimal import Decimal
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.credito import Credito, TipoCredito, Periodicidad
-from app.models.pago import Pago, TipoCuota
+from app.models.pago import Pago, TipoCuota, DestinoExcedente
 from app.schemas.pago import RegistrarPagoRequest
 from app.services.pago_service import PagoService
+
+
+def make_db() -> AsyncMock:
+    """`spec=AsyncSession` makes `db.add()` a plain (sync) mock, matching the
+    real (sync) `AsyncSession.add` signature — eliminates the cosmetic
+    'coroutine was never awaited' RuntimeWarning from an unconstrained
+    AsyncMock without weakening any assertion (`db.add.call_args_list` still
+    works identically)."""
+    return AsyncMock(spec=AsyncSession)
 
 
 def make_credito_cuota_fija(
@@ -104,7 +116,7 @@ class TestCadenaArrastreTresPasos:
     @pytest.mark.asyncio
     async def test_cadena_sin_doble_conteo(self):
         credito = make_credito_cuota_fija()
-        db = AsyncMock()
+        db = make_db()
 
         cuota1 = make_cuota(numero_cuota=1)
         req1 = RegistrarPagoRequest(capital_pagado=Decimal("50.00"), interes_pagado=Decimal("10.00"))
@@ -144,7 +156,7 @@ class TestCadenaArrastreTresPasos:
         """Saldo tracking is independent from the arrastre bookkeeping: it only
         ever decreases by what was actually paid, each step."""
         credito = make_credito_cuota_fija(saldo_capital=Decimal("1000.00"))
-        db = AsyncMock()
+        db = make_db()
 
         cuota1 = make_cuota(numero_cuota=1)
         req1 = RegistrarPagoRequest(capital_pagado=Decimal("50.00"), interes_pagado=Decimal("10.00"))
@@ -168,7 +180,7 @@ class TestComponentOverpayClamp:
     @pytest.mark.asyncio
     async def test_clamp_produce_arrastre_solo_interes(self):
         credito = make_credito_cuota_fija()
-        db = AsyncMock()
+        db = make_db()
 
         cuota = make_cuota(
             numero_cuota=2, monto_a_pagar=Decimal("180.00"),
@@ -191,7 +203,7 @@ class TestGuardrails:
     async def test_pago_exacto_base_mas_arrastre_no_lanza_error(self):
         """Exact payment matching arrastre-inclusive components is accepted."""
         credito = make_credito_cuota_fija()
-        db = AsyncMock()
+        db = make_db()
 
         cuota_arrastre = make_cuota(
             numero_cuota=2, monto_a_pagar=Decimal("180.00"),
@@ -209,7 +221,7 @@ class TestGuardrails:
         """A cuota with ZERO arrastre still rejects a component overpay in
         `exacto` — the pre-existing guardrail is untouched."""
         credito = make_credito_cuota_fija()
-        db = AsyncMock()
+        db = make_db()
 
         cuota_base = make_cuota(numero_cuota=1)  # 100/20/120, no arrastre
 
@@ -219,3 +231,63 @@ class TestGuardrails:
 
         with pytest.raises(ValueError):
             await PagoService.registrar_pago(db, cuota_base, credito, req, date(2026, 1, 10))
+
+
+class TestExcedenteConArrastre:
+    """
+    Spec Requirement 3, scenario "Payment above base plus arrastre": a payment
+    exceeding (base + full arrastre) MUST go through the existing 2-step
+    `confirmar_excedente` flow unchanged, even when the cuota's components
+    already carry an arrastre. This is the only class in this file that
+    calls `confirmar_excedente`.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pago_supera_base_mas_arrastre_via_confirmar_excedente(self):
+        credito = make_credito_cuota_fija(saldo_capital=Decimal("850.00"))
+        db = make_db()
+
+        # Base 100/20/120 + full arrastre 50/10 = 150/30/180.
+        cuota_arrastre = make_cuota(
+            numero_cuota=2, monto_a_pagar=Decimal("180.00"),
+            capital=Decimal("150.00"), interes=Decimal("30.00"),
+        )
+
+        # Step 1: registrar_pago detects the excedente and does NOT modify
+        # the credit or the cuota yet.
+        req_excedente = RegistrarPagoRequest(
+            capital_pagado=Decimal("200.00"), interes_pagado=Decimal("30.00")
+        )
+        result1 = await PagoService.registrar_pago(
+            db, cuota_arrastre, credito, req_excedente, date(2026, 2, 10)
+        )
+
+        assert result1.requiere_decision is True
+        assert result1.excedente == Decimal("50.00")
+        assert cuota_arrastre.pagado is False
+        assert credito.saldo_capital == Decimal("850.00")
+
+        # Step 2: confirmar_excedente applies the user's decision (surplus to
+        # capital) and completes the payment through the real (unmocked)
+        # generation path.
+        result2 = await PagoService.confirmar_excedente(
+            db, cuota_arrastre, credito, req_excedente,
+            DestinoExcedente.capital, date(2026, 2, 10),
+        )
+
+        assert cuota_arrastre.pagado is True
+        assert cuota_arrastre.capital_pagado == Decimal("200.00")
+        assert cuota_arrastre.interes_pagado == Decimal("30.00")
+        assert cuota_arrastre.es_excedente_a == DestinoExcedente.capital
+
+        # Reduction is authoritative from destino: capital_a_pagar (150) +
+        # excedente (50) = 200 off capital; interes_a_pagar (30) off interest.
+        assert credito.saldo_capital == Decimal("650.00")
+        assert credito.saldo_intereses == Decimal("0.00")
+
+        # No shortfall remains after this exact-plus-surplus payment, so the
+        # next cuota is generated at base values — the arrastre chain resets.
+        siguiente = _ultima_cuota_agregada(db)
+        assert siguiente.capital_a_pagar == Decimal("100.00")
+        assert siguiente.interes_a_pagar == Decimal("20.00")
+        assert siguiente.monto_a_pagar == Decimal("120.00")
