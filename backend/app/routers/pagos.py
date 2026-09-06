@@ -261,7 +261,12 @@ async def _calcular_virtuales(
     from datetime import timedelta
     from decimal import Decimal, ROUND_HALF_UP
     from app.models.credito import Periodicidad, TipoCredito
-    from app.services.credito_service import _periodos_por_mes
+    from app.services.credito_service import (
+        _periodos_por_mes,
+        calcular_capital_cuota_fija,
+        calcular_interes_cuota_fija,
+        desglosar_arrastre,
+    )
 
     if receptor_id_filtro is not None:
         return []
@@ -370,12 +375,22 @@ async def _calcular_virtuales(
             if fecha_proy >= fecha_inicio and n not in existentes:
                 # Computar valores estimados según tipo y periodicidad
                 if credito.tipo_credito == TipoCredito.cuota_fija and credito.numero_cuotas:
-                    capital_x = (credito.capital_prestado / Decimal(credito.numero_cuotas)).quantize(
-                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    # Comparte la misma aritmética base que el generador
+                    # (`generar_siguiente_cuota`) para que nunca vuelvan a
+                    # divergir. `desglosar_arrastre` con saldo_pendiente=0.00
+                    # es intencional: un sucesor virtual no tiene una cuota
+                    # bloqueadora persistida de la cual arrastrar — su propio
+                    # arrastre (si lo tiene) ya está reflejado en la cuota
+                    # bloqueadora real que se muestra por separado.
+                    capital_x = calcular_capital_cuota_fija(
+                        credito.capital_prestado, credito.numero_cuotas,
                     )
-                    interes_x = (credito.capital_prestado * credito.tasa_interes_mensual / ppm).quantize(
-                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    interes_x = calcular_interes_cuota_fija(
+                        credito.capital_prestado, credito.tasa_interes_mensual, credito.periodicidad,
                     )
+                    arr_cap, arr_int = desglosar_arrastre(None, Decimal("0.00"))
+                    capital_x = (capital_x + arr_cap).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    interes_x = (interes_x + arr_int).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
                     monto = (capital_x + interes_x).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
                     tipo_cuota_str = "programada"
                     capital_a_pagar = capital_x
