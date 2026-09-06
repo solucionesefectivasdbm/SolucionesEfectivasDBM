@@ -96,15 +96,33 @@ arrastre-inclusive component targets rather than being removed.
 
 ### Requirement: Arrastre-aware Projection
 
-Virtual (non-persisted) future installment projection MUST display the
-arrastre-inclusive amount and components, matching what generation would produce.
+Virtual (non-persisted) future installment projection MUST share the same
+arithmetic path as generation (`calcular_capital_cuota_fija` /
+`calcular_interes_cuota_fija` plus `desglosar_arrastre`), so base amounts can
+never drift between the projector and the generator.
+
+> Note (amended after design/apply verification): a blocking unpaid cuota
+> always has `capital_pagado = interes_pagado = 0` — a partial payment sets
+> `pagado=True` and immediately persists a real successor row instead of
+> leaving the blocker partially paid. Consequently the projector can never
+> observe an unrealized arrastre on a virtual successor; it always projects
+> with `saldo_pendiente = 0.00`, i.e. base values. Any pending arrastre is
+> already visible on the blocking row itself, which is a real, persisted
+> `Pago` with its own (possibly arrastre-inflated) components — not a virtual
+> row. The original wording ("first projected row shows the arrastre-inclusive
+> amount") described a state the current blocking model cannot produce; this
+> requirement is corrected to describe the verified, testable behavior instead
+> of an unobservable one.
 
 #### Scenario: Projection matches generation
 
-- GIVEN a credit with a pending arrastre
-- WHEN virtual installments are projected
-- THEN the first projected row shows the arrastre-inclusive `monto_a_pagar` and
-  components
+- GIVEN a credit with a pending arrastre (visible on the real, persisted
+  blocking row)
+- WHEN its virtual successor is projected
+- THEN the virtual row shows base `monto_a_pagar` and components, computed
+  through the same helpers the generator uses
+- AND `capital_a_pagar + interes_a_pagar == monto_a_pagar` holds in the
+  projected payload
 
 ### Requirement: One-off Backfill Correction
 
