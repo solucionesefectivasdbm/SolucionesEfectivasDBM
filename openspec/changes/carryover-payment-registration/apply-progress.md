@@ -61,3 +61,60 @@ deletions(-). Backend code+tests: ~1063 lines; openspec docs: ~742 lines.
 Exceeds the original ~250-330 Medium forecast and the 400-line budget,
 driven by the mandated unmocked test coverage — accepted per the owner's
 explicit "PR 1 = Phases 1-7" instruction for this run.
+
+## Remediation batch (closes sdd-verify findings)
+
+Second batch on the same branch, closing the `verify-report.md` FAIL
+verdict. No production code touched — `backend/app` diff vs `main` is
+still exactly 187 insertions(+)/12 deletions(-), byte-identical to PR 1.
+
+1. **CRITICAL closed** — Requirement 6 "Reported Pending Totals Reflect
+   True Amounts" had zero covering test. Added
+   `backend/tests/test_reportes_arrastre.py`: a runtime test against
+   `GET /api/v1/reportes` proving pending capital/interest totals rise by
+   exactly the disaggregated arrastre (50.00/10.00) once a pending
+   `cuota_fija` row's components are corrected, and do NOT clamp back to
+   base. RED confirmed (temporarily broke the expected value, saw the
+   assertion fail) before restoring the correct value — GREEN by
+   construction since `reportes.py` needed no code change.
+2. **WARNING closed** — Requirement 3 scenario "payment above base plus
+   arrastre" (`destino_excedente`) had no covering test, and the
+   `test_pago_service_arrastre.py` module docstring falsely claimed
+   `confirmar_excedente` was already exercised. Added
+   `TestExcedenteConArrastre` (2-step `registrar_pago` →
+   `confirmar_excedente`, real generation, asserts exact saldo reduction
+   and base-value next cuota) and corrected the docstring wording. RED
+   confirmed via a deliberately wrong assertion before restoring GREEN.
+3. **WARNING closed** — Requirement 4 (projector) wording said the first
+   projected row shows arrastre-inclusive values; design.md and the
+   tested implementation establish a blocking unpaid cuota always has
+   zero paid components (a partial payment immediately persists a real
+   successor instead of leaving the blocker partially paid), so the
+   projector can never observe an unrealized arrastre and always
+   projects base values. Amended `specs/payment-carryover/spec.md`
+   Requirement 4 wording + scenario to describe the verified, testable
+   behavior, with an inline justification note. No production code
+   change — this was a documentation gap, not a behavioral defect.
+4. **Suggestions applied**:
+   - Added `saldo_intereses` assertions (both credits) to
+     `test_pagos_registrados_abono_capital_y_saldos_no_se_tocan` in
+     `test_pagos_backfill_arrastre.py` (previously only asserted
+     `saldo_capital`).
+   - Switched `db=AsyncMock()` to `db=AsyncMock(spec=AsyncSession)` via a
+     `make_db()` helper in `test_pago_service_arrastre.py`, eliminating
+     the cosmetic "coroutine was never awaited" `RuntimeWarning` on
+     `db.add()` without weakening any assertion.
+
+Verification after remediation: `246 passed, 0 failed` (244 baseline + 2
+new test functions: `test_totales_suben_tras_correccion_de_arrastre`,
+`test_pago_supera_base_mas_arrastre_via_confirmar_excedente`; the
+remaining changes added assertions to existing test bodies rather than
+new test functions). `cd frontend && npx tsc --noEmit`: clean, zero
+frontend diff.
+
+Delivered as 4 additional work-unit commits on `fix/pago-arrastre-cuota-fija`,
+no push, no PR opened:
+- `test(reportes): verify pending totals reflect true arrastre amounts`
+- `test(pago): cover excedente-with-arrastre path and fix misleading docstring`
+- `docs(spec): reconcile projector requirement with verified behavior`
+- `test(pagos): assert saldo_intereses untouched by arrastre backfill`
