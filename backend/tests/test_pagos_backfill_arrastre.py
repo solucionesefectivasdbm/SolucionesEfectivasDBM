@@ -262,6 +262,8 @@ class TestBackfillArrastreComponentes:
 
         saldo_capital_abono_antes = credito_abono.saldo_capital
         saldo_capital_fija_antes = credito_fija.saldo_capital
+        saldo_intereses_abono_antes = credito_abono.saldo_intereses
+        saldo_intereses_fija_antes = credito_fija.saldo_intereses
 
         # Historical/registered payment on the cuota_fija credit — already
         # pagado=True, so it never qualifies for the selection predicate.
@@ -296,6 +298,8 @@ class TestBackfillArrastreComponentes:
         assert pago_abono.interes_a_pagar == Decimal("20.00")
         assert credito_fija.saldo_capital == saldo_capital_fija_antes
         assert credito_abono.saldo_capital == saldo_capital_abono_antes
+        assert credito_fija.saldo_intereses == saldo_intereses_fija_antes
+        assert credito_abono.saldo_intereses == saldo_intereses_abono_antes
 
     @pytest.mark.asyncio
     async def test_no_admin_recibe_403(self, client_registrador_db: AsyncClient):
