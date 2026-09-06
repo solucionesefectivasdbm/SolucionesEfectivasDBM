@@ -26,7 +26,7 @@ from pydantic import BaseModel
 from app.database import get_db
 from app.dependencies import get_client_ip, get_current_user, require_role
 from app.models.cliente import Cliente
-from app.models.credito import Credito, Periodicidad
+from app.models.credito import Credito, Periodicidad, TipoCredito
 from app.models.gestor import Gestor
 from app.models.pago import Pago, TipoCuota
 from app.models.usuario import TipoUsuario, Usuario
@@ -729,6 +729,108 @@ async def registrar_pago_no_programado(
         usuario_id=current_user.id, ip_origen=get_client_ip(request),
     )
     return PagoResponse.model_validate(pago)
+
+
+# ---------------------------------------------------------------------------
+# ENDPOINT TEMPORAL — eliminar tras ejecutar en producción
+# ---------------------------------------------------------------------------
+@router.post("/admin/backfill-arrastre-componentes")
+async def backfill_arrastre_componentes(
+    request: Request,
+    current_user: Usuario = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Backfill idempotente: corrige cuotas `cuota_fija` pendientes cuyos
+    componentes (`capital_a_pagar` / `interes_a_pagar`) todavía están en su
+    valor base mientras `monto_a_pagar` ya incluye un arrastre (el defecto
+    que este cambio corrige — ver `carryover-payment-registration`).
+
+    Predicado de selección (mecanismo de idempotencia):
+    `pagado=False AND credito.tipo_credito='cuota_fija' AND credito.activo=True
+    AND monto_a_pagar > capital_a_pagar + interes_a_pagar`.
+    Tras la corrección `monto_a_pagar == capital_a_pagar + interes_a_pagar`,
+    así que una segunda corrida no selecciona filas — no se puede inflar dos
+    veces.
+
+    Por fila: `saldo_pendiente = monto_a_pagar - (capital_a_pagar +
+    interes_a_pagar)`, desglosado vía `desglosar_arrastre` contra la cuota
+    pagada inmediatamente anterior. Filas sin cuota previa pagada se omiten
+    y se reportan, nunca se adivinan. `monto_a_pagar`, `capital_pagado`,
+    `interes_pagado` y los saldos del `Credito` NUNCA se escriben.
+
+    ENDPOINT TEMPORAL — eliminar tras ejecutar en producción.
+    """
+    from app.services.credito_service import desglosar_arrastre
+
+    candidatas = (await db.execute(
+        select(Pago)
+        .join(Credito, Pago.credito_id == Credito.id)
+        .where(
+            Pago.deleted_at == None,  # noqa: E711
+            Pago.pagado == False,  # noqa: E712
+            Credito.tipo_credito == TipoCredito.cuota_fija,
+            Credito.activo == True,  # noqa: E712
+            Credito.deleted_at == None,  # noqa: E711
+            Pago.monto_a_pagar > Pago.capital_a_pagar + Pago.interes_a_pagar,
+        )
+    )).scalars().all()
+
+    revisados = len(candidatas)
+    corregidos = 0
+    omitidos = 0
+    detalle: list[dict] = []
+
+    for pago in candidatas:
+        cuota_previa_pagada = (await db.execute(
+            select(Pago).where(
+                Pago.credito_id == pago.credito_id,
+                Pago.numero_cuota < pago.numero_cuota,
+                Pago.pagado == True,  # noqa: E712
+                Pago.deleted_at == None,  # noqa: E711
+            ).order_by(Pago.numero_cuota.desc()).limit(1)
+        )).scalar_one_or_none()
+
+        if cuota_previa_pagada is None:
+            omitidos += 1
+            detalle.append({
+                "pago_id": str(pago.id),
+                "razon": "Sin cuota previa pagada — se omite en vez de adivinar el desglose",
+            })
+            continue
+
+        saldo_pendiente = (
+            pago.monto_a_pagar - pago.capital_a_pagar - pago.interes_a_pagar
+        ).quantize(Decimal("0.01"))
+        arr_cap, arr_int = desglosar_arrastre(cuota_previa_pagada, saldo_pendiente)
+
+        capital_anterior = pago.capital_a_pagar
+        interes_anterior = pago.interes_a_pagar
+        pago.capital_a_pagar = (capital_anterior + arr_cap).quantize(Decimal("0.01"))
+        pago.interes_a_pagar = (interes_anterior + arr_int).quantize(Decimal("0.01"))
+
+        await audit_service.registrar_actualizacion_campos(
+            db=db, entidad="pagos", entidad_id=pago.id,
+            usuario_id=current_user.id, ip_origen=get_client_ip(request),
+            cambios={
+                "capital_a_pagar": (str(capital_anterior), str(pago.capital_a_pagar)),
+                "interes_a_pagar": (str(interes_anterior), str(pago.interes_a_pagar)),
+            },
+        )
+
+        corregidos += 1
+        detalle.append({
+            "pago_id": str(pago.id),
+            "capital_a_pagar": [str(capital_anterior), str(pago.capital_a_pagar)],
+            "interes_a_pagar": [str(interes_anterior), str(pago.interes_a_pagar)],
+        })
+
+    return {
+        "revisados": revisados,
+        "corregidos": corregidos,
+        "omitidos": omitidos,
+        "detalle": detalle,
+    }
 
 
 # --- Alertas ---
