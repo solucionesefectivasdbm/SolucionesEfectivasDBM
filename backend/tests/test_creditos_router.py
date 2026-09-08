@@ -148,6 +148,97 @@ class TestResumenCarteraExcluyeSaldados:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Follow-up PR3: cobertura de `cliente_id` en resumen-cartera (fuera del scope
+# original — añadido por hook `gga run` pre-commit; ver apply-progress).
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestResumenCarteraFiltroCliente:
+    @pytest.mark.asyncio
+    async def test_sin_cliente_id_suma_toda_la_cartera(self, make_client, db_session):
+        """Comportamiento preexistente sin regresión: sin `cliente_id`, el
+        resumen suma los créditos abiertos de TODOS los clientes."""
+        cliente_a = uuid.uuid4()
+        cliente_b = uuid.uuid4()
+        credito_a = _mk_credito(saldo_capital=Decimal("300000.00"), saldo_intereses=Decimal("9000.00"))
+        credito_a.cliente_id = cliente_a
+        credito_b = _mk_credito(saldo_capital=Decimal("150000.00"), saldo_intereses=Decimal("4500.00"))
+        credito_b.cliente_id = cliente_b
+        db_session.add_all([credito_a, credito_b])
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        r = await client.get("/api/v1/creditos/resumen-cartera")
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert Decimal(str(data["saldo_capital"])) == Decimal("450000.00")
+        assert Decimal(str(data["saldo_intereses"])) == Decimal("13500.00")
+
+    @pytest.mark.asyncio
+    async def test_con_cliente_id_solo_suma_los_creditos_de_ese_cliente(self, make_client, db_session):
+        """Con `cliente_id`, el resumen se acota a los créditos abiertos de
+        ese cliente puntual y excluye los de otros clientes."""
+        cliente_objetivo = uuid.uuid4()
+        cliente_otro = uuid.uuid4()
+        credito_objetivo = _mk_credito(saldo_capital=Decimal("300000.00"), saldo_intereses=Decimal("9000.00"))
+        credito_objetivo.cliente_id = cliente_objetivo
+        credito_otro = _mk_credito(saldo_capital=Decimal("150000.00"), saldo_intereses=Decimal("4500.00"))
+        credito_otro.cliente_id = cliente_otro
+        db_session.add_all([credito_objetivo, credito_otro])
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        r = await client.get(f"/api/v1/creditos/resumen-cartera?cliente_id={cliente_objetivo}")
+        assert r.status_code == 200, r.text
+        data = r.json()
+        # Prueba que el parámetro sí filtra: si se ignorara, el total sería
+        # 450000.00 (la suma de ambos clientes) en vez de 300000.00.
+        assert Decimal(str(data["saldo_capital"])) == Decimal("300000.00")
+        assert Decimal(str(data["saldo_intereses"])) == Decimal("9000.00")
+
+    @pytest.mark.asyncio
+    async def test_con_cliente_id_credito_saldado_sin_confirmar_no_suma(self, make_client, db_session):
+        """Regla 6/9 bajo filtro: un crédito saldado (ambos saldos en cero)
+        con `activo=True` sin confirmar cierre no debe aportar al total
+        filtrado, igual que en el total sin filtrar. Se incluye además un
+        crédito ABIERTO de OTRO cliente para probar que el filtro sí actúa
+        (si se ignorara `cliente_id`, ese otro crédito inflaría el total)."""
+        cliente_objetivo = uuid.uuid4()
+        cliente_otro = uuid.uuid4()
+        credito_saldado = _mk_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("0.00"))
+        credito_saldado.cliente_id = cliente_objetivo
+        credito_abierto = _mk_credito(saldo_capital=Decimal("300000.00"), saldo_intereses=Decimal("9000.00"))
+        credito_abierto.cliente_id = cliente_objetivo
+        credito_de_otro = _mk_credito(saldo_capital=Decimal("999999.00"), saldo_intereses=Decimal("50000.00"))
+        credito_de_otro.cliente_id = cliente_otro
+        db_session.add_all([credito_saldado, credito_abierto, credito_de_otro])
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        r = await client.get(f"/api/v1/creditos/resumen-cartera?cliente_id={cliente_objetivo}")
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert Decimal(str(data["saldo_capital"])) == Decimal("300000.00")
+        assert Decimal(str(data["saldo_intereses"])) == Decimal("9000.00")
+
+    @pytest.mark.asyncio
+    async def test_cliente_id_desconocido_devuelve_total_cero_sin_error(self, make_client, db_session):
+        """Un `cliente_id` que no coincide con ningún crédito no genera error:
+        el endpoint aplica `coalesce(sum(...), 0)`, por lo que devuelve un
+        resumen en cero (contrato real leído del código, no inventado)."""
+        credito_a = _mk_credito(saldo_capital=Decimal("300000.00"), saldo_intereses=Decimal("9000.00"))
+        db_session.add(credito_a)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        r = await client.get(f"/api/v1/creditos/resumen-cartera?cliente_id={uuid.uuid4()}")
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert Decimal(str(data["saldo_capital"])) == Decimal("0")
+        assert Decimal(str(data["saldo_intereses"])) == Decimal("0")
+        assert Decimal(str(data["saldo_total"])) == Decimal("0")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 3.4/3.5 — pendiente_de_cierre expuesto en PATCH sin tocar activo
 # ──────────────────────────────────────────────────────────────────────────────
 
