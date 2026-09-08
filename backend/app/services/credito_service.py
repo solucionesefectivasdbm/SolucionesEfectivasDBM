@@ -107,6 +107,24 @@ def esta_saldado(credito: Credito) -> bool:
     return True
 
 
+def cerrar_credito(credito: Credito) -> bool:
+    """
+    Regla 9/12 (zero-balance-credit-closure): ÚNICO escritor de
+    `activo=False` por crédito saldado. NUNCA escribe `saldo_capital` ni
+    `saldo_intereses` — la condonación de deuda que existía antes en
+    `_verificar_cierre_credito` (forzar `saldo_capital = 0.00`) queda
+    eliminada por construcción, no por un guard adicional.
+
+    Idempotente: si el crédito ya estaba cerrado (`activo == False`), no
+    hace nada y retorna `False`. Retorna `True` solo cuando efectivamente
+    transiciona `activo` de `True` a `False`.
+    """
+    if not credito.activo:
+        return False
+    credito.activo = False
+    return True
+
+
 _Q_ARRASTRE = Decimal("0.01")
 
 

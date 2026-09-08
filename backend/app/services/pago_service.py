@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.credito import Credito, TipoCredito
 from app.models.pago import Pago, TipoCuota, DestinoExcedente
 from app.schemas.pago import RegistrarPagoRequest, RegistrarPagoResponse
-from app.services.credito_service import generar_siguiente_cuota
+from app.services.credito_service import cerrar_credito, esta_saldado, generar_siguiente_cuota
 
 
 TOL = Decimal("0.01")
@@ -191,7 +191,8 @@ class PagoService:
 
         PagoService._aplicar_reduccion_saldos(credito, request.capital_pagado, request.interes_pagado)
 
-        await PagoService._verificar_cierre_credito(db, credito, pago)
+        if esta_saldado(credito):
+            cerrar_credito(credito)
 
         if credito.activo:
             nueva_cuota = await generar_siguiente_cuota(
@@ -259,7 +260,8 @@ class PagoService:
             )
             saldo_a_arrastrar = max(Decimal("0.00"), faltante_interes)
 
-        await PagoService._verificar_cierre_credito(db, credito, pago)
+        if esta_saldado(credito):
+            cerrar_credito(credito)
 
         if credito.activo:
             nueva_cuota = await generar_siguiente_cuota(
@@ -326,7 +328,8 @@ class PagoService:
 
         PagoService._aplicar_reduccion_saldos(credito, reducir_capital, reducir_interes)
 
-        await PagoService._verificar_cierre_credito(db, credito, pago)
+        if esta_saldado(credito):
+            cerrar_credito(credito)
 
         if credito.activo:
             nueva_cuota = await generar_siguiente_cuota(
@@ -343,35 +346,6 @@ class PagoService:
             pago=PagoResponse.model_validate(pago),
             mensaje=f"Pago con excedente registrado. {excedente} aplicado a {destino.value}.",
         )
-
-    @staticmethod
-    async def _verificar_cierre_credito(
-        db: AsyncSession,
-        credito: Credito,
-        cuota_actual: Pago,
-    ) -> None:
-        """
-        Verifica si el crédito debe cerrarse y lo marca como inactivo.
-
-        Condiciones de cierre:
-        - saldo_capital <= 0 (ambos tipos)
-        - cuota_fija: número de cuota >= numero_cuotas
-        """
-        debe_cerrar = False
-
-        if credito.saldo_capital <= 0:
-            debe_cerrar = True
-
-        if (
-            credito.tipo_credito == TipoCredito.cuota_fija
-            and credito.numero_cuotas is not None
-            and cuota_actual.numero_cuota >= credito.numero_cuotas
-        ):
-            debe_cerrar = True
-
-        if debe_cerrar:
-            credito.activo = False
-            credito.saldo_capital = Decimal("0.00")
 
     @staticmethod
     async def registrar_pago_no_programado(
@@ -425,10 +399,14 @@ class PagoService:
         db.add(pago)
         await db.flush()  # Asegura que pago.id esté disponible
 
-        # 4. Verificar cierre por saldo
-        if credito.saldo_capital <= 0:
-            credito.activo = False
-            credito.saldo_capital = Decimal("0.00")
+        # 4. Verificar cierre por saldo — el early return se decide con
+        # `esta_saldado`, NUNCA con el booleano de `cerrar_credito`. Si se
+        # usara ese booleano, un crédito ya inactivo (segunda llamada)
+        # retornaría False y caería en `recalcular_saldo_intereses`, que
+        # este camino deliberadamente NO ejecuta cuando el crédito está
+        # saldado (design: zero-balance-credit-closure).
+        if esta_saldado(credito):
+            cerrar_credito(credito)
             return pago
 
         # Recalcular intereses esperados ahora que el saldo cambió:
