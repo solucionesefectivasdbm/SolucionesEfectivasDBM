@@ -84,6 +84,6 @@ them required tests and documentation only; `backend/app` stayed byte-identical.
 
 ## Phase 8: Rollout & cleanup (PR 2, after prod deploy)
 
-- [ ] 8.1 Deploy PR 1; run `POST /pagos/admin/backfill-arrastre-componentes` once as admin in prod; verify affected credits accept exact arrastre payment
-- [ ] 8.2 Delete the backfill endpoint, its schema, and `test_pagos_backfill_arrastre.py`
-- [ ] 8.3 `python -m pytest` green after deletion (no orphaned imports/fixtures)
+- [x] 8.1 Deploy PR 1; run `POST /pagos/admin/backfill-arrastre-componentes` once as admin in prod; verify affected credits accept exact arrastre payment
+- [x] 8.2 Delete the backfill endpoint, its schema, and `test_pagos_backfill_arrastre.py`
+- [x] 8.3 `python -m pytest` green after deletion (no orphaned imports/fixtures)
