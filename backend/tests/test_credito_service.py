@@ -16,9 +16,13 @@ import uuid
 from datetime import datetime
 
 from app.models.credito import Credito, Periodicidad, TipoCredito
+from app.models.pago import TipoCuota
 from app.services.credito_service import (
     calcular_cuota_fija,
     calcular_interes_periodo,
+    esta_saldado,
+    generar_siguiente_cuota,
+    _siguiente_cuota_fija,
 )
 from app.utils.fechas import (
     calcular_interes_primera_cuota,
@@ -377,3 +381,307 @@ class TestRecalcularCuotasFuturasAnchor:
 
         assert cuota.fecha_maxima == date(2026, 2, 20)
         assert cuota.momento == get_momento(date(2026, 2, 20))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# zero-balance-credit-closure — PR 1: settled predicate + interest-only tail
+# Spec revision 2 (obs #894), design revision 2 (obs #895), rules 9/10 (obs #892)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _credito_cuota_fija_saldo(
+    saldo_capital=Decimal("0.00"),
+    saldo_intereses=Decimal("5000.00"),
+    capital_prestado=Decimal("1000000.00"),
+    tasa=Decimal("0.0300"),
+    numero_cuotas=12,
+    periodicidad=Periodicidad.mensual,
+) -> Credito:
+    """cuota_fija credit already at (or near) settled state, for tail tests."""
+    return Credito(
+        id=uuid.uuid4(),
+        cliente_id=uuid.uuid4(),
+        numero_credito_cliente="TEST-TAIL-001",
+        tipo_credito=TipoCredito.cuota_fija,
+        capital_prestado=capital_prestado,
+        tasa_interes_mensual=tasa,
+        fecha_apertura=date(2026, 1, 1),
+        fecha_inicial_pago=date(2026, 1, 15),
+        periodicidad=periodicidad,
+        saldo_capital=saldo_capital,
+        saldo_intereses=saldo_intereses,
+        numero_cuotas=numero_cuotas,
+        calcular_interes_dias_corridos=False,
+        activo=True,
+        created_at=datetime(2026, 1, 1),
+        updated_at=datetime(2026, 1, 1),
+    )
+
+
+def _credito_abono_capital(
+    saldo_capital=Decimal("0.00"),
+    saldo_intereses=Decimal("0.00"),
+) -> Credito:
+    return Credito(
+        id=uuid.uuid4(),
+        cliente_id=uuid.uuid4(),
+        numero_credito_cliente="TEST-TAIL-ABONO-001",
+        tipo_credito=TipoCredito.abono_capital,
+        capital_prestado=Decimal("500000.00"),
+        tasa_interes_mensual=Decimal("0.0300"),
+        fecha_apertura=date(2026, 1, 1),
+        fecha_inicial_pago=date(2026, 1, 15),
+        periodicidad=Periodicidad.mensual,
+        saldo_capital=saldo_capital,
+        saldo_intereses=saldo_intereses,
+        numero_cuotas=None,
+        calcular_interes_dias_corridos=False,
+        activo=True,
+        created_at=datetime(2026, 1, 1),
+        updated_at=datetime(2026, 1, 1),
+    )
+
+
+class TestEstaSaldado:
+    """Task 1.1 — Req: Settled Definition (rule 9)."""
+
+    def test_cuota_fija_capital_cero_interes_pendiente_no_saldado(self):
+        """Capital settled, interest outstanding → NOT settled (rule 9)."""
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00")
+        )
+        assert esta_saldado(credito) is False
+
+    def test_cuota_fija_ambos_en_cero_saldado(self):
+        """Both balances at zero → settled."""
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("0.00")
+        )
+        assert esta_saldado(credito) is True
+
+    def test_cuota_fija_capital_pendiente_no_saldado(self):
+        """Capital outstanding → NOT settled regardless of interest."""
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("100000.00"), saldo_intereses=Decimal("0.00")
+        )
+        assert esta_saldado(credito) is False
+
+    def test_abono_capital_capital_cero_saldado_ignora_intereses(self):
+        """abono_capital settled iff saldo_capital <= 0 — saldo_intereses is
+        irrelevant (rule 3), even if it were artificially left non-zero."""
+        credito = _credito_abono_capital(
+            saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("999.00")
+        )
+        assert esta_saldado(credito) is True
+
+    def test_abono_capital_capital_pendiente_no_saldado(self):
+        credito = _credito_abono_capital(saldo_capital=Decimal("50000.00"))
+        assert esta_saldado(credito) is False
+
+
+class TestInteresOnlyTail:
+    """Task 1.3 — Req: Interest-only Installment Tail (rule 10)."""
+
+    def test_cuota_solo_interes_generada(self):
+        """Capital settled, interest outstanding → next cuota charges interest
+        only, capped at min(interes_base, saldo_intereses)."""
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00"),
+            capital_prestado=Decimal("1000000.00"), tasa=Decimal("0.0300"),
+        )
+        cuota_anterior = None
+        nueva = _siguiente_cuota_fija(
+            credito, cuota_anterior, 13, date(2026, 2, 15), "m3", None, Decimal("0.00"),
+        )
+        # interes_base = 1,000,000 * 0.03 / 1 = 30,000 > saldo_intereses (5,000)
+        assert nueva.capital_a_pagar == Decimal("0.00")
+        assert nueva.interes_a_pagar == Decimal("5000.00")
+        assert nueva.tipo_cuota == TipoCuota.interes
+        assert nueva.monto_a_pagar == Decimal("5000.00")
+
+    def test_cap_topa_en_la_cuota_final(self):
+        """Cap binds when saldo_intereses < interes_base — client never billed
+        more than saldo_intereses."""
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("100.00"),
+            capital_prestado=Decimal("1000000.00"), tasa=Decimal("0.0300"),
+        )
+        nueva = _siguiente_cuota_fija(
+            credito, None, 13, date(2026, 2, 15), "m3", None, Decimal("0.00"),
+        )
+        assert nueva.interes_a_pagar == Decimal("100.00")
+        assert nueva.interes_a_pagar <= credito.saldo_intereses
+
+    def test_no_sobrecobra_cuando_saldo_supera_base(self):
+        """Cap does NOT bind when saldo_intereses >= interes_base — bills the
+        constant base, not the (larger) remaining balance."""
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("50000.00"),
+            capital_prestado=Decimal("1000000.00"), tasa=Decimal("0.0300"),
+        )
+        nueva = _siguiente_cuota_fija(
+            credito, None, 13, date(2026, 2, 15), "m3", None, Decimal("0.00"),
+        )
+        assert nueva.interes_a_pagar == Decimal("30000.00")
+
+    def test_tasa_cero_cobra_remanente_en_una_cuota(self):
+        """Degenerate tasa=0 (or capital_prestado=0): interes_base is 0, so the
+        whole remaining saldo_intereses is billed in one installment."""
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("2500.00"),
+            capital_prestado=Decimal("1000000.00"), tasa=Decimal("0.0000"),
+        )
+        nueva = _siguiente_cuota_fija(
+            credito, None, 13, date(2026, 2, 15), "m3", None, Decimal("0.00"),
+        )
+        assert nueva.interes_a_pagar == Decimal("2500.00")
+        assert nueva.tipo_cuota == TipoCuota.interes
+
+
+class TestGenerarSiguienteCuotaTailTermination:
+    """Task 1.5 — integration, unmocked: the settled predicate governs
+    generation, not saldo_capital alone (Req: Interest-only Tail, Tail
+    terminates)."""
+
+    @pytest.mark.asyncio
+    async def test_capital_saldado_interes_pendiente_genera_cuota_solo_interes(
+        self, db_session
+    ):
+        """Capital settled but interest remains → generar_siguiente_cuota still
+        produces an installment (the interest-only tail), it does not stop."""
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00"),
+        )
+        db_session.add(credito)
+        await db_session.flush()
+
+        cuota_anterior = Pago(
+            id=uuid.uuid4(), credito_id=credito.id, numero_cuota=12,
+            tipo_cuota=TipoCuota.programada,
+            monto_a_pagar=Decimal("113333.33"),
+            capital_a_pagar=Decimal("83333.33"), interes_a_pagar=Decimal("30000.00"),
+            capital_pagado=Decimal("83333.33"), interes_pagado=Decimal("30000.00"),
+            momento="m3", fecha_maxima=date(2026, 12, 15),
+            pagado=True, validado_recaudador=True, es_ultimo_pago=False,
+        )
+        db_session.add(cuota_anterior)
+        await db_session.flush()
+
+        nueva = await generar_siguiente_cuota(
+            db=db_session, credito=credito, cuota_anterior=cuota_anterior, receptor_id=None,
+        )
+
+        assert nueva is not None
+        assert nueva.tipo_cuota == TipoCuota.interes
+        assert nueva.capital_a_pagar == Decimal("0.00")
+
+    @pytest.mark.asyncio
+    async def test_credito_saldado_no_genera_mas_cuotas(self, db_session):
+        """Both balances settled → generar_siguiente_cuota returns None, tail
+        terminates, no further installment."""
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("0.00"),
+        )
+        db_session.add(credito)
+        await db_session.flush()
+
+        cuota_anterior = Pago(
+            id=uuid.uuid4(), credito_id=credito.id, numero_cuota=13,
+            tipo_cuota=TipoCuota.interes,
+            monto_a_pagar=Decimal("5000.00"),
+            capital_a_pagar=Decimal("0.00"), interes_a_pagar=Decimal("5000.00"),
+            capital_pagado=Decimal("0.00"), interes_pagado=Decimal("5000.00"),
+            momento="m3", fecha_maxima=date(2027, 1, 15),
+            pagado=True, validado_recaudador=True, es_ultimo_pago=True,
+        )
+        db_session.add(cuota_anterior)
+        await db_session.flush()
+
+        nueva = await generar_siguiente_cuota(
+            db=db_session, credito=credito, cuota_anterior=cuota_anterior, receptor_id=None,
+        )
+
+        assert nueva is None
+
+
+class TestEsUltimoPagoTail:
+    """Task 1.8 — Req: Past-term Installments Are Explainable (rule 9/10)."""
+
+    def test_no_marca_ultima_cuando_sigue_la_cola_de_interes(self):
+        """A final capital installment followed by the interest-only tail
+        MUST NOT be stamped es_ultimo_pago — more installments remain."""
+        # saldo_intereses (60,000) is above the per-cuota interest base
+        # (30,000) — a historic under-collection (rule-10 scenario) — so this
+        # final capital installment reduces interest by only 30,000, leaving
+        # 30,000 outstanding for the interest-only tail that follows.
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("83333.33"), saldo_intereses=Decimal("60000.00"),
+            capital_prestado=Decimal("1000000.00"), tasa=Decimal("0.0300"),
+            numero_cuotas=12,
+        )
+        cuota_anterior = Pago(
+            id=uuid.uuid4(), credito_id=credito.id, numero_cuota=11,
+            tipo_cuota=TipoCuota.programada,
+            monto_a_pagar=Decimal("113333.33"),
+            capital_a_pagar=Decimal("83333.33"), interes_a_pagar=Decimal("30000.00"),
+            capital_pagado=Decimal("83333.33"), interes_pagado=Decimal("30000.00"),
+            momento="m3", fecha_maxima=date(2026, 11, 15), pagado=True,
+        )
+        nueva = _siguiente_cuota_fija(
+            credito, cuota_anterior, 12, date(2026, 12, 15), "m3", None, Decimal("0.00"),
+        )
+        # This cuota fully settles capital (83333.33 <= 83333.33) but its
+        # interes_a_pagar (30,000) does not cover saldo_intereses (60,000) —
+        # a further interest-only cuota will follow, so it must not be stamped.
+        assert nueva.es_ultimo_pago is False
+
+    def test_marca_ultima_solo_cuando_el_tope_liga(self):
+        """The interest-only installment that actually settles saldo_intereses
+        IS stamped es_ultimo_pago — the cap binds."""
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("100.00"),
+            capital_prestado=Decimal("1000000.00"), tasa=Decimal("0.0300"),
+        )
+        nueva = _siguiente_cuota_fija(
+            credito, None, 13, date(2027, 1, 15), "m3", None, Decimal("0.00"),
+        )
+        assert nueva.es_ultimo_pago is True
+
+
+class TestRecalcularCuotaActualSoloInteres:
+    """Task 1.10 — Req: Admin Capital Edit, interest-only preserved across an
+    edit (recalcular_cuota_actual_si_no_pagada)."""
+
+    @pytest.mark.asyncio
+    async def test_recalcular_reproduce_forma_solo_interes(self, db_session):
+        """An admin edit that leaves capital settled but interest outstanding
+        must recompute the pending cuota as interest-only, not as a normal
+        capital-bearing installment."""
+        from app.services.credito_service import recalcular_cuota_actual_si_no_pagada
+
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00"),
+            capital_prestado=Decimal("1000000.00"), tasa=Decimal("0.0300"),
+        )
+        db_session.add(credito)
+        await db_session.flush()
+
+        cuota_actual = Pago(
+            id=uuid.uuid4(), credito_id=credito.id, numero_cuota=13,
+            tipo_cuota=TipoCuota.programada,
+            monto_a_pagar=Decimal("113333.33"),
+            capital_a_pagar=Decimal("83333.33"), interes_a_pagar=Decimal("30000.00"),
+            capital_pagado=Decimal("0.00"), interes_pagado=Decimal("0.00"),
+            momento="m3", fecha_maxima=date(2027, 1, 15),
+            pagado=False, validado_recaudador=False, es_ultimo_pago=False,
+        )
+        db_session.add(cuota_actual)
+        await db_session.flush()
+
+        ok = await recalcular_cuota_actual_si_no_pagada(db_session, credito)
+
+        assert ok is True
+        assert cuota_actual.tipo_cuota == TipoCuota.interes
+        assert cuota_actual.capital_a_pagar == Decimal("0.00")
+        assert cuota_actual.interes_a_pagar == Decimal("5000.00")
+        assert cuota_actual.monto_a_pagar == Decimal("5000.00")

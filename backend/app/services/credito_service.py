@@ -87,6 +87,26 @@ def calcular_interes_periodo(capital: Decimal, tasa_mensual: Decimal) -> Decimal
     return (capital * tasa_mensual).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def esta_saldado(credito: Credito) -> bool:
+    """
+    Regla 9 (zero-balance-credit-closure): un crédito `cuota_fija` está
+    saldado solo cuando `saldo_capital <= 0` Y `saldo_intereses <= 0`. El
+    capital en cero NO alcanza mientras quede interés pendiente.
+
+    Un crédito `abono_capital` está saldado cuando `saldo_capital <= 0`
+    únicamente — no lleva `saldo_intereses` acumulado a nivel de crédito
+    (regla 3: `recalcular_saldo_intereses` lo fija en 0.00 para este tipo).
+    Se ramifica explícitamente sobre `tipo_credito` en vez de evaluar ambos
+    saldos sin condición, para documentar la regla 3 en el punto de decisión
+    y no depender silenciosamente de ese invariante.
+    """
+    if credito.saldo_capital > Decimal("0.00"):
+        return False
+    if credito.tipo_credito == TipoCredito.cuota_fija:
+        return credito.saldo_intereses <= Decimal("0.00")
+    return True
+
+
 _Q_ARRASTRE = Decimal("0.01")
 
 
@@ -411,8 +431,13 @@ async def generar_siguiente_cuota(
 
     DECISIÓN: saldo_pendiente acumula el faltante de pagos parciales
     de la cuota anterior. Se suma al monto_a_pagar de la nueva cuota.
+
+    Regla 10: para `cuota_fija`, capital saldado con `saldo_intereses`
+    pendiente NO detiene la generación — sigue con la cola de cuotas de
+    solo interés (ver `_siguiente_cuota_fija`). La generación se detiene
+    únicamente cuando el crédito queda saldado (`esta_saldado`).
     """
-    if credito.saldo_capital <= 0:
+    if esta_saldado(credito):
         return None
 
     siguiente_numero = cuota_anterior.numero_cuota + 1
@@ -443,7 +468,14 @@ def _siguiente_cuota_fija(
     Cada cuota tiene la misma porción de capital e interés calculados
     sobre el capital_prestado original, más el arrastre (si lo hay)
     desglosado por componente vía `desglosar_arrastre`.
+
+    Regla 10: si el capital ya está saldado pero queda `saldo_intereses`
+    pendiente, delega en `_siguiente_cuota_fija_solo_interes` — la cola de
+    cuotas de solo interés.
     """
+    if credito.saldo_capital <= Decimal("0.00"):
+        return _siguiente_cuota_fija_solo_interes(credito, numero, fecha_maxima, momento, receptor_id)
+
     capital_por_cuota = calcular_capital_cuota_fija(
         credito.capital_prestado, credito.numero_cuotas,
     )
@@ -455,7 +487,7 @@ def _siguiente_cuota_fija(
     capital_a_pagar = (capital_por_cuota + arr_cap).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     interes_a_pagar = (interes + arr_int).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     monto_total = (capital_a_pagar + interes_a_pagar).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    es_ultima = numero >= credito.numero_cuotas
+    es_ultima = credito.saldo_capital <= capital_a_pagar and credito.saldo_intereses <= interes_a_pagar
 
     return Pago(
         credito_id=credito.id,
@@ -463,6 +495,53 @@ def _siguiente_cuota_fija(
         tipo_cuota=TipoCuota.programada,
         monto_a_pagar=monto_total,
         capital_a_pagar=capital_a_pagar,
+        interes_a_pagar=interes_a_pagar,
+        momento=momento,
+        fecha_maxima=fecha_maxima,
+        receptor_id=receptor_id,
+        es_ultimo_pago=es_ultima,
+    )
+
+
+def _siguiente_cuota_fija_solo_interes(
+    credito: Credito,
+    numero: int,
+    fecha_maxima: date,
+    momento: str,
+    receptor_id: uuid.UUID | None,
+) -> Pago:
+    """
+    Regla 10 — cola de cuotas de solo interés: el capital de un crédito
+    `cuota_fija` ya está saldado (`saldo_capital <= 0`) pero queda
+    `saldo_intereses` pendiente. Cobra únicamente interés, TOPADO a
+    `saldo_intereses` para nunca cobrar de más (ver design: el `max()`
+    piso de `_aplicar_reduccion_saldos` absorbería silenciosamente el
+    exceso, produciendo un sobrecobro invisible — el espejo del bug de
+    condonación de deuda que esta iniciativa elimina).
+
+    `interes_base` es constante (se calcula sobre `capital_prestado`, el
+    capital original, no el saldo vigente — modelo de interés simple), así
+    que el tope solo liga en la última cuota de la cola. Sin arrastre
+    (`saldo_pendiente = 0`): el saldo ya es el libro contable, y el próximo
+    cálculo de `min(interes_base, saldo_intereses)` autocorrige cualquier
+    faltante de un pago parcial anterior.
+    """
+    interes_base = calcular_interes_cuota_fija(
+        credito.capital_prestado, credito.tasa_interes_mensual, credito.periodicidad,
+    )
+    interes_a_pagar = min(interes_base, credito.saldo_intereses)
+    if interes_a_pagar <= Decimal("0.00"):
+        # Degenerado: tasa o capital_prestado en 0 → cobra el remanente completo
+        # en una sola cuota (interes_base sería 0, nunca cubriría el saldo).
+        interes_a_pagar = credito.saldo_intereses
+    es_ultima = credito.saldo_intereses <= interes_a_pagar
+
+    return Pago(
+        credito_id=credito.id,
+        numero_cuota=numero,
+        tipo_cuota=TipoCuota.interes,
+        monto_a_pagar=interes_a_pagar,
+        capital_a_pagar=Decimal("0.00"),
         interes_a_pagar=interes_a_pagar,
         momento=momento,
         fecha_maxima=fecha_maxima,
@@ -621,7 +700,26 @@ async def recalcular_cuota_actual_si_no_pagada(
 
     ppm = Decimal(_periodos_por_mes(credito.periodicidad))
 
-    if credito.tipo_credito == TipoCredito.cuota_fija and credito.numero_cuotas:
+    if (
+        credito.tipo_credito == TipoCredito.cuota_fija
+        and credito.saldo_capital <= Decimal("0.00")
+    ):
+        # Regla 10: capital ya saldado, saldo_intereses pendiente — la cuota
+        # actual debe recalcularse como solo-interés, topada a saldo_intereses.
+        # Sin arrastre: sería doble conteo (el saldo ya refleja el faltante).
+        interes_base = calcular_interes_cuota_fija(
+            credito.capital_prestado, credito.tasa_interes_mensual, credito.periodicidad,
+        )
+        interes_x = min(interes_base, credito.saldo_intereses)
+        if interes_x <= Decimal("0.00"):
+            interes_x = credito.saldo_intereses
+
+        actual.tipo_cuota = TipoCuota.interes
+        actual.capital_a_pagar = Decimal("0.00")
+        actual.interes_a_pagar = interes_x
+        actual.monto_a_pagar = interes_x
+        actual.es_ultimo_pago = credito.saldo_intereses <= interes_x
+    elif credito.tipo_credito == TipoCredito.cuota_fija and credito.numero_cuotas:
         capital_x = calcular_capital_cuota_fija(
             credito.capital_prestado, credito.numero_cuotas,
         )
@@ -666,7 +764,9 @@ async def recalcular_cuota_actual_si_no_pagada(
         actual.capital_a_pagar = capital_x
         actual.interes_a_pagar = interes
         actual.monto_a_pagar = (capital_x + interes).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        actual.es_ultimo_pago = actual.numero_cuota >= credito.numero_cuotas
+        actual.es_ultimo_pago = (
+            credito.saldo_capital <= capital_x and credito.saldo_intereses <= interes
+        )
     else:
         # abono_capital
         if actual.numero_cuota == 1 and credito.calcular_interes_dias_corridos:
