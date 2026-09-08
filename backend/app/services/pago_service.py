@@ -97,6 +97,16 @@ class PagoService:
             # Pago exacto (dentro de tolerancia de redondeo).
             # En exacto se valida que cada componente no supere lo esperado + TOL.
             if capital_pagado > pago.capital_a_pagar + TOL:
+                if pago.capital_a_pagar <= Decimal("0.00"):
+                    # Rule 13 (zero-balance-credit-closure): explica la razón de
+                    # negocio en vez de un error de componente/tolerancia — esta
+                    # cuota es de solo interés (regla 10) porque el capital ya
+                    # fue saldado, no hay capital que pagar en ella.
+                    raise ValueError(
+                        "Esta cuota es de solo interés porque el capital del "
+                        "crédito ya fue saldado; no se puede registrar pago a "
+                        "capital en ella."
+                    )
                 raise ValueError(
                     f"En pago exacto, capital_pagado ({capital_pagado}) excede "
                     f"capital_a_pagar ({pago.capital_a_pagar}) + tolerancia ({TOL})"
