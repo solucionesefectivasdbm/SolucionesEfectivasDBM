@@ -43,6 +43,7 @@ from app.schemas.pago import (
     ValidarPagoRequest,
 )
 from app.services import audit_service
+from app.services.credito_service import credito_operativamente_abierto
 from app.services.pago_service import PagoService
 from app.utils.fechas import siguiente_fecha_maxima
 from app.utils.momentos import get_momento, get_periodo_momento
@@ -143,6 +144,14 @@ async def listar_pagos(
             Pago.deleted_at == None,  # noqa: E711
             Pago.fecha_maxima >= fecha_inicio,
             Pago.fecha_maxima <= fecha_fin,
+            # Regla 6/9: una cuota YA PAGADA es historial y se conserva siempre.
+            # Una cuota PENDIENTE de un crédito que ya quedó saldado (activo
+            # aún True, cierre sin confirmar) no debe listarse — es el "trap"
+            # documentado: este query nunca tuvo filtro de Credito.activo.
+            or_(
+                Pago.pagado == True,  # noqa: E712
+                credito_operativamente_abierto(),
+            ),
         )
     )
 
@@ -276,7 +285,7 @@ async def _calcular_virtuales(
         select(Credito)
         .join(Cliente, Credito.cliente_id == Cliente.id)
         .where(
-            Credito.activo == True,  # noqa: E712
+            credito_operativamente_abierto(),
             Credito.deleted_at == None,  # noqa: E711
             Cliente.deleted_at == None,  # noqa: E711
         )
@@ -753,6 +762,7 @@ async def alertas_proximos_vencer(
             Pago.deleted_at == None,  # noqa: E711
             Pago.fecha_maxima >= hoy,
             Pago.fecha_maxima <= limite,
+            credito_operativamente_abierto(),
         )
     )
 
@@ -783,6 +793,7 @@ async def alertas_vencidos(
             Pago.pagado == False,  # noqa: E712
             Pago.deleted_at == None,  # noqa: E711
             Pago.fecha_maxima < hoy,
+            credito_operativamente_abierto(),
         )
     )
 
