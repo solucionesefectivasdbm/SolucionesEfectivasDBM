@@ -63,17 +63,17 @@ PR now independently forecasts under 400.
 
 ## Phase 2: Single Writer + Closure Wiring (PR 2 → PR 1 branch)
 
-- [ ] 2.1 RED: `cerrar_credito` never writes either balance; second call returns `False` (Req: Closure by Settled State Only, "no path may write balances")
-- [ ] 2.2 GREEN: add `cerrar_credito(credito)` to `credito_service.py`
-- [ ] 2.3 RED: rewrite `test_cierre_al_alcanzar_ultima_cuota` — final installment paid with balance left MUST stay `activo=True`, generate a same-value installment, no carryover (Req: Closure by Settled State Only, last-installment-reached-with-balance scenario; deletes the debt-forgiveness assertion)
-- [ ] 2.4 GREEN: delete `_verificar_cierre_credito` (`pago_service.py:337-364`); wire `esta_saldado`/`cerrar_credito` into `_pago_exacto`, `_pago_parcial`, `confirmar_excedente`; keep `registrar_pago_no_programado` early-return keyed on `esta_saldado`
-- [ ] 2.5 RED: confirm existing `test_cierre_al_llegar_saldo_cero` still passes unmodified — locks the generic "payment settles the credit" scenario for `_pago_exacto` (regression lock, Req: Closure by Settled State Only)
-- [ ] 2.6 RED: `_pago_parcial` and `confirmar_excedente` also close on reaching settled, unmocked — the two of four settling paths with no prior coverage (Req: Closure by Settled State Only, "payment settles the credit")
-- [ ] 2.7 RED: unscheduled-payment settle test (`registrar_pago_no_programado`), unmocked — the fourth path (Req: Closure by Settled State Only, "payment settles the credit"; "Real path without mocking")
-- [ ] 2.8 RED: under-paid final installment never forgives debt — both balances retain their real remaining amounts, `activo` stays `True`, unmocked (Req: Closure by Settled State Only, under-paid final installment)
-- [ ] 2.9 RED: `abono_capital` credit closes when `saldo_capital` reaches `0.00`, unmocked (Req: Abono Capital Closure, settled abono capital credit)
-- [ ] 2.10 RED: `abono_capital` paid interest rounds `ROUND_HALF_UP` to 2 decimals — add coverage if none exists; this is pre-existing behavior being locked, not new logic (Req: Abono Capital Closure, interest rounding)
-- [ ] 2.11 Verify: `cd backend && python -m pytest` — 0 failures, ≥ baseline 246 + new tests
+- [x] 2.1 RED: `cerrar_credito` never writes either balance; second call returns `False` (Req: Closure by Settled State Only, "no path may write balances")
+- [x] 2.2 GREEN: add `cerrar_credito(credito)` to `credito_service.py`
+- [x] 2.3 RED: rewrite `test_cierre_al_alcanzar_ultima_cuota` — final installment paid with balance left MUST stay `activo=True`, generate a same-value installment, no carryover (Req: Closure by Settled State Only, last-installment-reached-with-balance scenario; deletes the debt-forgiveness assertion)
+- [x] 2.4 GREEN: delete `_verificar_cierre_credito` (`pago_service.py:337-364`); wire `esta_saldado`/`cerrar_credito` into `_pago_exacto`, `_pago_parcial`, `confirmar_excedente`; keep `registrar_pago_no_programado` early-return keyed on `esta_saldado`
+- [x] 2.5 RED: confirm existing `test_cierre_al_llegar_saldo_cero` still passes unmodified — locks the generic "payment settles the credit" scenario for `_pago_exacto` (regression lock, Req: Closure by Settled State Only)
+- [x] 2.6 RED: `_pago_parcial` and `confirmar_excedente` also close on reaching settled, unmocked — the two of four settling paths with no prior coverage (Req: Closure by Settled State Only, "payment settles the credit")
+- [x] 2.7 RED: unscheduled-payment settle test (`registrar_pago_no_programado`), unmocked — the fourth path (Req: Closure by Settled State Only, "payment settles the credit"; "Real path without mocking")
+- [x] 2.8 RED: under-paid final installment never forgives debt — both balances retain their real remaining amounts, `activo` stays `True`, unmocked (Req: Closure by Settled State Only, under-paid final installment)
+- [x] 2.9 RED: `abono_capital` credit closes when `saldo_capital` reaches `0.00`, unmocked (Req: Abono Capital Closure, settled abono capital credit)
+- [x] 2.10 RED: `abono_capital` paid interest rounds `ROUND_HALF_UP` to 2 decimals — add coverage if none exists; this is pre-existing behavior being locked, not new logic (Req: Abono Capital Closure, interest rounding)
+- [x] 2.11 Verify: `cd backend && python -m pytest` — 0 failures, ≥ baseline 246 + new tests
 
 ## Phase 3: Read Paths, Confirmation, Backfill, Frontend (PR 3 → PR 2 branch)
 
