@@ -20,6 +20,7 @@ from app.models.pago import Pago, TipoCuota
 from app.services.credito_service import (
     _siguiente_cuota_fija,
     desglosar_arrastre,
+    generar_siguiente_cuota,
     recalcular_cuota_actual_si_no_pagada,
 )
 
@@ -162,6 +163,67 @@ class TestSiguienteCuotaFijaArrastre:
         assert nueva.capital_a_pagar == Decimal("100.00")
         assert nueva.interes_a_pagar == Decimal("20.00")
         assert nueva.monto_a_pagar == Decimal("120.00")
+
+
+def _credito_cuota_fija_diario(
+    capital_prestado=Decimal("1000.00"),
+    tasa=Decimal("0.0200"),
+    numero_cuotas=10,
+    saldo_capital=Decimal("1000.00"),
+    fecha_inicial_pago=date(2026, 1, 3),  # Saturday
+) -> Credito:
+    return Credito(
+        id=uuid.uuid4(),
+        cliente_id=uuid.uuid4(),
+        numero_credito_cliente="TEST-ARR-DIA-001",
+        tipo_credito=TipoCredito.cuota_fija,
+        capital_prestado=capital_prestado,
+        tasa_interes_mensual=tasa,
+        fecha_apertura=date(2026, 1, 1),
+        fecha_inicial_pago=fecha_inicial_pago,
+        periodicidad=Periodicidad.diario,
+        saldo_capital=saldo_capital,
+        saldo_intereses=Decimal("0.00"),
+        numero_cuotas=numero_cuotas,
+        calcular_interes_dias_corridos=False,
+        activo=True,
+        created_at=datetime(2026, 1, 1),
+        updated_at=datetime(2026, 1, 1),
+    )
+
+
+class TestGenerarSiguienteCuotaDiarioDomingoConArrastre:
+    """Independence: Sunday-skip (Phase 1) and carry-over (arrastre) compose
+    correctly — the date shift never touches numero_cuota or the amounts."""
+
+    @pytest.mark.asyncio
+    async def test_sabado_parcial_arrastra_a_lunes_invariante_monto(self):
+        """Cuota anterior vence sábado 2026-01-03, pago parcial deja faltante
+        de capital. La siguiente cuota debe: (a) caer en lunes 2026-01-05
+        (domingo 01-04 saltado), (b) mantener numero_cuota=2, y
+        (c) capital_a_pagar + interes_a_pagar == monto_a_pagar (invariante)."""
+        credito = _credito_cuota_fija_diario()
+        cuota_anterior = _mk_pago_anterior(
+            capital_a_pagar=Decimal("100.00"), capital_pagado=Decimal("60.00"),
+            interes_a_pagar=Decimal("20.00"), interes_pagado=Decimal("20.00"),
+        )
+        cuota_anterior.numero_cuota = 1
+        cuota_anterior.fecha_maxima = date(2026, 1, 3)  # Saturday
+
+        nueva = await generar_siguiente_cuota(
+            db=None, credito=credito, cuota_anterior=cuota_anterior,
+            receptor_id=None, saldo_pendiente=Decimal("40.00"),
+        )
+
+        assert nueva is not None
+        assert nueva.numero_cuota == 2
+        assert nueva.fecha_maxima == date(2026, 1, 5)  # Monday, Sunday 01-04 skipped
+        assert nueva.fecha_maxima.weekday() != 6
+        assert nueva.capital_a_pagar + nueva.interes_a_pagar == nueva.monto_a_pagar
+        # Base cuota_fija: capital=1000/10=100.00, interes=1000*0.02/30=0.67 (diario ppm=30).
+        # Shortfall (all-capital, since capital fully covers the falta) lands on capital.
+        assert nueva.capital_a_pagar == Decimal("100.00") + Decimal("40.00")
+        assert nueva.interes_a_pagar == Decimal("0.67")
 
 
 class TestRecalcularCuotaActualPreservaArrastre:
