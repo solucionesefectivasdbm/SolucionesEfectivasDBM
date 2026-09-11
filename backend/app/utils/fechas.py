@@ -45,6 +45,23 @@ def _siguiente_mensual(fecha_anterior: date, dia_ancla: int) -> date:
     return _fecha_en_dia_ancla(anio, mes, dia_ancla)
 
 
+def es_domingo(fecha: date) -> bool:
+    """True if fecha falls on a Sunday (ISO weekday 6, 0-indexed Monday)."""
+    return fecha.weekday() == 6
+
+
+def _siguiente_diario(fecha_anterior: date) -> date:
+    """Next diario due date: one day forward, skipping Sunday.
+
+    Sunday is never a collection day for diario credits. If the natural
+    +1 day candidate lands on Sunday, it advances one more day to Monday.
+    """
+    candidata = fecha_anterior + timedelta(days=1)
+    if es_domingo(candidata):
+        candidata += timedelta(days=1)
+    return candidata
+
+
 def _siguiente_quincenal(fecha_anterior: date, d1: int, d2: int) -> date:
     """Next quincenal due date using anchor alternation.
 
@@ -66,7 +83,9 @@ def siguiente_fecha_maxima(fecha_anterior: date, credito: "Credito") -> date:
 
     DECISIÓN TÉCNICA: mensual y quincenal usan anchor_dia_1/anchor_dia_2 del
     crédito para anclar la fecha al día correcto del mes. semanal/diario siguen
-    usando timedelta fijo (+7, +1) y no consultan los campos anchor.
+    usando timedelta fijo (+7, +1) y no consultan los campos anchor. diario
+    además nunca cae en domingo: si el +1 día aterriza en domingo, avanza al
+    lunes siguiente (ver _siguiente_diario). semanal sí permite domingo.
 
     Retrocompatibilidad: si un crédito mensual/quincenal aún no tiene anchors
     asignados (NULL — créditos legacy pre-migración), se usa el comportamiento
@@ -104,9 +123,10 @@ def siguiente_fecha_maxima(fecha_anterior: date, credito: "Credito") -> date:
             p.value,
         )
         return fecha_anterior + timedelta(days=14)
-    # semanal/diario: timedelta fixo, anchors ignorados
-    dias = 7 if p == Periodicidad.semanal else 1
-    return fecha_anterior + timedelta(days=dias)
+    if p == Periodicidad.diario:
+        return _siguiente_diario(fecha_anterior)
+    # semanal: timedelta fijo +7, anchors ignorados, domingo permitido
+    return fecha_anterior + timedelta(days=7)
 
 
 def calcular_interes_primera_cuota(

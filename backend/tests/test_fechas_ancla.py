@@ -221,9 +221,46 @@ class TestSemanalDiarioRegression:
         assert siguiente_fecha_maxima(date(2026, 1, 15), c) == date(2026, 1, 16)
 
     def test_4_2_b_diario_month_boundary(self):
-        """Scenario 4.2.b: diario, Jan-31 → Feb-01."""
+        """Scenario 4.2.b: diario, Sat Jan-31 → Mon Feb-02 (Sunday Feb-01 is skipped)."""
         c = _credito(Periodicidad.diario)
-        assert siguiente_fecha_maxima(date(2026, 1, 31), c) == date(2026, 2, 1)
+        assert siguiente_fecha_maxima(date(2026, 1, 31), c) == date(2026, 2, 2)
+
+    def test_4_2_c_diario_thu_to_fri(self):
+        """Scenario: diario, Thu Jan-15 → Fri Jan-16 (no Sunday involved)."""
+        c = _credito(Periodicidad.diario)
+        assert siguiente_fecha_maxima(date(2026, 1, 15), c) == date(2026, 1, 16)
+
+    def test_4_2_d_diario_sunday_input_lands_monday(self):
+        """Edge case: fecha_anterior itself is a Sunday; next day (Monday) is not Sunday."""
+        c = _credito(Periodicidad.diario)
+        assert siguiente_fecha_maxima(date(2026, 1, 25), c) == date(2026, 1, 26)
+
+    def test_4_2_e_diario_saturday_near_year_end_skips_sunday(self):
+        """Scenario: diario, Sat Dec-26-2026 → Mon Dec-28-2026 (Sunday Dec-27 skipped)."""
+        c = _credito(Periodicidad.diario)
+        assert siguiente_fecha_maxima(date(2026, 12, 26), c) == date(2026, 12, 28)
+
+    def test_4_2_f_diario_year_boundary_no_sunday(self):
+        """Regression: diario, Thu Dec-31-2026 → Fri Jan-01-2027 (no Sunday involved)."""
+        c = _credito(Periodicidad.diario)
+        assert siguiente_fecha_maxima(date(2026, 12, 31), c) == date(2027, 1, 1)
+
+    def test_4_2_g_diario_cascade_ten_cuotas_no_sunday(self):
+        """Scenario: 10 cuotas from Mon 2026-01-05 → no Sunday, last 2026-01-15,
+        all distinct, exactly 10."""
+        c = _credito(Periodicidad.diario)
+        fechas = [date(2026, 1, 5)]
+        for _ in range(9):
+            fechas.append(siguiente_fecha_maxima(fechas[-1], c))
+        assert len(fechas) == 10
+        assert len(set(fechas)) == 10
+        assert fechas[-1] == date(2026, 1, 15)
+        assert all(f.weekday() != 6 for f in fechas)
+
+    def test_4_1_c_semanal_sunday_unchanged(self):
+        """Scenario: semanal, Sun Jan-25 → Sun Feb-01 (semanal keeps Sunday dates)."""
+        c = _credito(Periodicidad.semanal)
+        assert siguiente_fecha_maxima(date(2026, 1, 25), c) == date(2026, 2, 1)
 
     def test_4_3_a_semanal_anchor_null_no_error(self):
         """Scenario 4.3.a: semanal with NULL anchor fields; no error, result = +7."""
