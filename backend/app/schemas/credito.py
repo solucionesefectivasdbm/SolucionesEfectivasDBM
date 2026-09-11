@@ -132,3 +132,4 @@ class CreditoResponse(BaseModel):
     activo: bool
     anchor_dia_1: Optional[int] = None
     anchor_dia_2: Optional[int] = None
+    pendiente_de_cierre: bool = False

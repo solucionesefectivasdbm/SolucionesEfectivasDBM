@@ -285,6 +285,42 @@ class TestPagoExcedente:
         assert pago.es_excedente_a == DestinoExcedente.intereses
 
 
+class TestCerrarCredito:
+    """
+    Task 2.1 (zero-balance-credit-closure): `cerrar_credito` es el ÚNICO
+    escritor de `activo=False` por saldado y NUNCA escribe saldo_capital
+    ni saldo_intereses. Segunda llamada sobre un crédito ya cerrado retorna
+    False sin volver a mutar nada.
+    """
+
+    def test_cerrar_credito_no_escribe_saldos(self):
+        from app.services.credito_service import cerrar_credito
+
+        credito = make_credito(saldo_capital=Decimal("500.00"), saldo_intereses=Decimal("20.00"))
+        credito.activo = True
+
+        resultado = cerrar_credito(credito)
+
+        assert resultado is True
+        assert credito.activo is False
+        # NUNCA escribe saldos — quedan intactos, no forzados a 0.00
+        assert credito.saldo_capital == Decimal("500.00")
+        assert credito.saldo_intereses == Decimal("20.00")
+
+    def test_cerrar_credito_segunda_llamada_retorna_false(self):
+        from app.services.credito_service import cerrar_credito
+
+        credito = make_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("0.00"))
+        credito.activo = False  # ya cerrado
+
+        resultado = cerrar_credito(credito)
+
+        assert resultado is False
+        assert credito.activo is False
+        assert credito.saldo_capital == Decimal("0.00")
+        assert credito.saldo_intereses == Decimal("0.00")
+
+
 class TestCierreCreditoAutomatico:
 
     @pytest.mark.asyncio
@@ -312,28 +348,290 @@ class TestCierreCreditoAutomatico:
         assert credito.saldo_capital == Decimal("0.00")
 
     @pytest.mark.asyncio
-    async def test_cierre_al_alcanzar_ultima_cuota(self):
-        """Para cuota_fija: se cierra al pagar la cuota número numero_cuotas."""
-        credito = make_credito(numero_cuotas=3)
-        pago = make_pago(
-            numero_cuota=3,
-            monto_a_pagar=Decimal("100000"),
-            capital=Decimal("1000000"),  # Todo el saldo
-            interes=Decimal("0"),
+    async def test_ultima_cuota_pagada_con_capital_pendiente_no_cierra(self):
+        """
+        Task 2.3 (zero-balance-credit-closure): REEMPLAZA la aserción de
+        cierre-por-conteo eliminada. `numero_cuota == numero_cuotas` pagada
+        en su totalidad, pero con `saldo_capital` remanente (crédito histórico
+        con abono previo insuficiente) NO cierra: `activo` permanece `True`,
+        los saldos quedan en los valores reales tras la reducción, y se genera
+        una cuota adicional con el MISMO valor que la anterior, sin arrastre
+        (regla 5 — el pago fue exacto, no hay faltante que arrastrar).
+
+        `generar_siguiente_cuota` NO está mockeado (Req: Real path without
+        mocking) — se ejercita la implementación real.
+        """
+        credito = make_credito(
+            saldo_capital=Decimal("15000.00"),
+            saldo_intereses=Decimal("3600.00"),
+            numero_cuotas=12,
+            tasa=Decimal("0.0300"),
         )
-        pago.es_ultimo_pago = True
-        credito.saldo_capital = Decimal("100000")
+        credito.capital_prestado = Decimal("120000.00")  # 120000/12 = 10000 por cuota
+        pago = make_pago(
+            numero_cuota=12,
+            monto_a_pagar=Decimal("13600.00"),
+            capital=Decimal("10000.00"),
+            interes=Decimal("3600.00"),
+        )
+        pago.fecha_maxima = date(2027, 2, 15)
         db = AsyncMock()
 
         request = RegistrarPagoRequest(
-            capital_pagado=Decimal("100000"),
-            interes_pagado=Decimal("0"),
+            capital_pagado=Decimal("10000.00"),
+            interes_pagado=Decimal("3600.00"),
         )
 
-        with patch("app.services.pago_service.generar_siguiente_cuota", return_value=None):
-            await PagoService.registrar_pago(db, pago, credito, request, date(2026, 3, 10))
+        result = await PagoService.registrar_pago(db, pago, credito, request, date(2027, 2, 15))
+
+        # Saldos reales — capital remanente NO se fuerza a 0.00
+        assert credito.saldo_capital == Decimal("5000.00")
+        assert credito.saldo_intereses == Decimal("0.00")
+        assert credito.activo is True
+
+        assert db.add.called
+        nueva_cuota = db.add.call_args.args[0]
+        assert nueva_cuota.numero_cuota == 13
+        # MISMO valor que la cuota anterior, sin arrastre (pago fue exacto)
+        assert nueva_cuota.capital_a_pagar == Decimal("10000.00")
+        assert nueva_cuota.interes_a_pagar == Decimal("3600.00")
+        assert nueva_cuota.monto_a_pagar == Decimal("13600.00")
+
+
+class TestCierreEnTodasLasRutas:
+    """
+    Tasks 2.6/2.7 (zero-balance-credit-closure): las CUATRO rutas que
+    mutan saldos (`_pago_exacto`, `_pago_parcial`, `confirmar_excedente`,
+    `registrar_pago_no_programado`) deben cerrar el crédito al quedar
+    saldado. Antes de esta batería solo `_pago_exacto` tenía cobertura
+    real (`test_cierre_al_llegar_saldo_cero`); estas dos rutas restantes
+    (parcial y excedente) no tenían ninguna. `generar_siguiente_cuota` NO
+    está mockeado (Req: Real path without mocking, Closure by Settled
+    State Only — "payment settles the credit").
+    """
+
+    @pytest.mark.asyncio
+    async def test_pago_parcial_que_salda_cierra_credito(self):
+        """Un pago parcial (reparto libre) que deja ambos saldos en 0.00
+        debe cerrar el crédito, sin necesidad de completar monto_a_pagar."""
+        credito = make_credito(
+            saldo_capital=Decimal("50000.00"),
+            saldo_intereses=Decimal("0.00"),
+            numero_cuotas=12,
+        )
+        pago = make_pago(
+            numero_cuota=12,
+            monto_a_pagar=Decimal("80000.00"),
+            capital=Decimal("70000.00"),
+            interes=Decimal("10000.00"),
+        )
+        db = AsyncMock()
+
+        # Pago parcial: 50000 < monto_a_pagar (80000), todo a capital → salda
+        # exactamente el saldo_capital restante.
+        request = RegistrarPagoRequest(
+            capital_pagado=Decimal("50000.00"),
+            interes_pagado=Decimal("0.00"),
+        )
+
+        await PagoService.registrar_pago(db, pago, credito, request, date(2027, 3, 10))
 
         assert credito.activo is False
+        assert credito.saldo_capital == Decimal("0.00")
+        assert credito.saldo_intereses == Decimal("0.00")
+
+    @pytest.mark.asyncio
+    async def test_confirmar_excedente_que_salda_cierra_credito(self):
+        """Confirmar excedente con destino=capital que deja saldo_capital en
+        0.00 debe cerrar el crédito."""
+        credito = make_credito(
+            saldo_capital=Decimal("100000.00"),
+            saldo_intereses=Decimal("0.00"),
+            numero_cuotas=12,
+        )
+        pago = make_pago(
+            numero_cuota=12,
+            monto_a_pagar=Decimal("100000.00"),
+            capital=Decimal("90000.00"),
+            interes=Decimal("10000.00"),
+        )
+        db = AsyncMock()
+
+        # Total pagado 120000 > monto_a_pagar (100000) → excedente de 20000.
+        # Destino capital: reducir_capital = 90000 + 20000 = 110000 → salda
+        # el saldo_capital restante (100000) con margen.
+        request = RegistrarPagoRequest(
+            capital_pagado=Decimal("110000.00"),
+            interes_pagado=Decimal("10000.00"),
+        )
+
+        await PagoService.confirmar_excedente(
+            db, pago, credito, request, DestinoExcedente.capital, date(2027, 3, 10)
+        )
+
+        assert credito.activo is False
+        assert credito.saldo_capital == Decimal("0.00")
+
+    @pytest.mark.asyncio
+    async def test_pago_no_programado_que_salda_cierra_credito(self):
+        """Task 2.7 — cuarta ruta de cierre: `registrar_pago_no_programado`
+        (abono_capital, sin `saldo_intereses` a nivel crédito) cierra al
+        quedar saldado."""
+        credito = make_credito_abono(
+            periodicidad=Periodicidad.mensual,
+            saldo_capital=Decimal("500.00"),
+            saldo_intereses=Decimal("0.00"),
+        )
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=MagicMock(scalar=MagicMock(return_value=0)))
+        db.add = MagicMock()
+        db.flush = AsyncMock()
+
+        pago = await PagoService.registrar_pago_no_programado(
+            db=db,
+            credito=credito,
+            monto=Decimal("500.00"),
+            destino=DestinoExcedente.capital,
+            fecha_pago=date(2027, 3, 10),
+            receptor_id=None,
+        )
+
+        assert credito.activo is False
+        assert credito.saldo_capital == Decimal("0.00")
+        assert pago.pagado is True
+
+    @pytest.mark.asyncio
+    async def test_pago_no_programado_cuota_fija_capital_saldado_interes_pendiente_no_cierra(self):
+        """
+        Prueba la razón de ser de mantener el early-return atado a
+        `esta_saldado` en vez de `credito.saldo_capital <= 0`: un crédito
+        `cuota_fija` cuyo capital queda en cero por un pago no programado,
+        pero con `saldo_intereses` pendiente, NO debe cerrarse (regla 9).
+        El código anterior (`credito.saldo_capital <= 0` a secas) sí lo
+        habría cerrado — esta es precisamente la regresión que la regla 9
+        elimina en la cuarta ruta.
+        """
+        credito = make_credito(
+            tipo=TipoCredito.cuota_fija,
+            saldo_capital=Decimal("500.00"),
+            saldo_intereses=Decimal("2000.00"),
+            numero_cuotas=12,
+        )
+        call_count = 0
+
+        async def mock_execute(stmt, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            result = MagicMock()
+            if call_count == 1:
+                result.scalar.return_value = 5  # max_cuota
+            elif call_count == 2:
+                # recalcular_saldo_intereses (cuota_fija) consulta histórico
+                result.scalar.return_value = Decimal("30000.00")
+            else:
+                result.scalar_one_or_none.return_value = None
+            return result
+
+        db = AsyncMock(spec=AsyncSession)
+        db.execute = mock_execute
+        db.add = MagicMock()
+        db.flush = AsyncMock()
+
+        await PagoService.registrar_pago_no_programado(
+            db=db,
+            credito=credito,
+            monto=Decimal("500.00"),
+            destino=DestinoExcedente.capital,
+            fecha_pago=date(2027, 3, 10),
+            receptor_id=None,
+        )
+
+        assert credito.saldo_capital == Decimal("0.00")
+        assert credito.activo is True
+
+    @pytest.mark.asyncio
+    async def test_cuota_final_subpagada_no_condona_deuda(self):
+        """
+        Task 2.8 — el pago parcial de la última cuota (numero_cuota ==
+        numero_cuotas) NUNCA condona el remanente: ambos saldos quedan en
+        sus valores REALES tras la reducción parcial, `activo` permanece
+        `True`. Este es exactamente el bug que la iniciativa elimina: el
+        código anterior forzaba `saldo_capital = 0.00` al alcanzar la
+        última cuota, sin importar cuánto se pagó realmente.
+        """
+        credito = make_credito(saldo_capital=Decimal("10000.00"), numero_cuotas=12)
+        pago = make_pago(
+            numero_cuota=12,
+            monto_a_pagar=Decimal("10000.00"),
+            capital=Decimal("10000.00"),
+            interes=Decimal("0.00"),
+        )
+        db = AsyncMock()
+
+        # Solo paga 4000 de los 10000 esperados de capital — pago parcial.
+        request = RegistrarPagoRequest(
+            capital_pagado=Decimal("4000.00"),
+            interes_pagado=Decimal("0.00"),
+        )
+
+        await PagoService.registrar_pago(db, pago, credito, request, date(2027, 4, 10))
+
+        # Remanente REAL, no condonado a 0.00.
+        assert credito.saldo_capital == Decimal("6000.00")
+        assert credito.activo is True
+
+    @pytest.mark.asyncio
+    async def test_abono_capital_saldo_capital_cero_cierra_credito(self):
+        """
+        Task 2.9 — Req: Abono Capital Closure. Un pago EXACTO de la cuota de
+        abono que deja `saldo_capital` en `0.00` cierra el crédito.
+        `abono_capital` no lleva `saldo_intereses` a nivel crédito (regla 3),
+        así que `esta_saldado` depende solo de `saldo_capital` para este tipo.
+        """
+        credito = make_credito_abono(
+            periodicidad=Periodicidad.mensual,
+            saldo_capital=Decimal("500.00"),
+            saldo_intereses=Decimal("0.00"),
+        )
+        pago = make_pago(
+            numero_cuota=4,
+            monto_a_pagar=Decimal("515.00"),
+            capital=Decimal("500.00"),
+            interes=Decimal("15.00"),
+        )
+        db = AsyncMock()
+
+        request = RegistrarPagoRequest(
+            capital_pagado=Decimal("500.00"),
+            interes_pagado=Decimal("15.00"),
+        )
+
+        await PagoService.registrar_pago(db, pago, credito, request, date(2027, 4, 10))
+
+        assert credito.activo is False
+        assert credito.saldo_capital == Decimal("0.00")
+
+    def test_abono_capital_interes_pagado_redondea_round_half_up(self):
+        """
+        Task 2.10 — Req: Abono Capital Closure and Interest Rounding (comportamiento
+        preexistente que se BLOQUEA con un test explícito, no lógica nueva).
+        `_aplicar_reduccion_saldos` es el único punto de mutación de saldos; un
+        `interes_pagado` con más de 2 decimales debe persistirse cuantizado
+        ROUND_HALF_UP a 2 decimales.
+        """
+        credito = make_credito_abono(
+            periodicidad=Periodicidad.mensual,
+            saldo_capital=Decimal("2000.00"),
+            saldo_intereses=Decimal("60.005"),
+        )
+        # 60.005 redondea a 60.01 (ROUND_HALF_UP) al restar 0.00
+        PagoService._aplicar_reduccion_saldos(credito, Decimal("0.00"), Decimal("0.00"))
+        assert credito.saldo_intereses == Decimal("60.01")
+
+        # Interés pagado con 3 decimales (17.335) reduce y el resultado se
+        # cuantiza ROUND_HALF_UP: 60.01 - 17.335 = 42.675 → 42.68
+        PagoService._aplicar_reduccion_saldos(credito, Decimal("0.00"), Decimal("17.335"))
+        assert credito.saldo_intereses == Decimal("42.68")
 
 
 class TestPropagacionReceptor:

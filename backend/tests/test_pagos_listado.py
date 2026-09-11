@@ -51,12 +51,18 @@ def _mk_credito(
     cliente_id: uuid.UUID,
     numero_credito: str,
     periodicidad: Periodicidad = Periodicidad.mensual,
-    activo: bool = False,
+    activo: bool = True,
     fecha_inicial_pago: date = date(2026, 2, 1),
+    numero_cuotas: int = 1,
 ) -> Credito:
-    # activo=False evita que _calcular_virtuales proyecte cuotas extras en los
-    # tests de sort, manteniendo el recuento de items predecible.
-    # Pasar activo=True + fecha_inicial_pago en fixtures que necesitan virtuales.
+    # numero_cuotas=1 (por defecto): junto con la única cuota real #1 ya
+    # persistida (ver _mk_pago), _calcular_virtuales corta la proyección en
+    # n=2 sin generar filas virtuales — reemplaza el viejo truco de
+    # activo=False. Desde zero-balance-credit-closure PR 3, activo=False
+    # también oculta la fila REAL pendiente en GET /pagos (regla 6/9), no
+    # solo las virtuales, así que ya no sirve como mecanismo de supresión
+    # aislado de virtuales. Pasar numero_cuotas>1 explícitamente en las
+    # fixtures que sí necesitan proyección de virtuales.
     return Credito(
         id=uuid.uuid4(),
         cliente_id=cliente_id,
@@ -69,7 +75,7 @@ def _mk_credito(
         periodicidad=periodicidad,
         saldo_capital=Decimal("1000000.00"),
         saldo_intereses=Decimal("0.00"),
-        numero_cuotas=12,
+        numero_cuotas=numero_cuotas,
         calcular_interes_dias_corridos=False,
         activo=activo,
     )
@@ -480,6 +486,7 @@ async def datos_virtuales_excluir_periodicidad(db_session):
         periodicidad=Periodicidad.diario,
         activo=True,
         fecha_inicial_pago=date(2026, 3, 10),
+        numero_cuotas=12,
     )
     cr_control = _mk_credito(
         c_control.id,
@@ -487,6 +494,7 @@ async def datos_virtuales_excluir_periodicidad(db_session):
         periodicidad=Periodicidad.mensual,
         activo=True,
         fecha_inicial_pago=date(2026, 3, 1),
+        numero_cuotas=12,
     )
     db_session.add_all([cr_diario, cr_control])
     await db_session.flush()

@@ -14,7 +14,7 @@ import uuid
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import select, func
+from sqlalchemy import and_, or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.credito import Credito, TipoCredito, Periodicidad
@@ -105,6 +105,49 @@ def esta_saldado(credito: Credito) -> bool:
     if credito.tipo_credito == TipoCredito.cuota_fija:
         return credito.saldo_intereses <= Decimal("0.00")
     return True
+
+
+def cerrar_credito(credito: Credito) -> bool:
+    """
+    Regla 9/12 (zero-balance-credit-closure): ÚNICO escritor de
+    `activo=False` por crédito saldado. NUNCA escribe `saldo_capital` ni
+    `saldo_intereses` — la condonación de deuda que existía antes en
+    `_verificar_cierre_credito` (forzar `saldo_capital = 0.00`) queda
+    eliminada por construcción, no por un guard adicional.
+
+    Idempotente: si el crédito ya estaba cerrado (`activo == False`), no
+    hace nada y retorna `False`. Retorna `True` solo cuando efectivamente
+    transiciona `activo` de `True` a `False`.
+    """
+    if not credito.activo:
+        return False
+    credito.activo = False
+    return True
+
+
+def credito_operativamente_abierto():
+    """
+    Regla 6/9 (zero-balance-credit-closure): predicado SQL de "abierto
+    operativamente" para rutas de lectura (cartera, listado de pagos,
+    alertas). `activo == True` NO alcanza: un crédito saldado (regla 9)
+    debe desaparecer de estas rutas aunque `activo` siga en `True` mientras
+    nadie confirme el cierre (regla 11); y un crédito `cuota_fija` con
+    capital en cero pero interés pendiente SIGUE siendo cobrable y debe
+    permanecer visible.
+
+    Espeja `esta_saldado`: mismo cálculo, expresado como cláusula SQL para
+    poder aplicarse dentro de una query en vez de sobre un objeto ya cargado.
+    """
+    return and_(
+        Credito.activo == True,  # noqa: E712
+        or_(
+            Credito.saldo_capital > Decimal("0.00"),
+            and_(
+                Credito.tipo_credito == TipoCredito.cuota_fija,
+                Credito.saldo_intereses > Decimal("0.00"),
+            ),
+        ),
+    )
 
 
 _Q_ARRASTRE = Decimal("0.01")

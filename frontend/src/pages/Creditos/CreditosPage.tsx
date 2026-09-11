@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 import { creditosApi, clientesApi, gestoresApi } from '@/api'
 import { formatCOP, formatFecha, formatPorcentaje } from '@/utils/formatters'
-import { LoadingPage, EmptyState, Paginacion, FormField, ConfirmarCreacion, type ItemConfirmacion } from '@/components/ui'
+import { LoadingPage, EmptyState, Paginacion, FormField, ConfirmarCreacion, ConfirmDelete, type ItemConfirmacion } from '@/components/ui'
 import Modal from '@/components/ui/Modal'
 import { usePermissions } from '@/store/authStore'
 import type { Credito, Pago, Cliente, Gestor } from '@/types'
-import { Plus, Eye, Pencil, Search, Trash2, CalendarDays } from 'lucide-react'
+import { Plus, Eye, Pencil, Search, Trash2, CalendarDays, CheckCircle } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -28,6 +28,9 @@ interface DiasPagoForm {
   anchor_dia_1: number | undefined
   anchor_dia_2: number | undefined
 }
+
+const TIPO_LABELS: Record<string, string> = { cuota_fija: 'Cuota Fija', abono_capital: 'Abono Capital' }
+const PERIOD_LABELS: Record<string, string> = { mensual: 'Mensual', quincenal: 'Quincenal', semanal: 'Semanal', diario: 'Diario' }
 
 export default function CreditosPage() {
   const perms = usePermissions()
@@ -53,6 +56,8 @@ export default function CreditosPage() {
   const [clienteSeleccionado, setClienteSeleccionado] = useState<Cliente | null>(null)
   const [modalDiasPago, setModalDiasPago] = useState(false)
   const [creditoDias, setCreditoDias] = useState<Credito | null>(null)
+  const [modalCerrar, setModalCerrar] = useState(false)
+  const [creditoACerrar, setCreditoACerrar] = useState<Credito | null>(null)
 
   const { register, handleSubmit, watch, reset, formState: { errors } } = useForm<CreditoForm>()
   const { register: regEdit, handleSubmit: handleEdit, reset: resetEdit } = useForm<EditForm>()
@@ -68,7 +73,7 @@ export default function CreditosPage() {
       setCreditos(res.data.items)
       setTotal(res.data.total)
       setPages(res.data.pages)
-    } catch { toast.error('Error al cargar créditos') }
+    } catch (e: any) { toast.error(e.response?.data?.detail || 'Error al cargar créditos') }
     finally { setLoading(false) }
   }, [page, busqueda, soloActivos, filtroGestor])
 
@@ -89,7 +94,7 @@ export default function CreditosPage() {
       const res = await creditosApi.historialCuotas(c.id)
       setHistorial(res.data)
       setModalHistorial(true)
-    } catch { toast.error('Error al cargar historial') }
+    } catch (e: any) { toast.error(e.response?.data?.detail || 'Error al cargar historial') }
   }
 
   const onCrear = (data: CreditoForm) => {
@@ -223,8 +228,19 @@ export default function CreditosPage() {
     } finally { setSubmitting(false) }
   }
 
-  const TIPO_LABELS: Record<string, string> = { cuota_fija: 'Cuota Fija', abono_capital: 'Abono Capital' }
-  const PERIOD_LABELS: Record<string, string> = { mensual: 'Mensual', quincenal: 'Quincenal', semanal: 'Semanal', diario: 'Diario' }
+  const onConfirmarCierre = async () => {
+    if (!creditoACerrar) return
+    setSubmitting(true)
+    try {
+      await creditosApi.cerrar(creditoACerrar.id)
+      toast.success('Cierre del crédito confirmado')
+      setModalCerrar(false)
+      setCreditoACerrar(null)
+      cargar()
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || 'Error al confirmar el cierre')
+    } finally { setSubmitting(false) }
+  }
 
   return (
     <div className="space-y-5">
@@ -293,9 +309,11 @@ export default function CreditosPage() {
                       <td className="table-cell">{PERIOD_LABELS[c.periodicidad]}</td>
                       <td className="table-cell">{formatFecha(c.fecha_apertura)}</td>
                       <td className="table-cell">
-                        {c.activo
-                          ? <span className="badge-success">Activo</span>
-                          : <span className="badge-danger">Cerrado</span>}
+                        {!c.activo
+                          ? <span className="badge-danger">Cerrado</span>
+                          : c.pendiente_de_cierre
+                            ? <span className="badge-warning" title="El crédito está saldado; falta confirmar el cierre">Saldado — pendiente de cierre</span>
+                            : <span className="badge-success">Activo</span>}
                       </td>
                       <td className="table-cell">
                         <div className="flex gap-1">
@@ -303,6 +321,13 @@ export default function CreditosPage() {
                             className="p-1.5 bg-primary-100 text-primary-700 rounded-lg hover:bg-primary-200" title="Ver cuotas">
                             <Eye size={13} />
                           </button>
+                          {c.activo && c.pendiente_de_cierre &&
+                            (perms.isAdmin || perms.isRecaudador || perms.isRegistrador) && (
+                            <button onClick={() => { setCreditoACerrar(c); setModalCerrar(true) }}
+                              className="p-1.5 bg-amber-500 text-white rounded-lg hover:bg-amber-600" title="Confirmar cierre">
+                              <CheckCircle size={13} />
+                            </button>
+                          )}
                           {(perms.isAdmin || perms.canCreate || perms.isRecaudador) && c.activo &&
                             (c.periodicidad === 'mensual' || c.periodicidad === 'quincenal') && (
                             <button onClick={() => {
@@ -555,9 +580,26 @@ export default function CreditosPage() {
         </form>
       </Modal>
 
+      {/* Modal Confirmar cierre */}
+      <Modal isOpen={modalCerrar} onClose={() => { setModalCerrar(false); setCreditoACerrar(null) }}
+        title="Confirmar cierre de crédito">
+        <ConfirmDelete
+          message={`El crédito ${creditoACerrar?.numero_credito_cliente} está saldado. ¿Confirmar su cierre? Esta acción no se puede deshacer.`}
+          onConfirm={onConfirmarCierre}
+          onCancel={() => { setModalCerrar(false); setCreditoACerrar(null) }}
+          loading={submitting}
+        />
+      </Modal>
+
       {/* Modal Historial */}
       <Modal isOpen={modalHistorial} onClose={() => setModalHistorial(false)}
         title={`Historial — ${creditoActual?.numero_credito_cliente}`} size="xl">
+        {creditoActual?.numero_cuotas != null && historial.some(p => p.numero_cuota > creditoActual!.numero_cuotas!) && (
+          <p className="text-xs text-gray-500 bg-blue-50 border border-blue-200 rounded-lg p-3 mb-3">
+            Este crédito tiene cuotas más allá de las {creditoActual.numero_cuotas} pactadas: el interés
+            quedó pendiente de cobro y se sigue facturando en cuotas adicionales de solo interés hasta saldarse.
+          </p>
+        )}
         <div className="overflow-x-auto max-h-96">
           <table className="w-full text-xs">
             <thead>

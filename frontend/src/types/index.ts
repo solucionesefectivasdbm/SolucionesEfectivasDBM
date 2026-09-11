@@ -94,6 +94,7 @@ export interface Credito {
   activo: boolean
   anchor_dia_1: number | null
   anchor_dia_2: number | null
+  pendiente_de_cierre: boolean
 }
 
 // ─── Pago ─────────────────────────────────────────────────────────────────────

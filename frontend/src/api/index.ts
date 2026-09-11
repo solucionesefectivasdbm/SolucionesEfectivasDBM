@@ -64,12 +64,14 @@ export const clientesApi = {
 export const creditosApi = {
   listar: (params?: { page?: number; busqueda?: string; solo_activos?: boolean; cliente_id?: string; gestor_id?: string }) =>
     api.get<PaginatedResponse<Credito>>('/creditos', { params }),
-  resumenCartera: () => api.get<{ saldo_capital: number; saldo_intereses: number; saldo_total: number }>('/creditos/resumen-cartera'),
+  resumenCartera: (params?: { cliente_id?: string }) =>
+    api.get<{ saldo_capital: number; saldo_intereses: number; saldo_total: number }>('/creditos/resumen-cartera', { params }),
   crear: (data: object) => api.post<Credito>('/creditos', data),
   obtener: (id: string) => api.get<Credito>(`/creditos/${id}`),
   actualizar: (id: string, data: object) => api.patch<Credito>(`/creditos/${id}`, data),
   actualizarDiasPago: (id: string, data: { anchor_dia_1: number; anchor_dia_2?: number }) =>
     api.patch<Credito>(`/creditos/${id}/dias-pago`, data),
+  cerrar: (id: string) => api.post<Credito>(`/creditos/${id}/cerrar`),
   eliminar: (id: string) => api.delete(`/creditos/${id}`),
   historialCuotas: (id: string) => api.get<Pago[]>(`/creditos/${id}/cuotas`),
 }

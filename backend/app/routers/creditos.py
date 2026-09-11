@@ -5,7 +5,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -22,7 +22,10 @@ from app.schemas.pago import PagoResponse
 from app.services.credito_service import _periodos_por_mes
 from app.services import audit_service
 from app.services.credito_service import (
+    cerrar_credito,
+    credito_operativamente_abierto,
     crear_primera_cuota,
+    esta_saldado,
     generar_numero_credito,
     generar_prefijo_cliente,
     recalcular_cuota_actual_si_no_pagada,
@@ -32,6 +35,18 @@ from app.services.credito_service import (
 from app.utils.tz import ahora_bogota
 
 router = APIRouter(prefix="/creditos", tags=["Créditos"])
+
+
+def _credito_response(credito: Credito) -> CreditoResponse:
+    """
+    Construye el CreditoResponse añadiendo la señal `pendiente_de_cierre`
+    (regla 6/9): True cuando el crédito está saldado pero `activo` aún no se
+    confirmó en `False`. Se calcula, nunca se persiste ni se deriva de un
+    escritor distinto de `cerrar_credito`.
+    """
+    resp = CreditoResponse.model_validate(credito)
+    resp.pendiente_de_cierre = credito.activo and esta_saldado(credito)
+    return resp
 
 
 @router.get("", response_model=PaginatedResponse[CreditoResponse])
@@ -87,7 +102,7 @@ async def listar_creditos(
     )).scalars().all()
 
     return PaginatedResponse(
-        items=[CreditoResponse.model_validate(c) for c in items],
+        items=[_credito_response(c) for c in items],
         total=total, page=page, page_size=page_size,
         pages=math.ceil(total / page_size) if total else 0,
     )
@@ -95,17 +110,30 @@ async def listar_creditos(
 
 @router.get("/resumen-cartera")
 async def resumen_cartera(
+    cliente_id: uuid.UUID | None = Query(None, description="Limitar el resumen a un solo cliente"),
     current_user: Usuario = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Saldo total de la cartera: suma de saldo_capital + saldo_intereses de créditos activos."""
+    """
+    Saldo total de la cartera: suma de saldo_capital + saldo_intereses de
+    créditos operativamente abiertos (regla 6/9) — un crédito saldado pero
+    aún sin confirmar su cierre no debe aportar al total, y uno con capital
+    en cero pero interés pendiente sigue sumando.
+
+    `cliente_id` acota el resumen a un cliente puntual (usado por la ventana
+    de cartera del cliente en el frontend) — el cálculo canónico de este
+    agregado financiero vive aquí, en Decimal, nunca sumado en el frontend.
+    """
     query = select(
         func.coalesce(func.sum(Credito.saldo_capital), 0),
         func.coalesce(func.sum(Credito.saldo_intereses), 0),
     ).where(
-        Credito.activo == True,  # noqa: E712
+        credito_operativamente_abierto(),
         Credito.deleted_at == None,  # noqa: E711
     )
+
+    if cliente_id:
+        query = query.where(Credito.cliente_id == cliente_id)
 
     # Gestor: solo sus clientes
     if current_user.tipo_usuario == TipoUsuario.gestor:
@@ -186,7 +214,7 @@ async def crear_credito(
         db=db, entidad="creditos", entidad_id=credito.id,
         usuario_id=current_user.id, ip_origen=get_client_ip(request),
     )
-    return CreditoResponse.model_validate(credito)
+    return _credito_response(credito)
 
 
 @router.get("/{credito_id}", response_model=CreditoResponse)
@@ -210,7 +238,7 @@ async def obtener_credito(
     credito = (await db.execute(query)).scalar_one_or_none()
     if not credito:
         raise HTTPException(status_code=404, detail="Crédito no encontrado")
-    return CreditoResponse.model_validate(credito)
+    return _credito_response(credito)
 
 
 @router.patch("/{credito_id}", response_model=CreditoResponse)
@@ -291,7 +319,7 @@ async def actualizar_credito(
         db=db, entidad="creditos", entidad_id=credito.id,
         usuario_id=current_user.id, ip_origen=get_client_ip(request), cambios=cambios,
     )
-    return CreditoResponse.model_validate(credito)
+    return _credito_response(credito)
 
 
 @router.patch("/{credito_id}/dias-pago", response_model=CreditoResponse)
@@ -383,7 +411,105 @@ async def actualizar_dias_pago(
         },
     )
 
-    return CreditoResponse.model_validate(credito)
+    return _credito_response(credito)
+
+
+@router.post("/{credito_id}/cerrar", response_model=CreditoResponse)
+async def confirmar_cierre_credito(
+    credito_id: uuid.UUID,
+    request: Request,
+    current_user: Usuario = Depends(require_role("admin", "recaudador", "registrador")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Confirma el cierre de un crédito saldado (regla 9/11: zero-balance-credit-closure).
+
+    Deliberadamente NO idempotente: confirmar un crédito ya cerrado se
+    rechaza con 422 en vez de responder 200 en silencio, para que las
+    transiciones de cierre queden siempre auditadas de forma explícita.
+
+    Orden de validación: 404 crédito desconocido → 422 ya cerrado → 422 no
+    saldado → `cerrar_credito` (único escritor de `activo=False`, nunca toca
+    los saldos) → auditoría.
+    """
+    credito = (await db.execute(
+        select(Credito).where(Credito.id == credito_id, Credito.deleted_at == None)  # noqa: E711
+    )).scalar_one_or_none()
+    if not credito:
+        raise HTTPException(status_code=404, detail="Crédito no encontrado")
+
+    if not credito.activo:
+        raise HTTPException(
+            status_code=422,
+            detail="Este crédito ya está cerrado; el cierre no se puede confirmar dos veces.",
+        )
+
+    if not esta_saldado(credito):
+        partes = []
+        if credito.saldo_capital > Decimal("0.00"):
+            partes.append(f"capital pendiente de {credito.saldo_capital}")
+        if credito.tipo_credito == TipoCredito.cuota_fija and credito.saldo_intereses > Decimal("0.00"):
+            partes.append(f"interés pendiente de {credito.saldo_intereses}")
+        detalle = " y ".join(partes) if partes else "saldo pendiente por cobrar"
+        raise HTTPException(
+            status_code=422,
+            detail=f"No se puede confirmar el cierre: el crédito aún tiene {detalle}.",
+        )
+
+    cerrar_credito(credito)
+
+    await audit_service.registrar_actualizacion_campos(
+        db=db, entidad="creditos", entidad_id=credito.id,
+        usuario_id=current_user.id, ip_origen=get_client_ip(request),
+        cambios={"activo": ("True", "False")},
+    )
+    return _credito_response(credito)
+
+
+@router.post("/admin/backfill-cierre-saldo-cero")
+async def backfill_cierre_saldo_cero(
+    request: Request,
+    current_user: Usuario = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    TEMPORAL — corrección histórica única (mismo patrón que el backfill de
+    arrastre ya archivado). Cierra todo crédito `activo=True` que ya está
+    saldado (regla 9) según `credito_operativamente_abierto()`, bypaseando
+    deliberadamente la confirmación explícita (regla 8) porque son créditos
+    que quedaron atascados ANTES de esta iniciativa.
+
+    Idempotente por construcción: el predicado de selección
+    (`NOT credito_operativamente_abierto()`) es el mismo mecanismo que
+    determina si un crédito todavía califica, así que tras una corrida no
+    queda ningún crédito que lo vuelva a cumplir.
+
+    Se elimina en un PR de seguimiento después de correrse una vez en
+    producción (tarea 4.2, aún no ejecutada).
+    """
+    candidatos = (await db.execute(
+        select(Credito).where(
+            Credito.activo == True,  # noqa: E712
+            Credito.deleted_at == None,  # noqa: E711
+            not_(credito_operativamente_abierto()),
+        )
+    )).scalars().all()
+
+    cerrados_ids: list[uuid.UUID] = []
+    for credito in candidatos:
+        if cerrar_credito(credito):
+            cerrados_ids.append(credito.id)
+            await audit_service.registrar_actualizacion_campos(
+                db=db, entidad="creditos", entidad_id=credito.id,
+                usuario_id=current_user.id, ip_origen=get_client_ip(request),
+                cambios={"activo": ("True", "False")},
+            )
+
+    return {
+        "revisados": len(candidatos),
+        "cerrados": len(cerrados_ids),
+        "ids": [str(i) for i in cerrados_ids],
+    }
 
 
 @router.delete("/{credito_id}", status_code=status.HTTP_204_NO_CONTENT)
