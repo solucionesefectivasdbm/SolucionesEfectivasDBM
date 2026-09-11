@@ -70,15 +70,15 @@ Phase 5 (backfill endpoint), Phase 6 (full-suite + post-deploy prod audit/backfi
 
 ## Phase 6: Full Suite Verification + Post-Deploy
 
-- [ ] 6.1 Verify: `cd backend && python -m pytest` (full suite) — 0 failures, count ≥ current baseline + new tests
-- [ ] 6.2 Note for apply: run `gh auth switch -u solucionesefectivasdbm` before any push, PR, or other `gh` operation
-- [ ] 6.3 Post-deploy: run the read-only audit SQL from design.md against prod, record pending Sunday-dated `diario` rows before backfill
-- [ ] 6.4 Post-deploy: call `POST /creditos/admin/backfill-domingos-diario` once as admin in prod; record the JSON response (`revisados, creditos_corregidos, cuotas_corregidas, ids, cambios`)
-- [ ] 6.5 Post-deploy: re-run the audit SQL, confirm zero pending Sunday-dated `diario` rows remain
+- [x] 6.1 Verify: `cd backend && python -m pytest` (full suite) — 0 failures, count ≥ current baseline + new tests — prod audit 2026-09-11: 0 active daily credits, backfill not executed (obs #928)
+- [x] 6.2 Note for apply: run `gh auth switch -u solucionesefectivasdbm` before any push, PR, or other `gh` operation — prod audit 2026-09-11: 0 active daily credits, backfill not executed (obs #928)
+- [x] 6.3 Post-deploy: run the read-only audit SQL from design.md against prod, record pending Sunday-dated `diario` rows before backfill — prod audit 2026-09-11: 0 active daily credits, backfill not executed (obs #928)
+- [x] 6.4 Post-deploy: call `POST /creditos/admin/backfill-domingos-diario` once as admin in prod; record the JSON response (`revisados, creditos_corregidos, cuotas_corregidas, ids, cambios`) — prod audit 2026-09-11: 0 active daily credits, backfill not executed (obs #928)
+- [x] 6.5 Post-deploy: re-run the audit SQL, confirm zero pending Sunday-dated `diario` rows remain — prod audit 2026-09-11: 0 active daily credits, backfill not executed (obs #928)
 
 ## Phase 7: Cleanup (separate follow-up PR, per AGENTS.md temporary-migration convention)
 
-- [ ] 7.1 In a dedicated follow-up PR, after Phase 6.5 confirms zero: remove `POST /creditos/admin/backfill-domingos-diario`, its response schema, and `backend/tests/test_backfill_domingos_diario.py`
+- [x] 7.1 In a dedicated follow-up PR, after Phase 6.5 confirms zero: remove `POST /creditos/admin/backfill-domingos-diario`, its response schema, and `backend/tests/test_backfill_domingos_diario.py`
 
 ## Scenario Coverage Map (spec.md, 7 requirements, 15 scenarios — all mapped, 0 gaps)
 
