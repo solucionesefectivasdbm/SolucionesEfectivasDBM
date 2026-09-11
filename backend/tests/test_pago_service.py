@@ -696,6 +696,45 @@ class TestValidarSplit:
             es_excedente=False,
         )
 
+    def test_capital_contra_cuota_solo_interes_lanza_mensaje_explicativo(self):
+        """
+        Task 1.6/1.7 (zero-balance-credit-closure, rule 13): enviar
+        capital_pagado > 0 contra una cuota de solo interés
+        (capital_a_pagar = 0) debe rechazarse con un mensaje que explique la
+        razón de negocio en español neutral — no un mensaje interno de
+        componentes/tolerancias.
+        """
+        pago = self._make_pago_split(
+            monto_a_pagar=Decimal("5000.00"),
+            capital_a_pagar=Decimal("0.00"),
+            interes_a_pagar=Decimal("5000.00"),
+        )
+        with pytest.raises(ValueError) as exc_info:
+            PagoService._validar_split(
+                pago,
+                capital_pagado=Decimal("100.00"),
+                interes_pagado=Decimal("4900.00"),
+                es_excedente=False,
+            )
+        mensaje = str(exc_info.value)
+        assert "solo interés" in mensaje
+        assert "saldado" in mensaje
+
+    def test_pago_exacto_solo_interes_sin_capital_no_lanza(self):
+        """Pago exacto de una cuota de solo interés (capital_pagado=0) no debe
+        lanzar — es el camino legítimo de la cola de interés (rule 10)."""
+        pago = self._make_pago_split(
+            monto_a_pagar=Decimal("5000.00"),
+            capital_a_pagar=Decimal("0.00"),
+            interes_a_pagar=Decimal("5000.00"),
+        )
+        PagoService._validar_split(
+            pago,
+            capital_pagado=Decimal("0.00"),
+            interes_pagado=Decimal("5000.00"),
+            es_excedente=False,
+        )
+
     def test_excedente_no_rechazado(self):
         """
         Excedente (total > monto_a_pagar) con es_excedente=True no lanza.
