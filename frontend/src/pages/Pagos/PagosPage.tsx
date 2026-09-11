@@ -97,7 +97,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       setPagos(res.data.items)
       setTotal(res.data.total)
       setPages(res.data.pages)
-    } catch { toast.error('Error al cargar pagos') }
+    } catch (e: any) { toast.error(e.response?.data?.detail || 'Error al cargar pagos') }
     finally { if (mostrarSpinner) setLoading(false) }
   }, [anio, mes, momento, sortDir, busqueda, page, filtroGestor, filtrosCompletos, esSemanal, esDiario])
 
@@ -585,7 +585,13 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
             <div>
               <label className="label">Capital pagado</label>
               <input type="number" className="input" value={capitalPagado}
+                disabled={pagoSeleccionado.tipo_cuota === 'interes'}
                 onChange={e => setCapitalPagado(e.target.value)} />
+              {pagoSeleccionado.tipo_cuota === 'interes' && (
+                <p className="text-xs text-gray-500 mt-1">
+                  Esta cuota es de solo interés: el capital ya está saldado.
+                </p>
+              )}
             </div>
             <div>
               <label className="label">Interés pagado</label>

@@ -38,6 +38,7 @@ export default function ClientesPage() {
   const [creditosCliente, setCreditosCliente] = useState<Credito[]>([])
   const [pagosCredito, setPagosCredito] = useState<Pago[]>([])
   const [creditoSeleccionado, setCreditoSeleccionado] = useState<Credito | null>(null)
+  const [resumenCliente, setResumenCliente] = useState<{ saldo_capital: number; saldo_intereses: number; saldo_total: number } | null>(null)
 
   const { register, handleSubmit, reset, formState: { errors } } = useForm<ClienteForm>()
 
@@ -49,7 +50,7 @@ export default function ClientesPage() {
       setClientes(res.data.items)
       setTotal(res.data.total)
       setPages(res.data.pages)
-    } catch { toast.error('Error al cargar clientes') }
+    } catch (e: any) { toast.error(e.response?.data?.detail || 'Error al cargar clientes') }
     finally { setLoading(false) }
   }, [page, busqueda, filtroGestor, filtroAlDia])
 
@@ -135,10 +136,14 @@ export default function ClientesPage() {
     setPagosCredito([])
     setSoloActivosHistorial(soloActivos)
     try {
-      const res = await creditosApi.listar({ cliente_id: c.id, solo_activos: soloActivos, page: 1 })
+      const [res, resumen] = await Promise.all([
+        creditosApi.listar({ cliente_id: c.id, solo_activos: soloActivos, page: 1 }),
+        creditosApi.resumenCartera({ cliente_id: c.id }),
+      ])
       setCreditosCliente(res.data.items)
+      setResumenCliente(resumen.data)
       setModalHistorial(true)
-    } catch { toast.error('Error al cargar historial') }
+    } catch (e: any) { toast.error(e.response?.data?.detail || 'Error al cargar historial') }
   }
 
   const verPagosCredito = async (credito: Credito) => {
@@ -146,7 +151,7 @@ export default function ClientesPage() {
     try {
       const res = await creditosApi.historialCuotas(credito.id)
       setPagosCredito(res.data)
-    } catch { toast.error('Error al cargar cuotas') }
+    } catch (e: any) { toast.error(e.response?.data?.detail || 'Error al cargar cuotas') }
   }
 
   const handleEliminar = async () => {
@@ -333,7 +338,7 @@ export default function ClientesPage() {
               <p className="text-xs text-gray-500">{creditosCliente.filter(c => c.activo).length} crédito(s) activo(s)</p>
             </div>
             <p className="text-2xl font-black text-primary-700">
-              {formatCOP(creditosCliente.filter(c => c.activo).reduce((sum, c) => sum + c.saldo_capital, 0))}
+              {formatCOP(resumenCliente?.saldo_capital ?? 0)}
             </p>
           </div>
 

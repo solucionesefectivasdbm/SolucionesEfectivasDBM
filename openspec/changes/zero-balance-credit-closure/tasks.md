@@ -77,21 +77,21 @@ PR now independently forecasts under 400.
 
 ## Phase 3: Read Paths, Confirmation, Backfill, Frontend (PR 3 → PR 2 branch)
 
-- [ ] 3.1 GREEN: add `credito_operativamente_abierto()` SQL predicate to `credito_service.py`
-- [ ] 3.2 RED: settled credit absent from `resumen-cartera` and `GET /pagos` (real + virtual rows); capital-settled/interest-bearing credit still present (Req: Operationally Open Credits, both scenarios)
-- [ ] 3.3 GREEN: apply predicate at `creditos.py:101-106`, `pagos.py:279` (`_calcular_virtuales`), `pagos.py:128-147` (unpaid rows only), `pagos.py:766`/`:796` alerts
-- [ ] 3.4 GREEN: add `pendiente_de_cierre` to `schemas/credito.py`; PATCH handler exposes it without touching `activo`
-- [ ] 3.5 RED: admin PATCH zeroing capital → `activo` stays `True`, `pendiente_de_cierre` true (Req: Admin Capital Edit, edit-settles-the-credit scenario)
-- [ ] 3.6 RED: `POST /creditos/{id}/cerrar` — unknown credit `404`; already-closed `422`; not-settled `422`; each allowed role `200`; `gestor` `403` — assert the exact codes and evaluation order (Req: Explicit Closure Confirmation, all 4 scenarios + pinned status codes). (Rule 13) also assert `detail`: already-closed states closure cannot be confirmed twice; not-settled names WHICH balance remains (capital, interest, or both) and its amount — neutral professional Spanish
-- [ ] 3.7 GREEN: implement confirm endpoint in `creditos.py` (404 → 422 closed → 422 not settled → `cerrar_credito` → `audit_service.registrar_actualizacion_campos`) with the rule-13 `detail` strings above
-- [ ] 3.8 RED: backfill — settled credits closed; capital-only-settled `cuota_fija` left open; second run zero corrections; non-admin `403` (Req: One-off Closure Backfill, all 3 scenarios)
-- [ ] 3.9 GREEN: implement `POST /creditos/admin/backfill-cierre-saldo-cero` (temporary, admin-only)
-- [ ] 3.10 Frontend: add `pendiente_de_cierre` to `types/index.ts`; `creditosApi.cerrar(id)` in `api/index.ts`
-- [ ] 3.11 Frontend: `CreditosPage.tsx` — badge state + confirm button (allowed roles) via `ConfirmDialog`; this NEW call site's `catch` MUST read `e.response?.data?.detail` from the start (Req: Operator-Readable Rejection Messages, frontend-surfaces-the-reason scenario)
-- [ ] 3.12 Frontend: `PagosPage.tsx` — lock/disable `capital_pagado` input to 0 when `tipo_cuota === 'interes'`. `PagosPage.tsx:151` already reads `detail` correctly for the resulting rejection — verified, no fix needed there
-- [ ] 3.13 (Rule 13) Frontend audit, scoped to this change's rejection paths only: fix swallow-sites `CreditosPage.tsx:71,92` and `ClientesPage.tsx:52,141,149` to read `detail` before `toast.error(...)`. `PagosPage.tsx:100` also swallows but is unrelated to a rejection path this change introduces — note only, out of scope, do not fix. Do not widen to a repo-wide refactor
-- [ ] 3.14 Frontend: `CreditosPage.tsx` — informational note when `numero_cuota` exceeds `numero_cuotas` (interest-only tail), neutral professional Spanish, display only, not a rejection (Req: Past-term Installments Are Explainable, beyond-agreed-term scenario)
-- [ ] 3.15 Verify: `cd backend && python -m pytest` full suite green; `cd frontend && npx tsc --noEmit` clean
+- [x] 3.1 GREEN: add `credito_operativamente_abierto()` SQL predicate to `credito_service.py`
+- [x] 3.2 RED: settled credit absent from `resumen-cartera` and `GET /pagos` (real + virtual rows); capital-settled/interest-bearing credit still present (Req: Operationally Open Credits, both scenarios)
+- [x] 3.3 GREEN: apply predicate at `creditos.py:101-106`, `pagos.py:279` (`_calcular_virtuales`), `pagos.py:128-147` (unpaid rows only), `pagos.py:766`/`:796` alerts
+- [x] 3.4 GREEN: add `pendiente_de_cierre` to `schemas/credito.py`; PATCH handler exposes it without touching `activo`
+- [x] 3.5 RED: admin PATCH zeroing capital → `activo` stays `True`, `pendiente_de_cierre` true (Req: Admin Capital Edit, edit-settles-the-credit scenario)
+- [x] 3.6 RED: `POST /creditos/{id}/cerrar` — unknown credit `404`; already-closed `422`; not-settled `422`; each allowed role `200`; `gestor` `403` — assert the exact codes and evaluation order (Req: Explicit Closure Confirmation, all 4 scenarios + pinned status codes). (Rule 13) also assert `detail`: already-closed states closure cannot be confirmed twice; not-settled names WHICH balance remains (capital, interest, or both) and its amount — neutral professional Spanish
+- [x] 3.7 GREEN: implement confirm endpoint in `creditos.py` (404 → 422 closed → 422 not settled → `cerrar_credito` → `audit_service.registrar_actualizacion_campos`) with the rule-13 `detail` strings above
+- [x] 3.8 RED: backfill — settled credits closed; capital-only-settled `cuota_fija` left open; second run zero corrections; non-admin `403` (Req: One-off Closure Backfill, all 3 scenarios)
+- [x] 3.9 GREEN: implement `POST /creditos/admin/backfill-cierre-saldo-cero` (temporary, admin-only)
+- [x] 3.10 Frontend: add `pendiente_de_cierre` to `types/index.ts`; `creditosApi.cerrar(id)` in `api/index.ts`
+- [x] 3.11 Frontend: `CreditosPage.tsx` — badge state + confirm button (allowed roles); this NEW call site's `catch` MUST read `e.response?.data?.detail` from the start (Req: Operator-Readable Rejection Messages, frontend-surfaces-the-reason scenario). Deviation: no `ConfirmDialog` component exists in the codebase — reused the established `Modal` + `ConfirmDelete` pattern already used for the delete-credit confirmation, per AGENTS.md's "no new conventions unilaterally"
+- [x] 3.12 Frontend: `PagosPage.tsx` — lock/disable `capital_pagado` input to 0 when `tipo_cuota === 'interes'`. `PagosPage.tsx:151` already reads `detail` correctly for the resulting rejection — verified, no fix needed there
+- [x] 3.13 (Rule 13) Frontend audit, scoped to this change's rejection paths only: fix swallow-sites `CreditosPage.tsx:71,92` and `ClientesPage.tsx:52,141,149` to read `detail` before `toast.error(...)`. `PagosPage.tsx:100` also swallows but is unrelated to a rejection path this change introduces — note only, out of scope, do not fix. Do not widen to a repo-wide refactor
+- [x] 3.14 Frontend: `CreditosPage.tsx` — informational note when `numero_cuota` exceeds `numero_cuotas` (interest-only tail), neutral professional Spanish, display only, not a rejection (Req: Past-term Installments Are Explainable, beyond-agreed-term scenario)
+- [x] 3.15 Verify: `cd backend && python -m pytest` full suite green; `cd frontend && npx tsc --noEmit` clean
 
 ## Phase 4: Follow-up (post-deploy)
 
