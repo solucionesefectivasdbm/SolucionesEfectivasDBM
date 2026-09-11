@@ -333,7 +333,9 @@ async def _calcular_virtuales(
 
     # Cuotas existentes por crédito (numero_cuota + estado pagado + fecha real)
     existentes_rows = (await db.execute(
-        select(Pago.credito_id, Pago.numero_cuota, Pago.pagado, Pago.fecha_maxima).where(
+        select(
+            Pago.credito_id, Pago.numero_cuota, Pago.pagado, Pago.fecha_maxima, Pago.tipo_cuota,
+        ).where(
             Pago.deleted_at == None,  # noqa: E711
             Pago.credito_id.in_(credito_ids),
         )
@@ -341,9 +343,10 @@ async def _calcular_virtuales(
     existentes_map: dict = {}
     bloqueador_map: dict = {}  # credito_id -> (numero_cuota más alto pendiente)
     fecha_persistida_map: dict = {}  # (credito_id, numero_cuota) -> fecha_maxima real
-    for cid, nc, pagado, fecha_maxima_real in existentes_rows:
+    for cid, nc, pagado, fecha_maxima_real, tipo_cuota in existentes_rows:
         existentes_map.setdefault(cid, set()).add(nc)
-        fecha_persistida_map[(cid, nc)] = fecha_maxima_real
+        if tipo_cuota != TipoCuota.no_programada:  # abonos extra no anclan la cadena
+            fecha_persistida_map[(cid, nc)] = fecha_maxima_real
         if not pagado:
             actual = bloqueador_map.get(cid)
             if actual is None or nc > actual:

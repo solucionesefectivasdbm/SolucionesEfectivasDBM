@@ -64,9 +64,9 @@ Phase 5 (backfill endpoint), Phase 6 (full-suite + post-deploy prod audit/backfi
 
 ## Phase 5: One-off Backfill Endpoint (temporary)
 
-- [ ] 5.1 RED (`backend/tests/test_backfill_domingos_diario.py`, create): pending Sun,Mon,Tue → Mon,Tue,Wed and reported; only pending row is cuota 1 on Sunday → moves to Monday; paid daily Sunday row + pending `semanal` Sunday row → both unchanged; second run → zero changes reported, nothing modified; `gestor` role → 403 (Req: One-off Pending-Row Backfill — 4 scenarios, + RBAC per threat matrix)
-- [ ] 5.2 GREEN: implement `POST /creditos/admin/backfill-domingos-diario` (`require_role("admin")`) in `creditos.py`, reusing `recalcular_cuotas_futuras`; selection = `periodicidad=diario AND activo AND deleted_at IS NULL AND EXISTS pending Pago (pagado=False, deleted_at IS NULL)`; `desde_fecha` = `siguiente_fecha_maxima(max paid fecha_maxima)` or shifted `fecha_inicial_pago` when no paid rows exist; audit each corrected credit via `audit_service.registrar_actualizacion_campos`; response includes `revisados, creditos_corregidos, cuotas_corregidas, ids[], cambios[]`
-- [ ] 5.3 Verify: `cd backend && python -m pytest tests/test_backfill_domingos_diario.py` — 0 failures
+- [x] 5.1 RED (`backend/tests/test_backfill_domingos_diario.py`, create): pending Sun,Mon,Tue → Mon,Tue,Wed and reported; only pending row is cuota 1 on Sunday → moves to Monday; paid daily Sunday row + pending `semanal` Sunday row → both unchanged; second run → zero changes reported, nothing modified; `gestor` role → 403 (Req: One-off Pending-Row Backfill — 4 scenarios, + RBAC per threat matrix)
+- [x] 5.2 GREEN: implement `POST /creditos/admin/backfill-domingos-diario` (`require_role("admin")`) in `creditos.py`, reusing `recalcular_cuotas_futuras`; selection = `periodicidad=diario AND activo AND deleted_at IS NULL AND EXISTS pending Pago (pagado=False, deleted_at IS NULL)`; `desde_fecha` = `siguiente_fecha_maxima(max paid fecha_maxima)` or shifted `fecha_inicial_pago` when no paid rows exist; audit each corrected credit via `audit_service.registrar_actualizacion_campos`; response includes `revisados, creditos_corregidos, cuotas_corregidas, ids[], cambios[]`
+- [x] 5.3 Verify: `cd backend && python -m pytest tests/test_backfill_domingos_diario.py` — 0 failures (6 passed)
 
 ## Phase 6: Full Suite Verification + Post-Deploy
 
