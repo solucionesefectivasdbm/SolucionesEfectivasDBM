@@ -331,17 +331,19 @@ async def _calcular_virtuales(
 
     credito_ids = [row[0].id for row in creditos_rows]
 
-    # Cuotas existentes por crédito (numero_cuota + estado pagado)
+    # Cuotas existentes por crédito (numero_cuota + estado pagado + fecha real)
     existentes_rows = (await db.execute(
-        select(Pago.credito_id, Pago.numero_cuota, Pago.pagado).where(
+        select(Pago.credito_id, Pago.numero_cuota, Pago.pagado, Pago.fecha_maxima).where(
             Pago.deleted_at == None,  # noqa: E711
             Pago.credito_id.in_(credito_ids),
         )
     )).all()
     existentes_map: dict = {}
     bloqueador_map: dict = {}  # credito_id -> (numero_cuota más alto pendiente)
-    for cid, nc, pagado in existentes_rows:
+    fecha_persistida_map: dict = {}  # (credito_id, numero_cuota) -> fecha_maxima real
+    for cid, nc, pagado, fecha_maxima_real in existentes_rows:
         existentes_map.setdefault(cid, set()).add(nc)
+        fecha_persistida_map[(cid, nc)] = fecha_maxima_real
         if not pagado:
             actual = bloqueador_map.get(cid)
             if actual is None or nc > actual:
@@ -455,6 +457,16 @@ async def _calcular_virtuales(
                     "es_proyectada": True,
                     "razon_bloqueo": f"Cuota #{bloqueador} pendiente",
                 })
+
+            # Resync: si esta cuota ya existe persistida, usar su fecha_maxima
+            # real como base para el siguiente paso — evita que la cadena local
+            # (calculada desde fecha_inicial_pago) diverja de filas históricas
+            # cuya fecha real no coincide con una recomputación limpia (p.ej.
+            # cuotas diarias pagadas en domingo antes de este fix).
+            if n in existentes:
+                fecha_real = fecha_persistida_map.get((credito.id, n))
+                if fecha_real is not None:
+                    fecha_proy = fecha_real
 
             # Advance to next cuota date using anchor-aware function
             fecha_proy = siguiente_fecha_maxima(fecha_proy, credito)

@@ -619,6 +619,110 @@ class TestFiltroPeriodicidad:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Proyección diaria: domingo nunca aparece; resync a fecha_maxima persistida
+# (daily-payments-skip-sunday)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@pytest_asyncio.fixture
+async def datos_diario_resync_domingo(db_session):
+    """
+    Crédito diario legacy con historia de domingo (dato histórico, conservado
+    per regla de negocio 3 — las cuotas pagadas no se reescriben):
+      - fecha_inicial_pago = Sábado 2026-01-03
+      - cuota #1: pagada, fecha_maxima = 2026-01-03 (Sábado)
+      - cuota #2: pagada, fecha_maxima = 2026-01-04 (Domingo — histórico, legacy)
+      - cuota #3: pendiente (bloqueadora), fecha_maxima = 2026-01-05 (Lunes —
+        ya generada correctamente tras el fix: cuota2 domingo +1 = lunes)
+      - cuota #4: NO existe — debe proyectarse vía _calcular_virtuales.
+
+    Sin resync, la cadena local (fecha_inicial_pago → +1 con salto de domingo)
+    ignora las fechas reales persistidas y calcula cuota #4 = 2026-01-07
+    (miércoles, INCORRECTO). Con resync a la fecha_maxima persistida en cada
+    n existente, cuota #4 = 2026-01-06 (martes, CORRECTO: sigue de la cuota #3
+    real, lunes 01-05, +1 día).
+    """
+    cliente = _mk_cliente("Legacy", "Diario", "990001")
+    db_session.add(cliente)
+    await db_session.flush()
+
+    credito = _mk_credito(
+        cliente.id,
+        f"Legacy Diario-CR-{cliente.id.hex[:6]}",
+        periodicidad=Periodicidad.diario,
+        fecha_inicial_pago=date(2026, 1, 3),
+        numero_cuotas=4,
+    )
+    db_session.add(credito)
+    await db_session.flush()
+
+    def _cuota(numero: int, fecha_maxima: date, pagado: bool) -> Pago:
+        return Pago(
+            id=uuid.uuid4(),
+            credito_id=credito.id,
+            numero_cuota=numero,
+            tipo_cuota=TipoCuota.programada,
+            monto_a_pagar=Decimal("100000.00"),
+            capital_a_pagar=Decimal("70000.00"),
+            interes_a_pagar=Decimal("30000.00"),
+            capital_pagado=Decimal("70000.00") if pagado else Decimal("0.00"),
+            interes_pagado=Decimal("30000.00") if pagado else Decimal("0.00"),
+            momento="m1",
+            fecha_maxima=fecha_maxima,
+            pagado=pagado,
+            validado_recaudador=pagado,
+            es_ultimo_pago=False,
+        )
+
+    p1 = _cuota(1, date(2026, 1, 3), pagado=True)
+    p2 = _cuota(2, date(2026, 1, 4), pagado=True)   # histórico en domingo, conservado
+    p3 = _cuota(3, date(2026, 1, 5), pagado=False)  # pendiente/bloqueadora
+    db_session.add_all([p1, p2, p3])
+    await db_session.flush()
+
+    return {"credito": credito, "p1": p1, "p2": p2, "p3": p3}
+
+
+class TestProyeccionDiariaResyncDomingo:
+    @pytest.mark.asyncio
+    async def test_virtual_nunca_cae_en_domingo(
+        self, client_admin_db: AsyncClient, datos_diario_resync_domingo
+    ):
+        """Ninguna fila VIRTUAL (proyectada) de un crédito diario cae en domingo.
+        Filas reales históricas (p.ej. la cuota #2 pagada en domingo, legacy)
+        se conservan tal cual — regla de negocio 3 — y quedan fuera de esta
+        aserción a propósito."""
+        r = await client_admin_db.get("/api/v1/pagos?anio=2026&mes=1")
+        assert r.status_code == 200, r.text
+        d = datos_diario_resync_domingo
+        virtuales = [
+            i for i in r.json()["items"]
+            if i["credito_id"] == str(d["credito"].id) and i["es_proyectada"] is True
+        ]
+        assert len(virtuales) >= 1, "No se proyectó ninguna fila virtual para el crédito diario"
+        for item in virtuales:
+            fecha = date.fromisoformat(item["fecha_maxima"])
+            assert fecha.weekday() != 6, f"Fila virtual {item['numero_cuota']} cae en domingo: {fecha}"
+
+    @pytest.mark.asyncio
+    async def test_virtual_resincroniza_a_fecha_persistida(
+        self, client_admin_db: AsyncClient, datos_diario_resync_domingo
+    ):
+        """La cuota #4 virtual debe encadenar desde la fecha REAL persistida de
+        la cuota #3 (lunes 2026-01-05), no desde una recomputación limpia
+        ignorando el histórico: 2026-01-05 + 1 día = 2026-01-06 (martes)."""
+        r = await client_admin_db.get("/api/v1/pagos?anio=2026&mes=1")
+        assert r.status_code == 200, r.text
+        d = datos_diario_resync_domingo
+        items = [
+            i for i in r.json()["items"]
+            if i["credito_id"] == str(d["credito"].id) and i["numero_cuota"] == 4
+        ]
+        assert len(items) == 1, "Cuota virtual #4 no fue proyectada"
+        assert items[0]["fecha_maxima"] == "2026-01-06"
+        assert items[0]["es_proyectada"] is True
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Projector parity — carryover-payment-registration (Phase 5)
 # ──────────────────────────────────────────────────────────────────────────────
 
