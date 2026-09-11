@@ -213,3 +213,40 @@ Forecast ~270 (tasks.md) / ~200 (design.md). **Actual: 908 total lines (862 inse
 ### Status
 
 26/26 scenario-mapped tasks complete (Phases 1, 2, and 3 fully done). Ready for `sdd-verify` on PR 3.
+
+---
+
+## Batch 3 Follow-up — Test coverage for `cliente_id` (out-of-scope param, owner-ruled to stay)
+
+**Branch**: `feature/zero-balance-credit-closure-pr3` (same branch, follow-up commit)
+**Mode**: Strict TDD (characterization mode — implementation pre-existed)
+**Status**: Complete.
+
+**What**: PR 3's `gga` pre-commit hook (Deviation #2 above) forced an out-of-scope addition: an optional `cliente_id` query parameter on `GET /creditos/resumen-cartera`, added to replace a client-side JS-float sum of `saldo_capital` in `ClientesPage.tsx` (an `AGENTS.md` violation — financial math must use `Decimal`). Independent verification confirmed the parameter shipped with zero test coverage. The owner ruled: the parameter stays, but must be tested.
+
+**Where**: `backend/tests/test_creditos_router.py` — new `TestResumenCarteraFiltroCliente` class (+91 lines), 4 tests:
+1. `test_sin_cliente_id_suma_toda_la_cartera` — proves the pre-existing unfiltered behavior did not regress (sums across two different `cliente_id`s).
+2. `test_con_cliente_id_solo_suma_los_creditos_de_ese_cliente` — filtered total excludes another client's credit.
+3. `test_con_cliente_id_credito_saldado_sin_confirmar_no_suma` — a settled-but-`activo=True` credit for the target client is excluded from the filtered total (rule 6/9), same as the unfiltered case, alongside a third client's open credit to prove the filter itself is doing the work.
+4. `test_cliente_id_desconocido_devuelve_total_cero_sin_error` — an unmatched `cliente_id` returns a zero total via the endpoint's real `coalesce(sum(...), 0)` contract, no error (read from code, not assumed).
+
+**TDD verification note**: all 4 tests passed immediately on first run (expected — the implementation already existed; this is characterization coverage, not new-behavior TDD). Per the launch prompt's instruction, confirmed each test genuinely exercises the parameter rather than passing vacuously: temporarily neutered the `if cliente_id:` filter in `creditos.py` (`if cliente_id and False:`) and re-ran — tests 2, 3, and 4 failed as expected (test 1 correctly stayed green, since it never uses the parameter). Reverted the neutering; confirmed `git diff` on `creditos.py` was empty (zero production change) before committing.
+
+**No production code changed.** `backend/app/routers/creditos.py` has zero diff.
+
+### Work Unit Evidence (Follow-up)
+
+| Evidence | Value |
+|---|---|
+| Focused test command and result | `cd backend && python -m pytest tests/test_creditos_router.py -k TestResumenCarteraFiltroCliente -v` → 4 passed |
+| Full suite | `cd backend && python -m pytest -q` → **293 passed, 0 failed** (289 baseline + 4 new) |
+| Diff size | 1 file changed, 91 insertions (test file only) |
+| Rollback boundary | Revert this follow-up commit on `feature/zero-balance-credit-closure-pr3`; does not touch any prior PR1/PR2/PR3 commit |
+
+### Issues Found (Follow-up)
+
+None. The `gga` pre-commit hook did not block this commit (it only scans `*.ts,*.tsx,*.js,*.jsx` per its configured file patterns; this change is Python-only), so no out-of-scope changes were forced this time.
+
+### Status (Follow-up)
+
+Task complete. Backend suite green at 293 passed, 0 failed. Ready for `sdd-verify` (or direct merge, per owner's discretion) on this follow-up.
