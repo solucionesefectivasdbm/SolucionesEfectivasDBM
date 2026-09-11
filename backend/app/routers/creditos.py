@@ -1,7 +1,7 @@
 """routers/creditos.py — Gestión de créditos (cuota fija y abono a capital)."""
 import math
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -14,7 +14,7 @@ from app.dependencies import get_client_ip, get_current_user, require_role
 from app.models.cliente import Cliente
 from app.models.credito import Credito, Periodicidad, TipoCredito
 from app.models.gestor import Gestor
-from app.models.pago import Pago
+from app.models.pago import Pago, TipoCuota
 from app.models.usuario import TipoUsuario, Usuario
 from app.schemas.common import PaginatedResponse
 from app.schemas.credito import CreditoCreate, CreditoResponse, CreditoUpdate, DiasPagoUpdate
@@ -32,7 +32,7 @@ from app.services.credito_service import (
     recalcular_cuotas_futuras,
     recalcular_saldo_intereses,
 )
-from app.utils.fechas import es_domingo
+from app.utils.fechas import es_domingo, siguiente_fecha_maxima
 from app.utils.tz import ahora_bogota
 
 router = APIRouter(prefix="/creditos", tags=["Créditos"])
@@ -474,6 +474,128 @@ async def confirmar_cierre_credito(
         cambios={"activo": ("True", "False")},
     )
     return _credito_response(credito)
+
+
+@router.post("/admin/backfill-domingos-diario")
+async def backfill_domingos_diario(
+    request: Request,
+    current_user: Usuario = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    TEMPORAL — corrección histórica única (mismo patrón que los backfills de
+    arrastre y cierre-saldo-cero ya archivados). Recorre créditos `diario`
+    activos con al menos una cuota PENDIENTE en DOMINGO y re-encadena sus
+    fechas con `recalcular_cuotas_futuras`, ahora que `siguiente_fecha_maxima`
+    nunca aterriza en domingo para `diario` (ver daily-payments-skip-sunday).
+
+    Selección: `periodicidad=diario AND activo=True AND deleted_at IS NULL`
+    con >=1 `Pago` pendiente (`pagado=False, deleted_at IS NULL`) cuya
+    `fecha_maxima` cae en domingo (filtrado en Python con `es_domingo` para
+    ser portable PostgreSQL/SQLite). `revisados` = créditos candidatos que
+    cumplen esa condición y fueron examinados. Cuotas pagadas y créditos
+    no-diario NUNCA se tocan — la query solo lee/escribe filas pendientes de
+    créditos diario.
+
+    `desde_fecha`: si el crédito ya tiene una cuota PROGRAMADA pagada (los
+    abonos `no_programada` no anclan la cadena), se ancla en
+    `siguiente_fecha_maxima(ultima_pagada, credito)` (mismo cálculo que la
+    ventana de editar días, creditos.py `PATCH /dias-pago`). Si no tiene
+    ninguna cuota pagada, se ancla en `fecha_inicial_pago`, desplazado un día
+    si cae en domingo (crédito legado creado antes del fix cuya cuota #1
+    nunca se pagó).
+
+    Idempotente por construcción: tras corregir, la cadena resultante es la
+    misma que produciría `siguiente_fecha_maxima` con la regla nueva, así
+    que una segunda corrida no encuentra fechas por corregir.
+
+    Se elimina en un PR de seguimiento después de correrse una vez en
+    producción (tarea 7.1 de daily-payments-skip-sunday).
+    """
+    creditos_candidatos = (await db.execute(
+        select(Credito)
+        .where(
+            Credito.periodicidad == Periodicidad.diario,
+            Credito.activo == True,  # noqa: E712
+            Credito.deleted_at == None,  # noqa: E711
+            Credito.id.in_(
+                select(Pago.credito_id).where(
+                    Pago.pagado == False,  # noqa: E712
+                    Pago.deleted_at == None,  # noqa: E711
+                )
+            ),
+        )
+    )).scalars().all()
+
+    creditos_corregidos: list[uuid.UUID] = []
+    cambios: list[dict] = []
+    cuotas_corregidas = 0
+    revisados = 0
+
+    for credito in creditos_candidatos:
+        cuotas_pendientes = (await db.execute(
+            select(Pago)
+            .where(
+                Pago.credito_id == credito.id,
+                Pago.pagado == False,  # noqa: E712
+                Pago.deleted_at == None,  # noqa: E711
+                Pago.tipo_cuota != TipoCuota.no_programada,
+            )
+            .order_by(Pago.numero_cuota)
+        )).scalars().all()
+        if not any(es_domingo(p.fecha_maxima) for p in cuotas_pendientes):
+            continue  # sin pendiente en domingo: no es candidato
+        revisados += 1
+        antes = {p.numero_cuota: p.fecha_maxima for p in cuotas_pendientes}
+
+        ultima_pagada: date | None = (await db.execute(
+            select(func.max(Pago.fecha_maxima)).where(
+                Pago.credito_id == credito.id,
+                Pago.pagado == True,  # noqa: E712
+                Pago.deleted_at == None,  # noqa: E711
+                Pago.tipo_cuota != TipoCuota.no_programada,
+            )
+        )).scalar()
+
+        if ultima_pagada is None:
+            desde_fecha = credito.fecha_inicial_pago
+            if es_domingo(desde_fecha):
+                desde_fecha += timedelta(days=1)
+        else:
+            desde_fecha = siguiente_fecha_maxima(ultima_pagada, credito)
+
+        await recalcular_cuotas_futuras(db, credito, desde_fecha)
+
+        cambios_credito: dict[str, tuple[str, str]] = {}
+        for pago in cuotas_pendientes:
+            fecha_antes = antes[pago.numero_cuota]
+            if pago.fecha_maxima != fecha_antes:
+                cambios_credito[f"cuota_{pago.numero_cuota}_fecha_maxima"] = (
+                    fecha_antes.isoformat(), pago.fecha_maxima.isoformat(),
+                )
+                cambios.append({
+                    "credito_id": str(credito.id),
+                    "numero_cuota": pago.numero_cuota,
+                    "antes": fecha_antes.isoformat(),
+                    "despues": pago.fecha_maxima.isoformat(),
+                })
+                cuotas_corregidas += 1
+
+        if cambios_credito:
+            creditos_corregidos.append(credito.id)
+            await audit_service.registrar_actualizacion_campos(
+                db=db, entidad="creditos", entidad_id=credito.id,
+                usuario_id=current_user.id, ip_origen=get_client_ip(request),
+                cambios=cambios_credito,
+            )
+
+    return {
+        "revisados": revisados,
+        "creditos_corregidos": len(creditos_corregidos),
+        "cuotas_corregidas": cuotas_corregidas,
+        "ids": [str(i) for i in creditos_corregidos],
+        "cambios": cambios,
+    }
 
 
 @router.delete("/{credito_id}", status_code=status.HTTP_204_NO_CONTENT)
