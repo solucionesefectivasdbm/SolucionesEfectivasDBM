@@ -14,7 +14,7 @@ from app.dependencies import get_client_ip, get_current_user, require_role
 from app.models.cliente import Cliente
 from app.models.credito import Credito, Periodicidad, TipoCredito
 from app.models.gestor import Gestor
-from app.models.pago import Pago
+from app.models.pago import Pago, TipoCuota
 from app.models.usuario import TipoUsuario, Usuario
 from app.schemas.common import PaginatedResponse
 from app.schemas.credito import CreditoCreate, CreditoResponse, CreditoUpdate, DiasPagoUpdate
@@ -485,16 +485,20 @@ async def backfill_domingos_diario(
     """
     TEMPORAL — corrección histórica única (mismo patrón que los backfills de
     arrastre y cierre-saldo-cero ya archivados). Recorre créditos `diario`
-    activos con al menos una cuota PENDIENTE y re-encadena sus fechas con
-    `recalcular_cuotas_futuras`, ahora que `siguiente_fecha_maxima` nunca
-    aterriza en domingo para `diario` (ver daily-payments-skip-sunday).
+    activos con al menos una cuota PENDIENTE en DOMINGO y re-encadena sus
+    fechas con `recalcular_cuotas_futuras`, ahora que `siguiente_fecha_maxima`
+    nunca aterriza en domingo para `diario` (ver daily-payments-skip-sunday).
 
     Selección: `periodicidad=diario AND activo=True AND deleted_at IS NULL`
-    con >=1 `Pago` pendiente (`pagado=False, deleted_at IS NULL`). Cuotas
-    pagadas y créditos no-diario NUNCA se tocan — la query solo lee/escribe
-    filas pendientes de créditos diario.
+    con >=1 `Pago` pendiente (`pagado=False, deleted_at IS NULL`) cuya
+    `fecha_maxima` cae en domingo (filtrado en Python con `es_domingo` para
+    ser portable PostgreSQL/SQLite). `revisados` = créditos candidatos que
+    cumplen esa condición y fueron examinados. Cuotas pagadas y créditos
+    no-diario NUNCA se tocan — la query solo lee/escribe filas pendientes de
+    créditos diario.
 
-    `desde_fecha`: si el crédito ya tiene una cuota pagada, se ancla en
+    `desde_fecha`: si el crédito ya tiene una cuota PROGRAMADA pagada (los
+    abonos `no_programada` no anclan la cadena), se ancla en
     `siguiente_fecha_maxima(ultima_pagada, credito)` (mismo cálculo que la
     ventana de editar días, creditos.py `PATCH /dias-pago`). Si no tiene
     ninguna cuota pagada, se ancla en `fecha_inicial_pago`, desplazado un día
@@ -526,6 +530,7 @@ async def backfill_domingos_diario(
     creditos_corregidos: list[uuid.UUID] = []
     cambios: list[dict] = []
     cuotas_corregidas = 0
+    revisados = 0
 
     for credito in creditos_candidatos:
         cuotas_pendientes = (await db.execute(
@@ -534,9 +539,13 @@ async def backfill_domingos_diario(
                 Pago.credito_id == credito.id,
                 Pago.pagado == False,  # noqa: E712
                 Pago.deleted_at == None,  # noqa: E711
+                Pago.tipo_cuota != TipoCuota.no_programada,
             )
             .order_by(Pago.numero_cuota)
         )).scalars().all()
+        if not any(es_domingo(p.fecha_maxima) for p in cuotas_pendientes):
+            continue  # sin pendiente en domingo: no es candidato
+        revisados += 1
         antes = {p.numero_cuota: p.fecha_maxima for p in cuotas_pendientes}
 
         ultima_pagada: date | None = (await db.execute(
@@ -544,6 +553,7 @@ async def backfill_domingos_diario(
                 Pago.credito_id == credito.id,
                 Pago.pagado == True,  # noqa: E712
                 Pago.deleted_at == None,  # noqa: E711
+                Pago.tipo_cuota != TipoCuota.no_programada,
             )
         )).scalar()
 
@@ -580,7 +590,7 @@ async def backfill_domingos_diario(
             )
 
     return {
-        "revisados": len(creditos_candidatos),
+        "revisados": revisados,
         "creditos_corregidos": len(creditos_corregidos),
         "cuotas_corregidas": cuotas_corregidas,
         "ids": [str(i) for i in creditos_corregidos],

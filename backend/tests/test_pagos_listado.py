@@ -721,6 +721,35 @@ class TestProyeccionDiariaResyncDomingo:
         assert items[0]["fecha_maxima"] == "2026-01-06"
         assert items[0]["es_proyectada"] is True
 
+    @pytest.mark.asyncio
+    async def test_abono_no_programado_no_ancla_la_cadena_virtual(
+        self, client_admin_db: AsyncClient, datos_diario_resync_domingo, db_session
+    ):
+        """Una fila `no_programada` pagada (abono extra, numero_cuota=4,
+        fecha 2026-01-20) NO debe re-anclar la cadena virtual: la cuota #5
+        sigue la cadena programada (cuota #3 lunes 01-05 -> 01-06 -> 01-07)."""
+        d = datos_diario_resync_domingo
+        d["credito"].numero_cuotas = 5
+        extra = Pago(
+            id=uuid.uuid4(), credito_id=d["credito"].id, numero_cuota=4,
+            tipo_cuota=TipoCuota.no_programada, monto_a_pagar=Decimal("50000.00"),
+            capital_a_pagar=Decimal("50000.00"), interes_a_pagar=Decimal("0.00"),
+            capital_pagado=Decimal("50000.00"), interes_pagado=Decimal("0.00"),
+            momento="m1", fecha_maxima=date(2026, 1, 20), pagado=True,
+            validado_recaudador=True, es_ultimo_pago=False,
+        )
+        db_session.add(extra)
+        await db_session.flush()
+
+        r = await client_admin_db.get("/api/v1/pagos?anio=2026&mes=1")
+        assert r.status_code == 200, r.text
+        items = [
+            i for i in r.json()["items"]
+            if i["credito_id"] == str(d["credito"].id) and i["numero_cuota"] == 5
+        ]
+        assert len(items) == 1, "Cuota virtual #5 no fue proyectada"
+        assert items[0]["fecha_maxima"] == "2026-01-07"
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Projector parity — carryover-payment-registration (Phase 5)

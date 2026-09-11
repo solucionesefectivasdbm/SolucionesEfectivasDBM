@@ -296,3 +296,65 @@ class TestBackfillDomingosDiario:
             select(AuditLog).where(AuditLog.entidad_id == credito.id)
         )).scalars().all()
         assert len(logs) == 1
+
+    @pytest.mark.asyncio
+    async def test_abono_no_programado_no_ancla_la_cadena(self, make_client, db_session):
+        """Scenario: paid `no_programada` row dated after the last scheduled paid
+        row must NOT anchor `desde_fecha`. Chain restarts from cuota #1 paid
+        (sábado 02-07) -> lunes 02-09, martes 02-10 (domingo 02-08 saltado)."""
+        cliente = _mk_cliente()
+        db_session.add(cliente)
+        await db_session.flush()
+
+        credito = _mk_credito(
+            cliente.id, fecha_inicial_pago=date(2026, 2, 7), numero_cuotas=3
+        )
+        db_session.add(credito)
+        await db_session.flush()
+
+        p1 = _mk_cuota(credito.id, 1, date(2026, 2, 7), pagado=True)   # sábado, pagada
+        p2 = _mk_cuota(credito.id, 2, date(2026, 2, 8), pagado=False)  # domingo (bug)
+        p3 = _mk_cuota(credito.id, 3, date(2026, 2, 9), pagado=False)  # lunes (bug)
+        extra = _mk_cuota(credito.id, 4, date(2026, 2, 20), pagado=True)  # abono extra
+        extra.tipo_cuota = TipoCuota.no_programada
+        db_session.add_all([p1, p2, p3, extra])
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        r = await client.post(BACKFILL_URL)
+        assert r.status_code == 200, r.text
+
+        assert p2.fecha_maxima == date(2026, 2, 9)   # lunes
+        assert p3.fecha_maxima == date(2026, 2, 10)  # martes
+        assert extra.fecha_maxima == date(2026, 2, 20)
+
+    @pytest.mark.asyncio
+    async def test_diario_sin_pendiente_en_domingo_no_es_candidato(
+        self, make_client, db_session
+    ):
+        """Scenario: active diario credit whose pending rows have no Sunday is
+        not selected: untouched, not in ids, not counted in revisados."""
+        cliente = _mk_cliente()
+        db_session.add(cliente)
+        await db_session.flush()
+
+        credito = _mk_credito(
+            cliente.id, fecha_inicial_pago=date(2026, 7, 6), numero_cuotas=2
+        )
+        db_session.add(credito)
+        await db_session.flush()
+
+        p1 = _mk_cuota(credito.id, 1, date(2026, 7, 6), pagado=False)  # lunes
+        p2 = _mk_cuota(credito.id, 2, date(2026, 7, 7), pagado=False)  # martes
+        db_session.add_all([p1, p2])
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        r = await client.post(BACKFILL_URL)
+        assert r.status_code == 200, r.text
+        body = r.json()
+
+        assert body["revisados"] == 0
+        assert str(credito.id) not in body["ids"]
+        assert p1.fecha_maxima == date(2026, 7, 6)
+        assert p2.fecha_maxima == date(2026, 7, 7)

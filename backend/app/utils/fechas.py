@@ -1,7 +1,8 @@
 """
 utils/fechas.py — Generación de fechas_maxima según periodicidad.
 
-DECISIÓN TÉCNICA (original): Usamos timedelta simple para semanal/diario.
+DECISIÓN TÉCNICA (original): semanal usa timedelta simple (+7). diario usa
++1 saltando domingo (ver _siguiente_diario).
 DECISIÓN TÉCNICA (anchor): mensual y quincenal usan anchor_dia_1/anchor_dia_2
 del crédito para anclar la cuota al mismo día del mes cada período, con clamp
 via calendar.monthrange para meses cortos (Febrero, Abril, etc.).
@@ -46,7 +47,7 @@ def _siguiente_mensual(fecha_anterior: date, dia_ancla: int) -> date:
 
 
 def es_domingo(fecha: date) -> bool:
-    """True if fecha falls on a Sunday (ISO weekday 6, 0-indexed Monday)."""
+    """True if fecha falls on a Sunday (date.weekday() == 6, Monday=0)."""
     return fecha.weekday() == 6
 
 
