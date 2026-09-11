@@ -1,7 +1,7 @@
 """
 tests/test_creditos_router.py — Zero-balance-credit-closure PR 3: predicado
 "operativamente abierto" en resumen-cartera, señal `pendiente_de_cierre`,
-confirmación explícita de cierre y backfill temporal de créditos saldados.
+confirmación explícita de cierre.
 
 Todos los créditos se ejercitan vía HTTP real (httpx AsyncClient) contra la
 app real y una sesión aiosqlite real — sin mockear la lógica de negocio.
@@ -414,50 +414,3 @@ class TestConfirmarCierre:
         assert r1.status_code == 200
         r2 = await client.post(f"/api/v1/creditos/{credito.id}/cerrar")
         assert r2.status_code == 422
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 3.8/3.9 — POST /creditos/admin/backfill-cierre-saldo-cero
-# ──────────────────────────────────────────────────────────────────────────────
-
-class TestBackfillCierreSaldoCero:
-    @pytest.mark.asyncio
-    async def test_cierra_creditos_saldados_y_deja_abiertos_los_demas(self, make_client, db_session):
-        saldado = _mk_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("0.00"))
-        capital_saldado_interes_pendiente = _mk_credito(
-            saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("2000.00")
-        )
-        abierto = _mk_credito(saldo_capital=Decimal("500000.00"), saldo_intereses=Decimal("15000.00"))
-        db_session.add_all([saldado, capital_saldado_interes_pendiente, abierto])
-        await db_session.flush()
-
-        client = await make_client(TipoUsuario.admin)
-        r = await client.post("/api/v1/creditos/admin/backfill-cierre-saldo-cero")
-        assert r.status_code == 200, r.text
-        body = r.json()
-        assert str(saldado.id) in body["ids"]
-        assert body["cerrados"] == 1
-        assert saldado.activo is False
-        assert capital_saldado_interes_pendiente.activo is True
-        assert abierto.activo is True
-
-    @pytest.mark.asyncio
-    async def test_segunda_corrida_reporta_cero_correcciones(self, make_client, db_session):
-        saldado = _mk_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("0.00"))
-        db_session.add(saldado)
-        await db_session.flush()
-
-        client = await make_client(TipoUsuario.admin)
-        r1 = await client.post("/api/v1/creditos/admin/backfill-cierre-saldo-cero")
-        assert r1.json()["cerrados"] == 1
-
-        r2 = await client.post("/api/v1/creditos/admin/backfill-cierre-saldo-cero")
-        assert r2.status_code == 200
-        assert r2.json()["cerrados"] == 0
-        assert r2.json()["ids"] == []
-
-    @pytest.mark.asyncio
-    async def test_no_admin_403(self, make_client, db_session):
-        client = await make_client(TipoUsuario.registrador)
-        r = await client.post("/api/v1/creditos/admin/backfill-cierre-saldo-cero")
-        assert r.status_code == 403

@@ -95,8 +95,8 @@ PR now independently forecasts under 400.
 
 ## Phase 4: Follow-up (post-deploy)
 
-- [ ] 4.1 Run backfill endpoint once in production as admin; confirm `resumen-cartera` drops accordingly
-- [ ] 4.2 Remove `POST /creditos/admin/backfill-cierre-saldo-cero`, its schema/response model, and its tests (same pattern as the archived arrastre backfill)
+- [x] 4.1 Run backfill endpoint once in production as admin; confirm `resumen-cartera` drops accordingly
+- [x] 4.2 Remove `POST /creditos/admin/backfill-cierre-saldo-cero`, its schema/response model, and its tests (same pattern as the archived arrastre backfill)
 
 ## Scenario Coverage Map (spec revision 2, 26 scenarios — all mapped, 0 gaps)
 

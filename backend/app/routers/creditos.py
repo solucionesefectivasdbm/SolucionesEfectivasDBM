@@ -5,7 +5,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import and_, func, not_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -464,52 +464,6 @@ async def confirmar_cierre_credito(
         cambios={"activo": ("True", "False")},
     )
     return _credito_response(credito)
-
-
-@router.post("/admin/backfill-cierre-saldo-cero")
-async def backfill_cierre_saldo_cero(
-    request: Request,
-    current_user: Usuario = Depends(require_role("admin")),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    TEMPORAL — corrección histórica única (mismo patrón que el backfill de
-    arrastre ya archivado). Cierra todo crédito `activo=True` que ya está
-    saldado (regla 9) según `credito_operativamente_abierto()`, bypaseando
-    deliberadamente la confirmación explícita (regla 8) porque son créditos
-    que quedaron atascados ANTES de esta iniciativa.
-
-    Idempotente por construcción: el predicado de selección
-    (`NOT credito_operativamente_abierto()`) es el mismo mecanismo que
-    determina si un crédito todavía califica, así que tras una corrida no
-    queda ningún crédito que lo vuelva a cumplir.
-
-    Se elimina en un PR de seguimiento después de correrse una vez en
-    producción (tarea 4.2, aún no ejecutada).
-    """
-    candidatos = (await db.execute(
-        select(Credito).where(
-            Credito.activo == True,  # noqa: E712
-            Credito.deleted_at == None,  # noqa: E711
-            not_(credito_operativamente_abierto()),
-        )
-    )).scalars().all()
-
-    cerrados_ids: list[uuid.UUID] = []
-    for credito in candidatos:
-        if cerrar_credito(credito):
-            cerrados_ids.append(credito.id)
-            await audit_service.registrar_actualizacion_campos(
-                db=db, entidad="creditos", entidad_id=credito.id,
-                usuario_id=current_user.id, ip_origen=get_client_ip(request),
-                cambios={"activo": ("True", "False")},
-            )
-
-    return {
-        "revisados": len(candidatos),
-        "cerrados": len(cerrados_ids),
-        "ids": [str(i) for i in cerrados_ids],
-    }
 
 
 @router.delete("/{credito_id}", status_code=status.HTTP_204_NO_CONTENT)
