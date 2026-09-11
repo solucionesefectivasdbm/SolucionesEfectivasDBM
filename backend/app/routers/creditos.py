@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.dependencies import get_client_ip, get_current_user, require_role
 from app.models.cliente import Cliente
-from app.models.credito import Credito, TipoCredito
+from app.models.credito import Credito, Periodicidad, TipoCredito
 from app.models.gestor import Gestor
 from app.models.pago import Pago
 from app.models.usuario import TipoUsuario, Usuario
@@ -32,6 +32,7 @@ from app.services.credito_service import (
     recalcular_cuotas_futuras,
     recalcular_saldo_intereses,
 )
+from app.utils.fechas import es_domingo
 from app.utils.tz import ahora_bogota
 
 router = APIRouter(prefix="/creditos", tags=["Créditos"])
@@ -163,6 +164,15 @@ async def crear_credito(
     current_user: Usuario = Depends(require_role("admin", "registrador")),
     db: AsyncSession = Depends(get_db),
 ):
+    if body.periodicidad == Periodicidad.diario and es_domingo(body.fecha_inicial_pago):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Los créditos diarios no pueden iniciar un domingo "
+                "(el domingo no es día de cobro). Seleccione otra fecha inicial de pago."
+            ),
+        )
+
     # Verificar cliente existente
     cliente = (await db.execute(
         select(Cliente).where(Cliente.id == body.cliente_id, Cliente.deleted_at == None)  # noqa: E711
