@@ -13,11 +13,13 @@ from decimal import Decimal
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
+from sqlalchemy import select
 from unittest.mock import MagicMock
 
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.main import app
+from app.models.cliente import Cliente
 from app.models.credito import Credito, TipoCredito, Periodicidad
 from app.models.pago import Pago, TipoCuota
 from app.models.usuario import TipoUsuario, Usuario
@@ -414,3 +416,113 @@ class TestConfirmarCierre:
         assert r1.status_code == 200
         r2 = await client.post(f"/api/v1/creditos/{credito.id}/cerrar")
         assert r2.status_code == 422
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# POST /creditos — domingo rechazado como fecha_inicial_pago para diario
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _mk_cliente() -> Cliente:
+    return Cliente(
+        id=uuid.uuid4(),
+        gestor_id=uuid.uuid4(),
+        nombre="Ana",
+        apellidos=f"Prueba{uuid.uuid4().hex[:6]}",
+        cedula=str(uuid.uuid4().int)[:10],
+        telefono="3000000000",
+        direccion="Calle test",
+    )
+
+
+def _credito_create_payload(cliente_id: uuid.UUID, *, periodicidad: str, fecha_inicial_pago: date) -> dict:
+    return {
+        "cliente_id": str(cliente_id),
+        "tipo_credito": "cuota_fija",
+        "capital_prestado": "1000000.00",
+        "tasa_interes_mensual": "0.0300",
+        "fecha_apertura": "2026-01-01",
+        "fecha_inicial_pago": fecha_inicial_pago.isoformat(),
+        "periodicidad": periodicidad,
+        "numero_cuotas": 12,
+    }
+
+
+class TestCrearCreditoDiarioDomingoRechazado:
+    """CAP: fecha_inicial_pago en domingo se rechaza para créditos diarios (422)."""
+
+    @pytest.mark.asyncio
+    async def test_diario_domingo_rechazado_nombra_domingo(self, make_client, db_session):
+        """Scenario: diario con fecha_inicial_pago domingo 2026-02-01 → 422, mensaje nombra domingo."""
+        cliente = _mk_cliente()
+        db_session.add(cliente)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        payload = _credito_create_payload(
+            cliente.id, periodicidad="diario", fecha_inicial_pago=date(2026, 2, 1)
+        )
+        r = await client.post("/api/v1/creditos", json=payload)
+        assert r.status_code == 422, r.text
+        assert "domingo" in r.json()["detail"].lower()
+
+        # Nada persistido
+        count = (await db_session.execute(
+            select(Credito).where(Credito.cliente_id == cliente.id)
+        )).scalars().all()
+        assert count == []
+
+    @pytest.mark.asyncio
+    async def test_diario_sabado_aceptado(self, make_client, db_session):
+        """Scenario: diario con fecha_inicial_pago sábado 2026-01-31 → 201."""
+        cliente = _mk_cliente()
+        db_session.add(cliente)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        payload = _credito_create_payload(
+            cliente.id, periodicidad="diario", fecha_inicial_pago=date(2026, 1, 31)
+        )
+        r = await client.post("/api/v1/creditos", json=payload)
+        assert r.status_code == 201, r.text
+
+    @pytest.mark.asyncio
+    async def test_diario_lunes_aceptado(self, make_client, db_session):
+        """Scenario: diario con fecha_inicial_pago lunes 2026-02-02 → 201, primera cuota en esa fecha."""
+        cliente = _mk_cliente()
+        db_session.add(cliente)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        payload = _credito_create_payload(
+            cliente.id, periodicidad="diario", fecha_inicial_pago=date(2026, 2, 2)
+        )
+        r = await client.post("/api/v1/creditos", json=payload)
+        assert r.status_code == 201, r.text
+
+    @pytest.mark.asyncio
+    async def test_semanal_domingo_aceptado(self, make_client, db_session):
+        """Scenario: semanal con fecha_inicial_pago domingo → 201 (regla no aplica)."""
+        cliente = _mk_cliente()
+        db_session.add(cliente)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        payload = _credito_create_payload(
+            cliente.id, periodicidad="semanal", fecha_inicial_pago=date(2026, 2, 1)
+        )
+        r = await client.post("/api/v1/creditos", json=payload)
+        assert r.status_code == 201, r.text
+
+    @pytest.mark.asyncio
+    async def test_mensual_domingo_aceptado(self, make_client, db_session):
+        """Scenario: mensual con fecha_inicial_pago domingo → 201 (regla no aplica)."""
+        cliente = _mk_cliente()
+        db_session.add(cliente)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        payload = _credito_create_payload(
+            cliente.id, periodicidad="mensual", fecha_inicial_pago=date(2026, 2, 1)
+        )
+        r = await client.post("/api/v1/creditos", json=payload)
+        assert r.status_code == 201, r.text
