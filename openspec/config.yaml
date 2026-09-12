@@ -29,7 +29,7 @@ testing:
     testpaths: backend/tests
     layers:
       unit: true # tests/test_*_service.py, test_models.py, test_schema_credito.py
-      integration: true # httpx AsyncClient + aiosqlite in-memory DB (tests/conftest.py)
+      integration: true # httpx AsyncClient + aiosqlite in-memory DB (tests/conftest.py); 315 tests collected (305 baseline + 10 new from test_desvalidar_pago.py)
       e2e: false
     coverage:
       available: false # pytest-cov not installed
