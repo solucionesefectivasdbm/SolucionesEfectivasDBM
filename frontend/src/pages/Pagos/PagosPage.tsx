@@ -4,6 +4,7 @@ import { formatCOP, formatFecha, MESES, MOMENTOS, aniosDisponibles } from '@/uti
 import { LoadingPage, EmptyState, Paginacion, PagoBadge, ConfirmarCreacion, type ItemConfirmacion } from '@/components/ui'
 import Modal from '@/components/ui/Modal'
 import { usePermissions } from '@/store/authStore'
+import { mensajeError, esErrorSesionExpirada } from '@/utils/apiErrors'
 import type { Pago, Receptor, Credito, Gestor } from '@/types'
 import { Check, Calendar, User, Plus, Search, DollarSign, CalendarDays, ArrowLeft, RotateCcw, ChevronUp, ChevronDown } from 'lucide-react'
 import toast from 'react-hot-toast'
@@ -148,7 +149,9 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
         cargarPagos(false)
       }
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'Error al registrar pago')
+      const msg = mensajeError(e, 'No se pudo registrar el pago')
+      if (msg) toast.error(msg)
+      if (e.response && !esErrorSesionExpirada(e)) cargarPagos(false)
     } finally { setSubmitting(false) }
   }
 
@@ -183,9 +186,11 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       setModalExcedente(false)
       cargarPagos(false)
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'Error')
-    } finally { 
-      setSubmitting(false) 
+      const msg = mensajeError(e, 'No se pudo confirmar el excedente')
+      if (msg) toast.error(msg)
+      if (e.response && !esErrorSesionExpirada(e)) cargarPagos(false)
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -203,18 +208,26 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       setPagoAValidar(null)
       cargarPagos(false)
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'Error')
+      const msg = mensajeError(e, 'No se pudo validar el pago')
+      if (msg) toast.error(msg)
+      if (e.response && !esErrorSesionExpirada(e)) cargarPagos(false)
     }
   }
 
   const handleDesvalidar = async (pago: Pago) => {
+    if (submitting) return
     if (!confirm(`¿Revertir el check de la cuota #${pago.numero_cuota} de ${pago.cliente_nombre}?`)) return
+    setSubmitting(true)
     try {
       await pagosApi.desvalidar(pago.id)
       toast.success('Check revertido')
       cargarPagos(false)
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'Error')
+      const msg = mensajeError(e, 'No se pudo revertir el check')
+      if (msg) toast.error(msg)
+      if (e.response && !esErrorSesionExpirada(e)) cargarPagos(false)
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -227,7 +240,9 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       setModalFecha(false)
       cargarPagos(false)
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'Error')
+      const msg = mensajeError(e, 'No se pudo actualizar la fecha')
+      if (msg) toast.error(msg)
+      if (e.response && !esErrorSesionExpirada(e)) cargarPagos(false)
     } finally { setSubmitting(false) }
   }
 
@@ -240,7 +255,9 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       setModalReceptor(false)
       cargarPagos(false)
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'Error')
+      const msg = mensajeError(e, 'No se pudo actualizar el receptor')
+      if (msg) toast.error(msg)
+      if (e.response && !esErrorSesionExpirada(e)) cargarPagos(false)
     } finally { setSubmitting(false) }
   }
 
@@ -292,7 +309,9 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       setModalConfirmarNoProgramado(false)
       cargarPagos(false)
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'Error')
+      const msg = mensajeError(e, 'No se pudo registrar el pago no programado')
+      if (msg) toast.error(msg)
+      if (e.response && !esErrorSesionExpirada(e)) cargarPagos(false)
     } finally { setSubmitting(false) }
   }
 
@@ -465,7 +484,8 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                               <button
                                 title="Revertir check"
                                 onClick={() => handleDesvalidar(p)}
-                                className="p-1.5 bg-orange-500 text-white rounded-lg hover:opacity-90 transition-opacity"
+                                disabled={submitting}
+                                className="p-1.5 bg-orange-500 text-white rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50"
                               >
                                 <RotateCcw size={14} />
                               </button>

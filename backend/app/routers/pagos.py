@@ -10,12 +10,13 @@ Este es el router más complejo. Maneja:
 - Pagos no programados
 - Alertas (próximos a vencer, vencidos)
 """
+import logging
 import math
 import uuid
 from datetime import date, datetime, timezone
 from app.utils.fechas import hoy_bogota
 from decimal import Decimal
-from typing import Annotated, Optional
+from typing import Annotated, NoReturn, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from sqlalchemy import and_, func, or_, select
@@ -49,6 +50,7 @@ from app.utils.fechas import siguiente_fecha_maxima
 from app.utils.momentos import get_momento, get_periodo_momento
 
 router = APIRouter(prefix="/pagos", tags=["Pagos"])
+logger = logging.getLogger(__name__)
 
 
 def _pago_row_a_dict(row) -> dict:
@@ -582,6 +584,15 @@ async def confirmar_excedente(
     return result
 
 
+def _rechazar_desvalidar(pago_id: uuid.UUID, usuario: Usuario, motivo: str, detail: str) -> NoReturn:
+    """Loguea el intento rechazado (WARNING) y lanza el 422 con el detalle existente."""
+    logger.warning(
+        "DESVALIDAR RECHAZADO — pago_id=%s usuario_id=%s rol=%s motivo=%s",
+        pago_id, usuario.id, usuario.tipo_usuario.value, motivo,
+    )
+    raise HTTPException(status_code=422, detail=detail)
+
+
 @router.post("/{pago_id}/desvalidar", response_model=PagoResponse)
 async def desvalidar_pago(
     pago_id: uuid.UUID,
@@ -593,20 +604,22 @@ async def desvalidar_pago(
     Revierte la validación (check) de un pago.
     Solo permitido si el pago no ha sido pagado y no tiene montos registrados.
     """
-    pago, _ = await _get_pago_con_credito(db, pago_id)
+    pago, _ = await _get_pago_con_credito(db, pago_id, lock=True)
 
     if pago.pagado:
-        raise HTTPException(
-            status_code=422,
-            detail="No se puede revertir: el pago ya fue registrado con montos.",
+        _rechazar_desvalidar(
+            pago_id, current_user, "pagado",
+            "No se puede revertir: el pago ya fue registrado con montos.",
         )
     if pago.capital_pagado > 0 or pago.interes_pagado > 0:
-        raise HTTPException(
-            status_code=422,
-            detail="No se puede revertir: el pago tiene montos registrados.",
+        _rechazar_desvalidar(
+            pago_id, current_user, "montos_registrados",
+            "No se puede revertir: el pago tiene montos registrados.",
         )
     if not pago.validado_recaudador:
-        raise HTTPException(status_code=422, detail="Este pago no estaba validado.")
+        _rechazar_desvalidar(
+            pago_id, current_user, "no_validado", "Este pago no estaba validado."
+        )
 
     tipo_anterior = pago.tipo_validacion
     pago.validado_recaudador = False
@@ -620,6 +633,10 @@ async def desvalidar_pago(
         db=db, entidad="pagos", entidad_id=pago.id,
         usuario_id=current_user.id, ip_origen=get_client_ip(request),
         cambios=cambios,
+    )
+    logger.info(
+        "DESVALIDAR OK — pago_id=%s usuario_id=%s rol=%s",
+        pago_id, current_user.id, current_user.tipo_usuario.value,
     )
     return PagoResponse.model_validate(pago)
 

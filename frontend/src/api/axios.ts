@@ -8,8 +8,9 @@
  * El interceptor de respuesta detecta 401 y reintenta con refresh
  * automáticamente antes de redirigir al login.
  */
-import axios from 'axios'
+import axios, { type AxiosError } from 'axios'
 import { useAuthStore } from '@/store/authStore'
+import { marcarSesionExpirada } from '@/utils/apiErrors'
 
 // Vacío en producción/preview (Vercel rewrite hace de proxy same-origin).
 // En dev local, el proxy de Vite cubre /api → localhost:8000.
@@ -47,7 +48,11 @@ api.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config
 
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    if (
+      error.response?.status === 401 &&
+      !originalRequest._retry &&
+      !originalRequest.url?.includes('/auth/login')
+    ) {
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           failedQueue.push({ resolve, reject })
@@ -74,6 +79,7 @@ api.interceptors.response.use(
         return api(originalRequest)
       } catch (refreshError) {
         processQueue(refreshError, null)
+        if ((refreshError as AxiosError)?.response?.status === 401) marcarSesionExpirada()
         useAuthStore.getState().logout()
         window.location.href = '/login'
         return Promise.reject(refreshError)
