@@ -4,29 +4,30 @@ mode: hybrid
 delivery_strategy: single-pr-default
 review_budget_lines: 400
 tdd: strict
-updated: 2026-09-12T13:00:00-05:00
+updated: 2026-09-12T16:30:00-05:00
+archived_date: 2026-09-12
 phases:
   explore:
     status: done
-    artifact: openspec/changes/payment-reversal-recaudo-fix/explore.md
+    artifact: explore.md
     engram: sdd/payment-reversal-recaudo-fix/explore
   propose:
     status: done
-    artifact: openspec/changes/payment-reversal-recaudo-fix/proposal.md
+    artifact: proposal.md
     engram: sdd/payment-reversal-recaudo-fix/proposal
   spec:
     status: done
     artifact:
-      - openspec/changes/payment-reversal-recaudo-fix/specs/payment-validation-reversal/spec.md
-      - openspec/changes/payment-reversal-recaudo-fix/specs/session-expiry-feedback/spec.md
+      - specs/payment-validation-reversal/spec.md
+      - specs/session-expiry-feedback/spec.md
     engram: sdd/payment-reversal-recaudo-fix/spec
   design:
     status: done
-    artifact: openspec/changes/payment-reversal-recaudo-fix/design.md
+    artifact: design.md
     engram: sdd/payment-reversal-recaudo-fix/design
   tasks:
     status: done
-    artifact: openspec/changes/payment-reversal-recaudo-fix/tasks.md
+    artifact: tasks.md
     engram: sdd/payment-reversal-recaudo-fix/tasks
   apply:
     status: partial
@@ -34,8 +35,10 @@ phases:
     engram: sdd/payment-reversal-recaudo-fix/apply-progress
   verify:
     status: done
-    note: "PASS WITH WARNINGS. 314/314 backend tests pass (baseline 305 + 9 new), frontend build+tsc clean. 10/10 pytest-tagged scenarios PASS. 8/8 manual scenarios PENDING MANUAL checklist (Chrome/Safari/Firefox) before archive/merge. Zero CRITICAL issues."
-    artifact: openspec/changes/payment-reversal-recaudo-fix/verify-report.md
+    note: "PASS WITH WARNINGS. 315/315 backend tests pass (baseline 305 + 10 new), frontend build+tsc clean. 10/10 pytest-tagged scenarios PASS. 8/8 manual scenarios PENDING MANUAL checklist (Chrome/Safari/Firefox) before archive/merge. Zero CRITICAL issues."
+    artifact: verify-report.md
     engram: sdd/payment-reversal-recaudo-fix/verify-report
   archive:
-    status: pending
+    status: done
+    artifact: archive-report.md
+    engram: sdd/payment-reversal-recaudo-fix/archive-report
