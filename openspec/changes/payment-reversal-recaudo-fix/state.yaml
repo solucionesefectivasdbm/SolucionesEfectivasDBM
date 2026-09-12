@@ -1,0 +1,41 @@
+change: payment-reversal-recaudo-fix
+project: solucionesefectivasdbm
+mode: hybrid
+delivery_strategy: single-pr-default
+review_budget_lines: 400
+tdd: strict
+updated: 2026-09-12T13:00:00-05:00
+phases:
+  explore:
+    status: done
+    artifact: openspec/changes/payment-reversal-recaudo-fix/explore.md
+    engram: sdd/payment-reversal-recaudo-fix/explore
+  propose:
+    status: done
+    artifact: openspec/changes/payment-reversal-recaudo-fix/proposal.md
+    engram: sdd/payment-reversal-recaudo-fix/proposal
+  spec:
+    status: done
+    artifact:
+      - openspec/changes/payment-reversal-recaudo-fix/specs/payment-validation-reversal/spec.md
+      - openspec/changes/payment-reversal-recaudo-fix/specs/session-expiry-feedback/spec.md
+    engram: sdd/payment-reversal-recaudo-fix/spec
+  design:
+    status: done
+    artifact: openspec/changes/payment-reversal-recaudo-fix/design.md
+    engram: sdd/payment-reversal-recaudo-fix/design
+  tasks:
+    status: done
+    artifact: openspec/changes/payment-reversal-recaudo-fix/tasks.md
+    engram: sdd/payment-reversal-recaudo-fix/tasks
+  apply:
+    status: partial
+    note: "Phases 1-7 done (backend GREEN + frontend wired). Phase 8 manual checklist and Phase 9 post-deploy verification remain — not executable by an agent."
+    engram: sdd/payment-reversal-recaudo-fix/apply-progress
+  verify:
+    status: done
+    note: "PASS WITH WARNINGS. 314/314 backend tests pass (baseline 305 + 9 new), frontend build+tsc clean. 10/10 pytest-tagged scenarios PASS. 8/8 manual scenarios PENDING MANUAL checklist (Chrome/Safari/Firefox) before archive/merge. Zero CRITICAL issues."
+    artifact: openspec/changes/payment-reversal-recaudo-fix/verify-report.md
+    engram: sdd/payment-reversal-recaudo-fix/verify-report
+  archive:
+    status: pending

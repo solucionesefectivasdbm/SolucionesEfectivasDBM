@@ -5,6 +5,7 @@ DECISIÓN TÉCNICA: Registramos todos los routers con prefix /api/v1
 para facilitar el versionado futuro. El endpoint /health está en la
 raíz (sin prefijo) porque Render lo necesita así para health checks.
 """
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -21,6 +22,13 @@ from app.routers import (
     receptores,
     reportes,
     usuarios,
+)
+
+# Sin esto, los logging.getLogger(__name__) de los routers no emiten nada en
+# producción (root logger sin handlers). No-op si ya hay handlers.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
 
 settings = get_settings()

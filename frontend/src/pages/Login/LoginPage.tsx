@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { Eye, EyeOff, Lock, User } from 'lucide-react'
 import { authApi } from '@/api'
 import { useAuthStore } from '@/store/authStore'
+import { leerSesionExpirada, AUTH_REDIRECT_REASON_KEY } from '@/utils/apiErrors'
 import toast from 'react-hot-toast'
 
 interface LoginForm {
@@ -16,6 +17,17 @@ export default function LoginPage() {
   const { setAccessToken, setUser } = useAuthStore()
   const [showPass, setShowPass] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [sesionExpirada] = useState(() => leerSesionExpirada())
+
+  // Mount-only: limpia la marca para que el mensaje se muestre una sola vez
+  // (StrictMode monta/desmonta en dev, por eso no depende de sesionExpirada).
+  useEffect(() => {
+    try {
+      sessionStorage.removeItem(AUTH_REDIRECT_REASON_KEY)
+    } catch {
+      // sessionStorage puede no estar disponible — no bloquear el render.
+    }
+  }, [])
 
   const { register, handleSubmit, formState: { errors } } = useForm<LoginForm>()
 
@@ -61,6 +73,11 @@ export default function LoginPage() {
 
           {/* Form */}
           <form onSubmit={handleSubmit(onSubmit)} className="px-8 py-8 space-y-5">
+            {sesionExpirada && (
+              <p role="alert" className="text-sm text-danger text-center bg-red-50 rounded-lg py-2 px-3">
+                Tu sesión expiró, vuelve a ingresar.
+              </p>
+            )}
             <div>
               <label className="label">Usuario</label>
               <div className="relative">
