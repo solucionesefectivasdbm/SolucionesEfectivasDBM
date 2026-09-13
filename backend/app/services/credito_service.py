@@ -176,6 +176,49 @@ def desglosar_arrastre(
     return arr_cap, (total - arr_cap)
 
 
+def arrastre_interes_abono_capital(cuota_pagada: "Pago | None") -> Decimal:
+    """
+    Calcula el interés pendiente (faltante) de la última cuota pagada que
+    admite interés, para arrastrarlo 100% a la siguiente cuota que también
+    admita interés, en créditos `abono_capital`.
+
+    A diferencia de `desglosar_arrastre` (que reparte un faltante entre
+    capital e interés para `cuota_fija`), aquí el faltante va COMPLETO a
+    interés: el capital de un `abono_capital` nunca genera deuda, es solo
+    "abono no realizado" (ver `_pago_parcial`). Retorna `0.00` cuando no hay
+    cuota previa o cuando la cuota previa es de tipo `abono` — esas cuotas
+    nunca cargan ni transmiten interés.
+    """
+    if cuota_pagada is None or cuota_pagada.tipo_cuota == TipoCuota.abono:
+        return Decimal("0.00")
+    falta = (cuota_pagada.interes_a_pagar - cuota_pagada.interes_pagado).quantize(
+        _Q_ARRASTRE, rounding=ROUND_HALF_UP
+    )
+    return max(falta, Decimal("0.00"))
+
+
+async def _ultima_cuota_interes_pagada(
+    db: AsyncSession, credito_id: uuid.UUID, antes_de: int
+) -> "Pago | None":
+    """
+    Busca la última cuota PAGADA que admite interés (`programada` o
+    `interes`) con `numero_cuota < antes_de`, fuente del arrastre de interés
+    en `abono_capital`. Excluye cuotas `abono` (nunca cargan interés) y
+    `no_programada` (abonos extra fuera de la cadena), filas sin pagar y
+    soft-deleted. El mismo predicado sirve tanto a la cadena mensual
+    (siempre `programada`) como a la alternada (`interes`).
+    """
+    return (await db.execute(
+        select(Pago).where(
+            Pago.credito_id == credito_id,
+            Pago.numero_cuota < antes_de,
+            Pago.tipo_cuota.in_([TipoCuota.interes, TipoCuota.programada]),
+            Pago.pagado == True,  # noqa: E712
+            Pago.deleted_at == None,  # noqa: E711
+        ).order_by(Pago.numero_cuota.desc()).limit(1)
+    )).scalar_one_or_none()
+
+
 async def generar_prefijo_cliente(db: AsyncSession, cliente) -> str:
     """
     Calcula el prefijo de número de crédito para un cliente, basado en su nombre.
@@ -492,6 +535,19 @@ async def generar_siguiente_cuota(
             credito, cuota_anterior, siguiente_numero, fecha_maxima, momento, receptor_id, saldo_pendiente
         )
     else:
+        if (
+            credito.periodicidad != Periodicidad.mensual
+            and cuota_anterior.tipo_cuota == TipoCuota.abono
+        ):
+            # Case 3 (walk-back): la cuota anterior fue de abono, así que
+            # `_pago_parcial` siempre pasa saldo_pendiente=0.00 (las cuotas de
+            # abono nunca arrastran). El faltante de interés real, si existe,
+            # quedó parqueado en la última cuota de interés pagada — se
+            # recupera aquí para no perderlo (ver design decision 2).
+            cuota_previa_interes = await _ultima_cuota_interes_pagada(
+                db, credito.id, cuota_anterior.numero_cuota
+            )
+            saldo_pendiente = arrastre_interes_abono_capital(cuota_previa_interes)
         return _siguiente_cuota_abono_capital(
             credito, cuota_anterior, siguiente_numero, fecha_maxima, momento, receptor_id, saldo_pendiente
         )
@@ -616,16 +672,19 @@ def _siguiente_cuota_abono_capital(
     if credito.periodicidad == Periodicidad.mensual:
         interes = calcular_interes_periodo(credito.saldo_capital, credito.tasa_interes_mensual)
         abono = credito.abono_minimo if credito.abono_minimo else Decimal("0.00")
-        monto_total = (interes + abono + saldo_pendiente).quantize(
+        # El arrastre de interés se pliega en interes_a_pagar (nunca en
+        # capital) para preservar el invariante cap + int == monto.
+        interes_a_pagar = (interes + saldo_pendiente).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
+        monto_total = (abono + interes_a_pagar).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         return Pago(
             credito_id=credito.id,
             numero_cuota=numero,
             tipo_cuota=TipoCuota.programada,
             monto_a_pagar=monto_total,
             capital_a_pagar=abono,
-            interes_a_pagar=interes,
+            interes_a_pagar=interes_a_pagar,
             momento=momento,
             fecha_maxima=fecha_maxima,
             receptor_id=receptor_id,
@@ -652,16 +711,19 @@ def _siguiente_cuota_abono_capital(
     else:
         # La anterior fue ABONO → siguiente es INTERÉS
         # El interés se calcula sobre el saldo capital ACTUAL (ya reducido)
-        # El saldo_pendiente de intereses SÍ puede arrastrarse
+        # El saldo_pendiente de intereses SÍ puede arrastrarse; capital_a_pagar
+        # es siempre 0.00 en esta cuota, así que va completo a interes_a_pagar.
         interes = calcular_interes_periodo(credito.saldo_capital, credito.tasa_interes_mensual)
-        monto_total = interes + saldo_pendiente
+        interes_a_pagar = (interes + saldo_pendiente).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
         return Pago(
             credito_id=credito.id,
             numero_cuota=numero,
             tipo_cuota=TipoCuota.interes,
-            monto_a_pagar=monto_total,
+            monto_a_pagar=interes_a_pagar,
             capital_a_pagar=Decimal("0.00"),
-            interes_a_pagar=interes,
+            interes_a_pagar=interes_a_pagar,
             momento=momento,
             fecha_maxima=fecha_maxima,
             receptor_id=receptor_id,
@@ -822,7 +884,16 @@ async def recalcular_cuota_actual_si_no_pagada(
         abono = credito.abono_minimo if credito.abono_minimo else Decimal("0.00")
 
         if credito.periodicidad == Periodicidad.mensual:
-            # Cuota combinada: interés + abono mínimo
+            # Cuota combinada: interés + abono mínimo, más el arrastre de
+            # interés pendiente re-derivado de la última cuota pagada
+            # (mismo defecto de clase que el reset de saldo_capital en
+            # edición — ver `_siguiente_cuota_fija` / decision 6).
+            cuota_previa_interes = await _ultima_cuota_interes_pagada(
+                db, credito.id, actual.numero_cuota
+            )
+            arr_int = arrastre_interes_abono_capital(cuota_previa_interes)
+            interes = (interes + arr_int).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
             actual.tipo_cuota = TipoCuota.programada
             actual.capital_a_pagar = abono
             actual.interes_a_pagar = interes
@@ -834,6 +905,12 @@ async def recalcular_cuota_actual_si_no_pagada(
                 actual.interes_a_pagar = Decimal("0.00")
                 actual.monto_a_pagar = abono
             else:
+                cuota_previa_interes = await _ultima_cuota_interes_pagada(
+                    db, credito.id, actual.numero_cuota
+                )
+                arr_int = arrastre_interes_abono_capital(cuota_previa_interes)
+                interes = (interes + arr_int).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
                 actual.tipo_cuota = TipoCuota.interes
                 actual.capital_a_pagar = Decimal("0.00")
                 actual.interes_a_pagar = interes
