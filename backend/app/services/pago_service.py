@@ -23,7 +23,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.credito import Credito, TipoCredito
 from app.models.pago import Pago, TipoCuota, DestinoExcedente
 from app.schemas.pago import RegistrarPagoRequest, RegistrarPagoResponse
-from app.services.credito_service import cerrar_credito, esta_saldado, generar_siguiente_cuota
+from app.services.credito_service import (
+    arrastre_interes_abono_capital,
+    cerrar_credito,
+    esta_saldado,
+    generar_siguiente_cuota,
+)
 
 
 TOL = Decimal("0.01")
@@ -255,10 +260,8 @@ class PagoService:
             saldo_a_arrastrar = faltante
         else:
             # abono_capital — solo el faltante de intereses se arrastra
-            faltante_interes = (pago.interes_a_pagar - request.interes_pagado).quantize(
-                Decimal("0.01"), rounding=ROUND_HALF_UP
-            )
-            saldo_a_arrastrar = max(Decimal("0.00"), faltante_interes)
+            # (interes_pagado ya quedó fijado arriba en `pago.interes_pagado`)
+            saldo_a_arrastrar = arrastre_interes_abono_capital(pago)
 
         if esta_saldado(credito):
             cerrar_credito(credito)

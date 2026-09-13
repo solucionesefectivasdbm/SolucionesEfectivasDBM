@@ -847,3 +847,98 @@ class TestProjectorParityArrastre:
             Decimal(sucesor["capital_a_pagar"]) + Decimal(sucesor["interes_a_pagar"])
             == Decimal(sucesor["monto_a_pagar"])
         )
+
+
+@pytest_asyncio.fixture
+async def datos_virtual_abono_capital_con_arrastre(db_session):
+    """
+    Crédito abono_capital mensual activo (saldo_capital 900000, tasa 5%,
+    abono_minimo 100000 → base interés 45000, capital 100000, monto 145000):
+
+    - Cuota #1: pagada (real).
+    - Cuota #2: pendiente, YA carga un arrastre de interés propio
+      (100000/65000/165000) — es la cuota bloqueadora, se muestra tal cual.
+    - Cuota #3: no existe todavía (bloqueada) → se proyecta como virtual.
+      Debe mostrar los valores BASE (100000/45000/145000), NO heredar el
+      arrastre de la cuota #2 (decision 7: `_calcular_virtuales` nunca
+      inventa arrastre).
+    """
+    cliente = _mk_cliente("Rosa", "Abono", "700088")
+    db_session.add(cliente)
+    await db_session.flush()
+
+    credito = Credito(
+        id=uuid.uuid4(),
+        cliente_id=cliente.id,
+        numero_credito_cliente=f"Rosa Abono-CR-001-{cliente.id.hex[:6]}",
+        tipo_credito=TipoCredito.abono_capital,
+        capital_prestado=Decimal("900000.00"),
+        tasa_interes_mensual=Decimal("0.05"),
+        fecha_apertura=date(2026, 1, 1),
+        fecha_inicial_pago=date(2026, 1, 10),
+        periodicidad=Periodicidad.mensual,
+        saldo_capital=Decimal("900000.00"),
+        saldo_intereses=Decimal("0.00"),
+        abono_minimo=Decimal("100000.00"),
+        numero_cuotas=None,
+        calcular_interes_dias_corridos=False,
+        activo=True,
+    )
+    db_session.add(credito)
+    await db_session.flush()
+
+    cuota1 = Pago(
+        id=uuid.uuid4(), credito_id=credito.id, numero_cuota=1,
+        tipo_cuota=TipoCuota.programada,
+        monto_a_pagar=Decimal("145000.00"),
+        capital_a_pagar=Decimal("100000.00"), interes_a_pagar=Decimal("45000.00"),
+        capital_pagado=Decimal("100000.00"), interes_pagado=Decimal("25000.00"),
+        momento="m3", fecha_maxima=date(2026, 1, 10),
+        pagado=True, validado_recaudador=True, es_ultimo_pago=False,
+    )
+    cuota2_bloqueadora = Pago(
+        id=uuid.uuid4(), credito_id=credito.id, numero_cuota=2,
+        tipo_cuota=TipoCuota.programada,
+        monto_a_pagar=Decimal("165000.00"),
+        capital_a_pagar=Decimal("100000.00"), interes_a_pagar=Decimal("65000.00"),
+        capital_pagado=Decimal("0.00"), interes_pagado=Decimal("0.00"),
+        momento="m3", fecha_maxima=date(2026, 2, 9),
+        pagado=False, validado_recaudador=False, es_ultimo_pago=False,
+    )
+    db_session.add_all([cuota1, cuota2_bloqueadora])
+    await db_session.flush()
+
+    return {"credito": credito, "cuota2_bloqueadora": cuota2_bloqueadora}
+
+
+class TestProjectorParityArrastreAbonoCapital:
+    """El sucesor virtual de una cuota bloqueadora abono_capital con
+    arrastre muestra valores BASE, y capital + interés == monto."""
+
+    @pytest.mark.asyncio
+    async def test_sucesor_virtual_muestra_base_y_suma_exacta(
+        self, client_admin_db: AsyncClient, datos_virtual_abono_capital_con_arrastre
+    ):
+        d = datos_virtual_abono_capital_con_arrastre
+        credito_id = str(d["credito"].id)
+
+        # Cuota #3 cae el 2026-03-11 (fallback +30d desde 2026-02-09, sin anchor).
+        r = await client_admin_db.get("/api/v1/pagos?anio=2026&mes=3")
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+
+        virtuales_credito = [
+            i for i in items
+            if i["credito_id"] == credito_id and i["es_proyectada"] is True
+        ]
+        assert len(virtuales_credito) == 1, f"Se esperaba 1 fila virtual, hubo {len(virtuales_credito)}"
+
+        sucesor = virtuales_credito[0]
+        assert sucesor["numero_cuota"] == 3
+        assert Decimal(sucesor["capital_a_pagar"]) == Decimal("100000.00")
+        assert Decimal(sucesor["interes_a_pagar"]) == Decimal("45000.00")
+        assert Decimal(sucesor["monto_a_pagar"]) == Decimal("145000.00")
+        assert (
+            Decimal(sucesor["capital_a_pagar"]) + Decimal(sucesor["interes_a_pagar"])
+            == Decimal(sucesor["monto_a_pagar"])
+        )

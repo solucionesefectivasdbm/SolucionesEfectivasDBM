@@ -292,3 +292,78 @@ class TestExcedenteConArrastre:
         assert siguiente.capital_a_pagar == Decimal("100.00")
         assert siguiente.interes_a_pagar == Decimal("20.00")
         assert siguiente.monto_a_pagar == Decimal("120.00")
+
+
+class TestAbonoCapitalPagoExactoConArrastre:
+    """Requirement: Arrastre-inclusive Payment Acceptance — un pago exacto
+    de capital + interés-con-arrastre debe aceptarse sin 422 (ValueError)."""
+
+    @pytest.mark.asyncio
+    async def test_pago_exacto_interes_con_arrastre_no_lanza_error(self):
+        credito = make_credito_abono_capital_mensual()
+        db = make_db()
+
+        cuota = make_cuota(
+            numero_cuota=2, monto_a_pagar=Decimal("170000.00"),
+            capital=Decimal("100000.00"), interes=Decimal("70000.00"),
+        )
+        cuota.tipo_cuota = TipoCuota.programada
+        req = RegistrarPagoRequest(
+            capital_pagado=Decimal("100000.00"), interes_pagado=Decimal("70000.00"),
+        )
+
+        result = await PagoService.registrar_pago(db, cuota, credito, req, date(2026, 2, 10))
+
+        assert result.requiere_decision is False
+        assert cuota.pagado is True
+
+
+def make_credito_abono_capital_mensual(
+    saldo_capital=Decimal("1000000.00"),
+    tasa=Decimal("0.05"),
+    abono_minimo=Decimal("100000.00"),
+) -> Credito:
+    """Cuota combinada mensual: interés (saldo*tasa) + abono_minimo."""
+    c = Credito()
+    c.id = uuid.uuid4()
+    c.tipo_credito = TipoCredito.abono_capital
+    c.saldo_capital = saldo_capital
+    c.saldo_intereses = Decimal("0.00")
+    c.tasa_interes_mensual = tasa
+    c.abono_minimo = abono_minimo
+    c.numero_cuotas = None
+    c.periodicidad = Periodicidad.mensual
+    c.calcular_interes_dias_corridos = False
+    c.activo = True
+    return c
+
+
+class TestAbonoCapitalMensualArrastreInteres:
+    """`generar_siguiente_cuota` no hace I/O propio, así que
+    `db=AsyncMock(spec=AsyncSession)` es seguro aquí: la cadena mensual
+    nunca dispara el walk-back (siempre es `TipoCuota.programada`, nunca
+    `abono`), así que nunca consulta `_ultima_cuota_interes_pagada`."""
+
+    @pytest.mark.asyncio
+    async def test_parcial_mensual_arrastra_interes_a_siguiente_cuota(self):
+        credito = make_credito_abono_capital_mensual()
+        db = make_db()
+
+        cuota1 = make_cuota(
+            numero_cuota=1, monto_a_pagar=Decimal("150000.00"),
+            capital=Decimal("100000.00"), interes=Decimal("50000.00"),
+        )
+        cuota1.tipo_cuota = TipoCuota.programada
+        req = RegistrarPagoRequest(
+            capital_pagado=Decimal("100000.00"), interes_pagado=Decimal("30000.00"),
+        )
+        await PagoService.registrar_pago(db, cuota1, credito, req, date(2026, 1, 10))
+
+        # El interés base de la nueva cuota se calcula sobre el saldo_capital
+        # YA reducido por el abono pagado (1000000 - 100000 = 900000 * 0.05
+        # = 45000.00), más el arrastre de interés (20000.00) = 65000.00.
+        siguiente = _ultima_cuota_agregada(db)
+        assert siguiente.capital_a_pagar == credito.abono_minimo
+        assert siguiente.interes_a_pagar == Decimal("65000.00")
+        assert siguiente.monto_a_pagar == Decimal("165000.00")
+        assert siguiente.capital_a_pagar + siguiente.interes_a_pagar == siguiente.monto_a_pagar
