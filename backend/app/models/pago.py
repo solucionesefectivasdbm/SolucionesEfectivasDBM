@@ -83,6 +83,10 @@ class Pago(AuditMixin, Base):
         String(20), nullable=True,
         comment="Tipo declarado por el recaudador al validar: completo, incompleto o con_excedente"
     )
+    veces_aplazado: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0",
+        comment="Cantidad de veces que la fecha máxima fue aplazada a solicitud del cliente"
+    )
 
     # Relaciones
     credito: Mapped["Credito"] = relationship(  # type: ignore[name-defined]  # noqa: F821

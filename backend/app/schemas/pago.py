@@ -28,11 +28,20 @@ class PagoResponse(BaseModel):
     es_excedente_a: Optional[DestinoExcedente]
     es_ultimo_pago: bool
     tipo_validacion: Optional[str] = None
+    veces_aplazado: int = 0
     cliente_nombre: Optional[str] = None
     numero_credito_cliente: Optional[str] = None
     # Campos virtuales: solo presentes en filas proyectadas (no existen en BD)
     es_proyectada: bool = False
     razon_bloqueo: Optional[str] = None
+
+    @field_validator("veces_aplazado", mode="before")
+    @classmethod
+    def _veces_aplazado_none_a_cero(cls, v):
+        # ORM instances not yet flushed have no Python-side column default
+        # applied — treat unset (None) as 0, the same value the DB would
+        # assign on INSERT (server_default='0').
+        return 0 if v is None else v
 
 
 class RegistrarPagoRequest(BaseModel):
@@ -91,6 +100,7 @@ class ValidarPagoRequest(BaseModel):
 class ModificarFechaPagoRequest(BaseModel):
     """Recaudador: modifica fecha_maxima de un pago individual."""
     fecha_maxima: date
+    es_aplazamiento: bool = False
 
 
 class ModificarReceptorPagoRequest(BaseModel):

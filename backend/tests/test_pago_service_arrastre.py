@@ -83,6 +83,7 @@ def make_cuota(
     p.fecha_pago_real = None
     p.es_excedente_a = None
     p.es_ultimo_pago = False
+    p.veces_aplazado = 0
     return p
 
 

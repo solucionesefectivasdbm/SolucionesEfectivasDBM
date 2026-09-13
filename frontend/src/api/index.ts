@@ -112,8 +112,13 @@ export const pagosApi = {
   desvalidar: (pagoId: string) =>
     api.post<Pago>(`/pagos/${pagoId}/desvalidar`),
 
-  modificarFecha: (pagoId: string, fecha_maxima: string) =>
-    api.patch<Pago>(`/pagos/${pagoId}/fecha`, { fecha_maxima }),
+  modificarFecha: (pagoId: string, fecha_maxima: string, es_aplazamiento = false) =>
+    api.patch<Pago>(`/pagos/${pagoId}/fecha`, { fecha_maxima, es_aplazamiento }),
+
+  listarAplazados: (params?: {
+    incluir_pagados?: boolean; sort_dir?: 'asc' | 'desc';
+    gestor_id?: string; cliente_id?: string; busqueda?: string; page?: number
+  }) => api.get<PaginatedResponse<Pago>>('/pagos/aplazados', { params }),
 
   modificarReceptor: (pagoId: string, receptor_id: string) =>
     api.patch<Pago>(`/pagos/${pagoId}/receptor`, { receptor_id }),

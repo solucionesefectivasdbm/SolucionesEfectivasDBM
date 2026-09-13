@@ -118,6 +118,7 @@ export interface Pago {
   es_excedente_a: DestinoExcedente | null
   es_ultimo_pago: boolean
   tipo_validacion?: TipoValidacion | null
+  veces_aplazado: number
   cliente_nombre?: string | null
   numero_credito_cliente?: string | null
   es_proyectada?: boolean
