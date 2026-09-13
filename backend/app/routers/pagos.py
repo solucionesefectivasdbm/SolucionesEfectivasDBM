@@ -82,11 +82,127 @@ def _pago_row_a_dict(row) -> dict:
         "es_excedente_a": row.es_excedente_a,
         "es_ultimo_pago": row.es_ultimo_pago,
         "tipo_validacion": row.tipo_validacion,
+        "veces_aplazado": getattr(row, "veces_aplazado", 0),
         "cliente_nombre": f"{row.cliente_nombre} {row.cliente_apellidos}",
         "numero_credito_cliente": row.numero_credito_cliente,
         "es_proyectada": False,
         "razon_bloqueo": None,
     }
+
+
+async def _aplicar_scope_y_busqueda(
+    query,
+    *,
+    current_user: Usuario,
+    db: AsyncSession,
+    gestor_id: uuid.UUID | None,
+    cliente_id: uuid.UUID | None,
+    busqueda: str,
+):
+    """
+    Aplica el scope de visibilidad (un gestor solo ve sus propios clientes) y
+    el filtro de búsqueda por nombre/apellidos/cédula. Compartido por
+    `listar_pagos` y `listar_pagos_aplazados` para que ambos listados
+    respeten exactamente las mismas reglas de visibilidad.
+    """
+    if current_user.tipo_usuario == TipoUsuario.gestor:
+        gestor = (await db.execute(
+            select(Gestor).where(Gestor.user_id == current_user.id)
+        )).scalar_one_or_none()
+        if gestor:
+            query = query.where(Cliente.gestor_id == gestor.id)
+
+    if gestor_id:
+        query = query.where(Cliente.gestor_id == gestor_id)
+    if cliente_id:
+        query = query.where(Credito.cliente_id == cliente_id)
+
+    if busqueda:
+        # Búsqueda por palabras: cada token debe aparecer en algún campo
+        # (nombre, apellidos o cédula). Permite buscar por nombre completo.
+        terminos = [t for t in busqueda.strip().split() if t]
+        if terminos:
+            condiciones = [
+                or_(
+                    Cliente.nombre.ilike(f"%{t}%"),
+                    Cliente.apellidos.ilike(f"%{t}%"),
+                    Cliente.cedula.ilike(f"%{t}%"),
+                )
+                for t in terminos
+            ]
+            query = query.where(and_(*condiciones))
+
+    return query
+
+
+@router.get("/aplazados", response_model=PaginatedResponse[PagoResponse])
+async def listar_pagos_aplazados(
+    incluir_pagados: bool = Query(False),
+    sort_dir: str = Query("asc"),
+    gestor_id: uuid.UUID | None = Query(None),
+    cliente_id: uuid.UUID | None = Query(None),
+    busqueda: str = Query(""),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=50),
+    current_user: Usuario = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Listado, sin límite de año/mes, de cuotas reales aplazadas
+    (`veces_aplazado > 0`). Por defecto solo cuotas pendientes; con
+    `incluir_pagados=true` también las ya pagadas. Paginado a nivel de DB.
+    """
+    if sort_dir not in ("asc", "desc"):
+        raise HTTPException(status_code=400, detail="sort_dir inválido. Use asc o desc")
+
+    query = (
+        select(
+            Pago.id, Pago.credito_id, Pago.numero_cuota, Pago.tipo_cuota,
+            Pago.monto_a_pagar, Pago.capital_a_pagar, Pago.interes_a_pagar,
+            Pago.capital_pagado, Pago.interes_pagado, Pago.momento, Pago.fecha_maxima,
+            Pago.receptor_id, Pago.pagado, Pago.validado_recaudador,
+            Pago.fecha_pago_real, Pago.es_excedente_a, Pago.es_ultimo_pago,
+            Pago.tipo_validacion, Pago.veces_aplazado,
+            Cliente.nombre.label("cliente_nombre"),
+            Cliente.apellidos.label("cliente_apellidos"),
+            Credito.numero_credito_cliente.label("numero_credito_cliente"),
+        )
+        .join(Credito, Pago.credito_id == Credito.id)
+        .join(Cliente, Credito.cliente_id == Cliente.id)
+        .where(
+            Pago.deleted_at == None,  # noqa: E711
+            Pago.veces_aplazado > 0,
+            or_(
+                Pago.pagado == True,  # noqa: E712
+                credito_operativamente_abierto(),
+            ),
+        )
+    )
+    if not incluir_pagados:
+        query = query.where(Pago.pagado == False)  # noqa: E712
+
+    query = await _aplicar_scope_y_busqueda(
+        query, current_user=current_user, db=db, gestor_id=gestor_id,
+        cliente_id=cliente_id, busqueda=busqueda,
+    )
+
+    total = (await db.execute(
+        select(func.count()).select_from(query.subquery())
+    )).scalar_one()
+
+    query = query.order_by(
+        Pago.fecha_maxima.desc() if sort_dir == "desc" else Pago.fecha_maxima.asc(),
+        Cliente.nombre, Cliente.apellidos, Pago.id,
+    )
+    query = query.offset((page - 1) * page_size).limit(page_size)
+
+    rows = (await db.execute(query)).all()
+    items = [PagoResponse.model_validate(_pago_row_a_dict(row)) for row in rows]
+
+    return PaginatedResponse(
+        items=items, total=total, page=page, page_size=page_size,
+        pages=math.ceil(total / page_size) if total else 0,
+    )
 
 
 @router.get("", response_model=PaginatedResponse[PagoResponse])
@@ -135,7 +251,7 @@ async def listar_pagos(
             Pago.capital_pagado, Pago.interes_pagado, Pago.momento, Pago.fecha_maxima,
             Pago.receptor_id, Pago.pagado, Pago.validado_recaudador,
             Pago.fecha_pago_real, Pago.es_excedente_a, Pago.es_ultimo_pago,
-            Pago.tipo_validacion,
+            Pago.tipo_validacion, Pago.veces_aplazado,
             Cliente.nombre.label("cliente_nombre"),
             Cliente.apellidos.label("cliente_apellidos"),
             Credito.numero_credito_cliente.label("numero_credito_cliente"),
@@ -157,18 +273,10 @@ async def listar_pagos(
         )
     )
 
-    # Gestor solo ve sus clientes
-    if current_user.tipo_usuario == TipoUsuario.gestor:
-        gestor = (await db.execute(
-            select(Gestor).where(Gestor.user_id == current_user.id)
-        )).scalar_one_or_none()
-        if gestor:
-            query = query.where(Cliente.gestor_id == gestor.id)
-
-    if gestor_id:
-        query = query.where(Cliente.gestor_id == gestor_id)
-    if cliente_id:
-        query = query.where(Credito.cliente_id == cliente_id)
+    query = await _aplicar_scope_y_busqueda(
+        query, current_user=current_user, db=db, gestor_id=gestor_id,
+        cliente_id=cliente_id, busqueda=busqueda,
+    )
     if receptor_id:
         query = query.where(Pago.receptor_id == receptor_id)
     if solo_periodicidad:
@@ -182,20 +290,6 @@ async def listar_pagos(
         excluidas.update(excluir_periodicidades)
     if excluidas:
         query = query.where(Credito.periodicidad.notin_(excluidas))
-    if busqueda:
-        # Búsqueda por palabras: cada token debe aparecer en algún campo
-        # (nombre, apellidos o cédula). Permite buscar por nombre completo.
-        terminos = [t for t in busqueda.strip().split() if t]
-        if terminos:
-            condiciones = [
-                or_(
-                    Cliente.nombre.ilike(f"%{t}%"),
-                    Cliente.apellidos.ilike(f"%{t}%"),
-                    Cliente.cedula.ilike(f"%{t}%"),
-                )
-                for t in terminos
-            ]
-            query = query.where(and_(*condiciones))
 
     # Traer TODAS las cuotas reales (sin paginar), con datos del cliente y crédito.
     # Necesitamos todas para mergearlas con las virtuales y paginar en memoria.
@@ -457,6 +551,7 @@ async def _calcular_virtuales(
                     "es_excedente_a": None,
                     "es_ultimo_pago": False,
                     "tipo_validacion": None,
+                    "veces_aplazado": 0,
                     "cliente_nombre": cliente_nombre,
                     "numero_credito_cliente": credito.numero_credito_cliente,
                     "es_proyectada": True,
@@ -685,18 +780,46 @@ async def modificar_fecha_pago(
     Recaudador/Admin modifica la fecha_maxima de UN pago individual.
     NO afecta el ciclo de pagos siguientes (a diferencia del Admin
     que modifica desde la ventana de créditos).
+
+    `es_aplazamiento=True` marca la modificación como un aplazamiento
+    solicitado por el cliente: incrementa `veces_aplazado` y exige que la
+    nueva fecha sea estrictamente posterior a la actual. Un pago ya pagado
+    no puede aplazarse. `es_aplazamiento=False` (default) preserva el
+    comportamiento histórico: corrección libre, sin validar dirección ni
+    tocar el contador.
     """
-    pago, _ = await _get_pago_con_credito(db, pago_id)
+    pago, _ = await _get_pago_con_credito(db, pago_id, lock=True)
+
+    if body.es_aplazamiento and pago.pagado:
+        raise HTTPException(
+            status_code=422,
+            detail="No se puede aplazar: la cuota ya fue pagada.",
+        )
+    if body.es_aplazamiento and body.fecha_maxima <= pago.fecha_maxima:
+        raise HTTPException(
+            status_code=422,
+            detail="Un aplazamiento debe mover la fecha hacia adelante.",
+        )
 
     fecha_anterior = pago.fecha_maxima
     pago.fecha_maxima = body.fecha_maxima
     # NOTA: NO se recalcula el momento ni las fechas siguientes
     # (eso es exclusivo del Admin desde ventana de créditos)
 
+    cambios = {"fecha_maxima": (str(fecha_anterior), str(body.fecha_maxima))}
+    if body.es_aplazamiento:
+        veces_anterior = pago.veces_aplazado
+        pago.veces_aplazado = veces_anterior + 1
+        cambios["veces_aplazado"] = (str(veces_anterior), str(pago.veces_aplazado))
+        logger.info(
+            "APLAZAMIENTO OK — pago_id=%s usuario_id=%s veces=%s",
+            pago.id, current_user.id, pago.veces_aplazado,
+        )
+
     await audit_service.registrar_actualizacion_campos(
         db=db, entidad="pagos", entidad_id=pago.id,
         usuario_id=current_user.id, ip_origen=get_client_ip(request),
-        cambios={"fecha_maxima": (str(fecha_anterior), str(body.fecha_maxima))},
+        cambios=cambios,
     )
     return PagoResponse.model_validate(pago)
 

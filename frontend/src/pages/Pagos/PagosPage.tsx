@@ -12,7 +12,7 @@ import clsx from 'clsx'
 import { useNavigate } from 'react-router-dom'
 
 interface PagosPageProps {
-  variante?: 'regular' | 'semanal' | 'diario'
+  variante?: 'regular' | 'semanal' | 'diario' | 'aplazados'
 }
 
 export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
@@ -21,6 +21,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   const navigate = useNavigate()
   const esSemanal = variante === 'semanal'
   const esDiario = variante === 'diario'
+  const esAplazados = variante === 'aplazados'
 
   const [anio, setAnio] = useState(hoy.getFullYear())
   const [mes, setMes] = useState(hoy.getMonth() + 1)
@@ -29,6 +30,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   const [filtroGestor, setFiltroGestor] = useState('')
   const [gestores, setGestores] = useState<Gestor[]>([])
   const [page, setPage] = useState(1)
+  const [incluirPagados, setIncluirPagados] = useState(false)
 
   const [pagos, setPagos] = useState<Pago[]>([])
   const [total, setTotal] = useState(0)
@@ -65,11 +67,13 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   const [capitalPagado, setCapitalPagado] = useState('')
   const [interesPagado, setInteresPagado] = useState('')
   const [nuevaFecha, setNuevaFecha] = useState('')
+  const [esAplazamiento, setEsAplazamiento] = useState(false)
   const [nuevoReceptor, setNuevoReceptor] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  // En las variantes semanal y diario, momento es opcional → filtros siempre completos.
-  const filtrosCompletos = esSemanal || esDiario || momento !== ''
+  // En las variantes semanal, diario y aplazados, momento es opcional (o no
+  // aplica) → filtros siempre completos.
+  const filtrosCompletos = esSemanal || esDiario || esAplazados || momento !== ''
 
   const handleSortToggle = () => {
     setSortDir(prev => prev === 'asc' ? 'desc' : 'asc')
@@ -84,23 +88,31 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
     if (!filtrosCompletos) return
     if (mostrarSpinner) setLoading(true)
     try {
-      const res = await pagosApi.listar({
-        anio,
-        mes,
-        momento: momento || undefined,
-        sort_dir: sortDir,
-        busqueda,
-        page,
-        gestor_id: filtroGestor || undefined,
-        solo_periodicidad: esSemanal ? 'semanal' : esDiario ? 'diario' : undefined,
-        excluir_periodicidades: (!esSemanal && !esDiario) ? ['semanal', 'diario'] : undefined,
-      })
+      const res = esAplazados
+        ? await pagosApi.listarAplazados({
+            incluir_pagados: incluirPagados,
+            sort_dir: sortDir,
+            busqueda,
+            page,
+            gestor_id: filtroGestor || undefined,
+          })
+        : await pagosApi.listar({
+            anio,
+            mes,
+            momento: momento || undefined,
+            sort_dir: sortDir,
+            busqueda,
+            page,
+            gestor_id: filtroGestor || undefined,
+            solo_periodicidad: esSemanal ? 'semanal' : esDiario ? 'diario' : undefined,
+            excluir_periodicidades: (!esSemanal && !esDiario) ? ['semanal', 'diario'] : undefined,
+          })
       setPagos(res.data.items)
       setTotal(res.data.total)
       setPages(res.data.pages)
     } catch (e: any) { toast.error(e.response?.data?.detail || 'Error al cargar pagos') }
     finally { if (mostrarSpinner) setLoading(false) }
-  }, [anio, mes, momento, sortDir, busqueda, page, filtroGestor, filtrosCompletos, esSemanal, esDiario])
+  }, [anio, mes, momento, sortDir, busqueda, page, filtroGestor, filtrosCompletos, esSemanal, esDiario, esAplazados, incluirPagados])
 
   useEffect(() => { cargarPagos() }, [cargarPagos])
 
@@ -235,8 +247,14 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
     if (!pagoSeleccionado || !nuevaFecha) return
     setSubmitting(true)
     try {
-      await pagosApi.modificarFecha(pagoSeleccionado.id, nuevaFecha)
-      toast.success('Fecha actualizada')
+      const vecesAplazadoPrevio = pagoSeleccionado.veces_aplazado ?? 0
+      const res = await pagosApi.modificarFecha(pagoSeleccionado.id, nuevaFecha, esAplazamiento)
+      const aplazamientoConfirmado = (res.data.veces_aplazado ?? 0) > vecesAplazadoPrevio
+      if (esAplazamiento && !aplazamientoConfirmado) {
+        toast.error('La fecha se actualizó, pero el aplazamiento no fue registrado por el servidor')
+      } else {
+        toast.success(esAplazamiento ? 'Aplazamiento registrado' : 'Fecha actualizada')
+      }
       setModalFecha(false)
       cargarPagos(false)
     } catch (e: any) {
@@ -328,14 +346,10 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
     <div className="space-y-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-black text-primary-600">
-          {esSemanal ? 'Pagos Semanales' : esDiario ? 'Pagos Diarios' : 'Módulo de Pagos'}
+          {esSemanal ? 'Pagos Semanales' : esDiario ? 'Pagos Diarios' : esAplazados ? 'Pagos Aplazados' : 'Módulo de Pagos'}
         </h1>
         <div className="flex items-center gap-2">
-          {esSemanal ? (
-            <button onClick={() => navigate('/pagos')} className="btn-ghost flex items-center gap-2">
-              <ArrowLeft size={16} /> Volver a Pagos
-            </button>
-          ) : esDiario ? (
+          {esSemanal || esDiario || esAplazados ? (
             <button onClick={() => navigate('/pagos')} className="btn-ghost flex items-center gap-2">
               <ArrowLeft size={16} /> Volver a Pagos
             </button>
@@ -346,6 +360,9 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
               </button>
               <button onClick={() => navigate('/pagos/diarios')} className="btn-secondary flex items-center gap-2">
                 <CalendarDays size={16} /> Pagos Diarios
+              </button>
+              <button onClick={() => navigate('/pagos/aplazados')} className="btn-secondary flex items-center gap-2">
+                <CalendarDays size={16} /> Pagos Aplazados
               </button>
             </>
           )}
@@ -360,25 +377,29 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       {/* Filtros */}
       <div className="card">
         <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-          <div>
-            <label className="label">Año *</label>
-            <select className="input" value={anio} onChange={e => { setAnio(+e.target.value); setPage(1) }}>
-              {aniosDisponibles().map(a => <option key={a} value={a}>{a}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="label">Mes *</label>
-            <select className="input" value={mes} onChange={e => { setMes(+e.target.value); setPage(1) }}>
-              {MESES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="label">Momento {(esSemanal || esDiario) ? '(opcional)' : '*'}</label>
-            <select className="input" value={momento} onChange={e => { setMomento(e.target.value); setPage(1) }}>
-              <option value="">{(esSemanal || esDiario) ? 'Todos los del mes' : '-- Seleccionar --'}</option>
-              {MOMENTOS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
-            </select>
-          </div>
+          {!esAplazados && (
+            <>
+              <div>
+                <label className="label">Año *</label>
+                <select className="input" value={anio} onChange={e => { setAnio(+e.target.value); setPage(1) }}>
+                  {aniosDisponibles().map(a => <option key={a} value={a}>{a}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="label">Mes *</label>
+                <select className="input" value={mes} onChange={e => { setMes(+e.target.value); setPage(1) }}>
+                  {MESES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="label">Momento {(esSemanal || esDiario) ? '(opcional)' : '*'}</label>
+                <select className="input" value={momento} onChange={e => { setMomento(e.target.value); setPage(1) }}>
+                  <option value="">{(esSemanal || esDiario) ? 'Todos los del mes' : '-- Seleccionar --'}</option>
+                  {MOMENTOS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
+              </div>
+            </>
+          )}
           <div>
             <label className="label">Gestor</label>
             <select className="input" value={filtroGestor}
@@ -399,6 +420,18 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
               />
             </div>
           </div>
+          {esAplazados && (
+            <div className="flex items-end">
+              <label className="flex items-center gap-2 text-sm text-gray-600">
+                <input
+                  type="checkbox"
+                  checked={incluirPagados}
+                  onChange={e => { setIncluirPagados(e.target.checked); setPage(1) }}
+                />
+                Incluir pagados
+              </label>
+            </div>
+          )}
         </div>
       </div>
 
@@ -420,7 +453,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       {filtrosCompletos && (
         <div className="card p-0 overflow-hidden">
           {loading ? <LoadingPage /> : pagos.length === 0 ? (
-            <EmptyState message="No hay pagos para el período seleccionado" />
+            <EmptyState message={esAplazados ? 'No hay pagos aplazados' : 'No hay pagos para el período seleccionado'} />
           ) : (
             <>
               <div className="overflow-x-auto">
@@ -458,6 +491,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                           p.es_proyectada
                             ? 'bg-gray-50 text-gray-400'
                             : i % 2 === 0 ? 'table-row-even' : 'table-row-odd',
+                          !p.es_proyectada && !isVencido(p) && !p.pagado && p.veces_aplazado > 0 && 'bg-violet-50',
                           !p.es_proyectada && isVencido(p) && 'bg-red-50',
                           p.es_ultimo_pago && 'border-l-4 border-l-accent',
                         )}
@@ -512,6 +546,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                                 onClick={() => {
                                   setPagoSeleccionado(p)
                                   setNuevaFecha(p.fecha_maxima)
+                                  setEsAplazamiento(false)
                                   setModalFecha(true)
                                 }}
                                 className="p-1.5 bg-yellow-500 text-white rounded-lg hover:opacity-90 transition-opacity"
@@ -581,6 +616,14 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                             </span>
                           )}
                           {!p.es_proyectada && isVencido(p) && <span className="badge-danger ml-1">Vencido</span>}
+                          {!p.es_proyectada && p.veces_aplazado > 0 && (
+                            <span
+                              className="ml-1 text-xs px-2 py-0.5 rounded-full font-medium bg-violet-100 text-violet-700"
+                              title="Veces aplazado"
+                            >
+                              Aplazado ×{p.veces_aplazado}
+                            </span>
+                          )}
                           {p.es_ultimo_pago && <span className="badge-warning ml-1">Última</span>}
                         </td>
                       </tr>
@@ -725,6 +768,19 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
             <label className="label">Nueva fecha máxima</label>
             <input type="date" className="input" value={nuevaFecha}
               onChange={e => setNuevaFecha(e.target.value)} />
+          </div>
+          <div>
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={esAplazamiento}
+                onChange={e => setEsAplazamiento(e.target.checked)}
+              />
+              ¿Es un aplazamiento solicitado por el cliente?
+            </label>
+            <p className="text-xs text-gray-500 mt-1">
+              Marque solo si el cliente pidió mover la fecha; se incrementará el contador.
+            </p>
           </div>
           <div className="flex gap-3 justify-end">
             <button onClick={() => setModalFecha(false)} className="btn-ghost">Cancelar</button>
