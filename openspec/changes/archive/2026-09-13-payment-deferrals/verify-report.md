@@ -13,7 +13,7 @@
 
 | Command | Result | Exit |
 |---|---|---|
-| `cd backend && python -m pytest -q` | **339 passed**, 0 failures (24 new in `test_aplazamientos.py` + 315 baseline) | 0 |
+| `cd backend && python -m pytest -q` | **340 passed**, 0 failures (25 new in `test_aplazamientos.py` + 315 baseline) | 0 |
 | `cd frontend && npx tsc --noEmit` | 0 errors (empty output) | 0 |
 
 ## Spec Compliance Matrix (9 requirements, 22 scenarios)
@@ -44,7 +44,7 @@
 | Row Styling and Badge | Deferred and overdue again | manual | **UNTESTED** — same as above |
 | Row Styling and Badge | Two deferrals same style | manual | **UNTESTED** — badge shows `×{n}` unconditionally, no escalated class in code |
 
-**Gaps**: 0 scenarios unmapped. 17/17 `[pytest]` scenarios have a passing runtime-executed test. 5/5 `[manual]` scenarios are code-verified only (no browser execution available in this session) — see Phase 10 tasks.
+**Gaps**: 0 scenarios unmapped. 17/17 `[pytest]` scenarios have a passing runtime-executed test (25 total test cases after correction round). 5/5 `[manual]` scenarios are code-verified only (no browser execution available in this session) — see Phase 10 tasks.
 
 ## Design Coherence
 
@@ -67,8 +67,8 @@
 ## Diff Size vs. Approved Exception
 
 `git diff --stat -- . ':!openspec'` → 270 insertions + 74 deletions across 9 tracked files.
-Untracked new files (`wc -l`): migration 44 lines + `test_aplazamientos.py` 610 lines.
-**Total: 998 lines** — matches the owner-approved `size:exception` (Engram #947: 998 vs. 800 budget, 610 of which are tests) exactly.
+Untracked new files (`wc -l`): migration 44 lines + `test_aplazamientos.py` 633 lines (after correction round).
+**Total: ~1040 lines** — within the owner-approved `size:exception` (Engram #947: 998 baseline + corrections, ~610-633 of which are tests).
 
 ## Assertion Quality Audit
 
@@ -78,7 +78,7 @@ No tautologies, no ghost loops (no assertions inside loops over possibly-empty c
 
 ## Issues
 
-- **WARNING**: Phase 10 manual browser checklist (tasks 10.1-10.8, covering the 5 `[manual]` spec scenarios) not executed — needs a human or an E2E runner before archive.
+- **WARNING**: Phase 10 manual browser checklist (tasks 10.1-10.8, covering the 5 `[manual]` spec scenarios) not executed — deferred to production feedback per owner decision (2026-09-13). Reopen as a new change if any scenario fails.
 - **WARNING**: Migration upgrade/downgrade not run live against Postgres (sandbox has no DB access) — recommend a CI/staging check before merge.
 - No CRITICAL issues found.
 

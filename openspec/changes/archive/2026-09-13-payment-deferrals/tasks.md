@@ -31,7 +31,7 @@
 - [x] 2.1 Modify `backend/app/schemas/pago.py`: `ModificarFechaPagoRequest.es_aplazamiento: bool = False`; `PagoResponse.veces_aplazado: int = 0`
 - [x] 2.2 Verify: `cd backend && python -m pytest -q` — 0 failures (schema addition backward-compatible)
 
-## Phase 3: RED — Failing Tests for `modificar_fecha_pago` Deferral Logic (`backend/tests/test_aplazamientos.py`, new file, fixtures copied from `test_desvalidar_pago.py`)
+## Phase 3: RED — Failing Tests for `modificar_fecha_pago` Deferral Logic (`backend/tests/test_aplazamientos.py`, new file, 25 tests, fixtures copied from `test_desvalidar_pago.py`)
 
 - [x] 3.1 RED: existing rows default to `veces_aplazado = 0` on any listing (Req: Deferral Counter — scenario "Existing rows default to zero")
 - [x] 3.2 RED: reversal (`desvalidar`) keeps the counter unchanged on a deferred, validated payment (Req: Deferral Counter — scenario "Reversal keeps the counter")
@@ -85,7 +85,7 @@
 
 ## Phase 9: Frontend — PagosPage Modal, Row Style, Badge, Aplazados Variant
 
-- [x] 9.1 Modify `frontend/src/pages/Pagos/PagosPage.tsx` date modal: add checkbox "¿Es un aplazamiento solicitado por el cliente?" + helper text, state reset to `false` on open, submit calls `modificarFecha(..., es_aplazamiento)`; toast "Aplazamiento registrado" vs "Fecha actualizada"; backend 4xx `detail` shown verbatim on rejection (Req: Deferral Prompt in the UI — both scenarios)
+- [x] 9.1 Modify `frontend/src/pages/Pagos/PagosPage.tsx` date modal: add checkbox "¿Es un aplazamiento solicitado por el cliente?" + helper text, state reset to `false` on open, submit calls `modificarFecha(..., es_aplazamiento)`; toast outcomes: "Aplazamiento registrado" when `es_aplazamiento=true` and `veces_aplazado` increased; "Fecha actualizada" when `es_aplazamiento=false`; error "La fecha se actualizó, pero el aplazamiento no fue registrado por el servidor" when `es_aplazamiento=true` but `veces_aplazado` did not increase (deploy-skew guard); backend 4xx `detail` shown verbatim on rejection (Req: Deferral Prompt in the UI — both scenarios)
 - [x] 9.2 Add row class precedence: `es_proyectada` gray (unaffected) → `!es_proyectada && isVencido(p)` red → `!es_proyectada && !p.pagado && !isVencido(p) && p.veces_aplazado > 0` violet → zebra; `es_ultimo_pago` border independent of the above (Req: Row Styling and Badge — "Deferred not overdue", "Deferred and overdue again")
 - [x] 9.3 Add badge in the Estado cell for `veces_aplazado > 0`: `Aplazado ×{n}` (`bg-violet-100 text-violet-700`, title "Veces aplazado"); no escalated style for `n >= 2`, only the number changes (Req: Row Styling and Badge — "Two deferrals same style")
 - [x] 9.4 Add third `variante="aplazados"`: hide Año/Mes/Momento filters, show "Incluir pagados" checkbox (default off), `filtrosCompletos = true`, title "Pagos Aplazados", empty state "No hay pagos aplazados", fetch via `listarAplazados`; default pending-only per spec (Req: Cross-Period Deferred Listing UI surface; Row Styling and Badge — "default to pending-only")
@@ -94,6 +94,8 @@
 - [x] 9.7 Verify: `cd frontend && npx tsc --noEmit` — 0 errors
 
 ## Phase 10: Manual Verification Checklist (frontend — no test runner)
+
+**Status**: Deferred to production feedback per owner decision (2026-09-13). Static code inspection confirms all implementation matches spec exactly (all checkbox/badge/row styling/navigation logic present). Reopen as a new change if any scenario fails in production.
 
 - [ ] 10.1 Plain correction: answer "No" (or dismiss) on the date modal → date changes, no badge appears (Req: Deferral Prompt in the UI — scenario "Yes increments, No does not", first half)
 - [ ] 10.2 First deferral: answer "Yes" on a pending row → date changes, badge `Aplazado ×1` appears, violet row style in weekly, daily, and regular Pagos views (Req: Deferral Prompt in the UI — scenario "Yes increments, No does not", second half; Row Styling and Badge — "Deferred not overdue")
