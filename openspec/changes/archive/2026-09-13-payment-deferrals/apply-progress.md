@@ -11,9 +11,9 @@
   - Extracted `_aplicar_scope_y_busqueda(query, *, current_user, db, gestor_id, cliente_id, busqueda)` shared by `listar_pagos` and the new `listar_pagos_aplazados`.
   - `listar_pagos` select + `_pago_row_a_dict` now carry `veces_aplazado` (real rows: DB value via `getattr(row, "veces_aplazado", 0)`; virtual/projected rows: explicit `0`).
   - New `GET /pagos/aplazados` → `PaginatedResponse[PagoResponse]`: `incluir_pagados`, `sort_dir`, `gestor_id`, `cliente_id`, `busqueda`, `page`, `page_size` (1..50); predicate `deleted_at IS NULL AND veces_aplazado > 0 AND (pagado OR credito_operativamente_abierto())` + `pagado=false` unless `incluir_pagados`; DB-level `COUNT`/`OFFSET`/`LIMIT`; order `fecha_maxima <dir>, Cliente.nombre, Cliente.apellidos, Pago.id`.
-- New test file `backend/tests/test_aplazamientos.py` (24 tests, all requirement scenarios from spec.md except the 5 `[manual]` frontend ones): RED confirmed (13 failing before Phase 4/6 GREEN implementation, 11 passing pre-existing-behavior checks), then GREEN (24/24 passing).
+- New test file `backend/tests/test_aplazamientos.py` (24 tests at initial apply, 25 after review correction round #1; all requirement scenarios from spec.md except the 5 `[manual]` frontend ones): RED confirmed (13 failing before Phase 4/6 GREEN implementation, 11 passing pre-existing-behavior checks), then GREEN (24/24 passing).
 - Fixed 2 pre-existing test helpers (`test_pago_service.py::make_pago`, `test_pago_service_arrastre.py::make_cuota`) that construct bare `Pago()` objects — added explicit `p.veces_aplazado = 0` for clarity (the pydantic validator would also handle `None`, but explicit is consistent with other fields in those helpers).
-- Full backend regression: **339 passed** (baseline 315 + 24 new), 0 failures. Command: `cd backend && python -m pytest -q`.
+- Full backend regression: **339 passed** at initial apply (baseline 315 + 24 new); **340 passed** after review correction round #1, 0 failures. Command: `cd backend && python -m pytest -q`.
 
 **Frontend (Standard mode, no runner)**:
 - `frontend/src/types/index.ts`: `Pago.veces_aplazado: number` (required, matches backend default 0).
@@ -41,10 +41,10 @@
 | Deferral Rejections | Written | Passed after Phase 4 | 5 cases (paid, same-date, backward-date, no-flag-allowed, deferred-then-paid, projected-404) |
 | Role Gate | Written | Passed after Phase 4 | 4 cases (2 forbidden roles × 2 allowed roles) |
 | Distinguishable Audit | Written | Passed after Phase 4 | 2 cases (deferral 2 rows, correction 1 row) |
-| Cross-Period Deferred Listing | Written | Passed after Phase 6 | 5 cases (spans-months, paid-excluded, gestor-scoping, zero/soft-deleted-excluded, pagination/sort/busqueda) |
+| Cross-Period Deferred Listing | Written | Passed after Phase 6 | 6 cases (spans-months, paid-excluded, gestor-scoping, zero/soft-deleted-excluded, closed-credit-excluded [added in correction round #1], pagination/sort/busqueda) |
 | Double Visualization | Written | Passed after Phase 6 | 1 case (both endpoints same pago) |
 
-Total: 24 tests written, 24 passing. Full suite 339 passed, 0 failures.
+Total: 25 tests written (24 initial + 1 in correction round #1), 25 passing. Full suite 340 passed, 0 failures.
 
 ## Review correction round #1
 

@@ -72,7 +72,7 @@ Frontend row class:
     !p.es_proyectada && !p.pagado && !isVencido(p) && p.veces_aplazado > 0 && 'bg-violet-50',
     p.es_ultimo_pago && 'border-l-4 border-l-accent'
 
-Badge in the Estado cell for `veces_aplazado > 0`: `Aplazado ×{n}` (`bg-violet-100 text-violet-700`, title "Veces aplazado"). Modal: checkbox "¿Es un aplazamiento solicitado por el cliente?" + helper "Marque solo si el cliente pidió mover la fecha; se incrementará el contador." State reset to false on open; toast "Aplazamiento registrado" vs "Fecha actualizada". `variante='aplazados'`: hide Año/Mes/Momento, show "Incluir pagados" checkbox, `filtrosCompletos = true`, title "Pagos Aplazados", empty state "No hay pagos aplazados".
+Badge in the Estado cell for `veces_aplazado > 0`: `Aplazado ×{n}` (`bg-violet-100 text-violet-700`, title "Veces aplazado"). Modal: checkbox "¿Es un aplazamiento solicitado por el cliente?" + helper "Marque solo si el cliente pidió mover la fecha; se incrementará el contador." State reset to false on open; toast outcomes: (1) `es_aplazamiento=true` and response `veces_aplazado` increased → "Aplazamiento registrado"; (2) `es_aplazamiento=false` → "Fecha actualizada"; (3) `es_aplazamiento=true` but response `veces_aplazado` did not increase (deploy-skew guard) → error toast "La fecha se actualizó, pero el aplazamiento no fue registrado por el servidor" and still refetch. `variante='aplazados'`: hide Año/Mes/Momento, show "Incluir pagados" checkbox, `filtrosCompletos = true`, title "Pagos Aplazados", empty state "No hay pagos aplazados".
 
 ## Testing Strategy (Strict TDD, backend)
 
