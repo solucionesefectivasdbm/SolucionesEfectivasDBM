@@ -95,6 +95,7 @@ export interface Credito {
   anchor_dia_1: number | null
   anchor_dia_2: number | null
   pendiente_de_cierre: boolean
+  puede_cerrar_con_interes_pendiente: boolean
 }
 
 // ─── Pago ─────────────────────────────────────────────────────────────────────

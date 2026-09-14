@@ -71,7 +71,8 @@ export const creditosApi = {
   actualizar: (id: string, data: object) => api.patch<Credito>(`/creditos/${id}`, data),
   actualizarDiasPago: (id: string, data: { anchor_dia_1: number; anchor_dia_2?: number }) =>
     api.patch<Credito>(`/creditos/${id}/dias-pago`, data),
-  cerrar: (id: string) => api.post<Credito>(`/creditos/${id}/cerrar`),
+  cerrar: (id: string, data?: { cerrar_con_interes_pendiente: boolean }) =>
+    api.post<Credito>(`/creditos/${id}/cerrar`, data),
   eliminar: (id: string) => api.delete(`/creditos/${id}`),
   historialCuotas: (id: string) => api.get<Pago[]>(`/creditos/${id}/cuotas`),
 }

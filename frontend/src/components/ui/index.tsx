@@ -1,5 +1,6 @@
 export { default as ConfirmarCreacion } from './ConfirmarCreacion'
 export type { ItemConfirmacion } from './ConfirmarCreacion'
+export { default as ConfirmarCierreInteresPendiente } from './ConfirmarCierreInteresPendiente'
 
 // Spinner de carga
 export function Spinner({ size = 'md' }: { size?: 'sm' | 'md' | 'lg' }) {

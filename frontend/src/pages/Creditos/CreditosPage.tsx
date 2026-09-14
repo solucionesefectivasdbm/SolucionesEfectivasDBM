@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { creditosApi, clientesApi, gestoresApi } from '@/api'
 import { formatCOP, formatFecha, formatPorcentaje } from '@/utils/formatters'
-import { LoadingPage, EmptyState, Paginacion, FormField, ConfirmarCreacion, ConfirmDelete, type ItemConfirmacion } from '@/components/ui'
+import { LoadingPage, EmptyState, Paginacion, FormField, ConfirmarCreacion, ConfirmDelete, ConfirmarCierreInteresPendiente, type ItemConfirmacion } from '@/components/ui'
 import Modal from '@/components/ui/Modal'
 import { usePermissions } from '@/store/authStore'
 import type { Credito, Pago, Cliente, Gestor } from '@/types'
@@ -58,6 +58,8 @@ export default function CreditosPage() {
   const [creditoDias, setCreditoDias] = useState<Credito | null>(null)
   const [modalCerrar, setModalCerrar] = useState(false)
   const [creditoACerrar, setCreditoACerrar] = useState<Credito | null>(null)
+  const [modalCerrarInteres, setModalCerrarInteres] = useState(false)
+  const [creditoACerrarInteres, setCreditoACerrarInteres] = useState<Credito | null>(null)
 
   const { register, handleSubmit, watch, reset, formState: { errors } } = useForm<CreditoForm>()
   const { register: regEdit, handleSubmit: handleEdit, reset: resetEdit } = useForm<EditForm>()
@@ -242,6 +244,20 @@ export default function CreditosPage() {
     } finally { setSubmitting(false) }
   }
 
+  const onCerrarConInteresPendiente = async () => {
+    if (!creditoACerrarInteres) return
+    setSubmitting(true)
+    try {
+      await creditosApi.cerrar(creditoACerrarInteres.id, { cerrar_con_interes_pendiente: true })
+      toast.success('Cierre del crédito confirmado')
+      setModalCerrarInteres(false)
+      setCreditoACerrarInteres(null)
+      cargar()
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || 'Error al confirmar el cierre')
+    } finally { setSubmitting(false) }
+  }
+
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
@@ -313,7 +329,9 @@ export default function CreditosPage() {
                           ? <span className="badge-danger">Cerrado</span>
                           : c.pendiente_de_cierre
                             ? <span className="badge-warning" title="El crédito está saldado; falta confirmar el cierre">Saldado — pendiente de cierre</span>
-                            : <span className="badge-success">Activo</span>}
+                            : c.puede_cerrar_con_interes_pendiente
+                              ? <span className="badge-info" title="Capital en cero; el interés restante puede cerrarse o seguir cobrándose">Capital saldado · interés pendiente</span>
+                              : <span className="badge-success">Activo</span>}
                       </td>
                       <td className="table-cell">
                         <div className="flex gap-1">
@@ -321,9 +339,17 @@ export default function CreditosPage() {
                             className="p-1.5 bg-primary-100 text-primary-700 rounded-lg hover:bg-primary-200" title="Ver cuotas">
                             <Eye size={13} />
                           </button>
-                          {c.activo && c.pendiente_de_cierre &&
+                          {c.activo && (c.pendiente_de_cierre || c.puede_cerrar_con_interes_pendiente) &&
                             (perms.isAdmin || perms.isRecaudador || perms.isRegistrador) && (
-                            <button onClick={() => { setCreditoACerrar(c); setModalCerrar(true) }}
+                            <button onClick={() => {
+                              if (c.puede_cerrar_con_interes_pendiente) {
+                                setCreditoACerrarInteres(c)
+                                setModalCerrarInteres(true)
+                              } else {
+                                setCreditoACerrar(c)
+                                setModalCerrar(true)
+                              }
+                            }}
                               className="p-1.5 bg-amber-500 text-white rounded-lg hover:bg-amber-600" title="Confirmar cierre">
                               <CheckCircle size={13} />
                             </button>
@@ -590,6 +616,14 @@ export default function CreditosPage() {
           loading={submitting}
         />
       </Modal>
+
+      <ConfirmarCierreInteresPendiente
+        isOpen={modalCerrarInteres}
+        credito={creditoACerrarInteres}
+        onCerrar={onCerrarConInteresPendiente}
+        onSeguir={() => { setModalCerrarInteres(false); setCreditoACerrarInteres(null) }}
+        loading={submitting}
+      />
 
       {/* Modal Historial */}
       <Modal isOpen={modalHistorial} onClose={() => setModalHistorial(false)}
