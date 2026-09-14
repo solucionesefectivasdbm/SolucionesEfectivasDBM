@@ -3,8 +3,9 @@ import math
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -17,17 +18,25 @@ from app.models.gestor import Gestor
 from app.models.pago import Pago
 from app.models.usuario import TipoUsuario, Usuario
 from app.schemas.common import PaginatedResponse
-from app.schemas.credito import CreditoCreate, CreditoResponse, CreditoUpdate, DiasPagoUpdate
+from app.schemas.credito import (
+    CerrarCreditoRequest,
+    CreditoCreate,
+    CreditoResponse,
+    CreditoUpdate,
+    DiasPagoUpdate,
+)
 from app.schemas.pago import PagoResponse
 from app.services.credito_service import _periodos_por_mes
 from app.services import audit_service
 from app.services.credito_service import (
     cerrar_credito,
+    cerrar_credito_con_interes_pendiente,
     credito_operativamente_abierto,
     crear_primera_cuota,
     esta_saldado,
     generar_numero_credito,
     generar_prefijo_cliente,
+    puede_cerrar_con_interes_pendiente,
     recalcular_cuota_actual_si_no_pagada,
     recalcular_cuotas_futuras,
     recalcular_saldo_intereses,
@@ -47,6 +56,7 @@ def _credito_response(credito: Credito) -> CreditoResponse:
     """
     resp = CreditoResponse.model_validate(credito)
     resp.pendiente_de_cierre = credito.activo and esta_saldado(credito)
+    resp.puede_cerrar_con_interes_pendiente = puede_cerrar_con_interes_pendiente(credito)
     return resp
 
 
@@ -428,20 +438,29 @@ async def actualizar_dias_pago(
 async def confirmar_cierre_credito(
     credito_id: uuid.UUID,
     request: Request,
+    body: Optional[CerrarCreditoRequest] = Body(default=None),
     current_user: Usuario = Depends(require_role("admin", "recaudador", "registrador")),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Confirma el cierre de un crédito saldado (regla 9/11: zero-balance-credit-closure).
+    Confirma el cierre de un crédito saldado (regla 9/11: zero-balance-credit-closure)
+    o, con el flag opt-in, de un crédito `cuota_fija` con capital saldado e
+    interés pendiente (regla 14: zero-balance-explicit-closure).
 
     Deliberadamente NO idempotente: confirmar un crédito ya cerrado se
     rechaza con 422 en vez de responder 200 en silencio, para que las
     transiciones de cierre queden siempre auditadas de forma explícita.
 
-    Orden de validación: 404 crédito desconocido → 422 ya cerrado → 422 no
-    saldado → `cerrar_credito` (único escritor de `activo=False`, nunca toca
-    los saldos) → auditoría.
+    Orden de validación (regla 14, ver design.md): 404 crédito desconocido
+    → 422 ya cerrado → 422 capital pendiente CON flag (mensaje distinto,
+    nombra el capital, nunca "condonar") → 422 capital pendiente sin flag →
+    saldado → `cerrar_credito` → flag + capital saldado/interés pendiente →
+    `cerrar_credito_con_interes_pendiente` → 422 interés pendiente sin flag
+    (mensaje de hoy). El capital SIEMPRE se valida antes de honrar el flag,
+    así que el flag nunca puede saltarse capital pendiente.
     """
+    flag = bool(body and body.cerrar_con_interes_pendiente)
+
     credito = (await db.execute(
         select(Credito).where(Credito.id == credito_id, Credito.deleted_at == None)  # noqa: E711
     )).scalar_one_or_none()
@@ -454,7 +473,17 @@ async def confirmar_cierre_credito(
             detail="Este crédito ya está cerrado; el cierre no se puede confirmar dos veces.",
         )
 
-    if not esta_saldado(credito):
+    if credito.saldo_capital > Decimal("0.00") and flag:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No se puede cerrar con interés pendiente: el crédito aún tiene capital "
+                f"pendiente de {credito.saldo_capital}. Este cierre solo aplica cuando el "
+                "capital está en cero."
+            ),
+        )
+
+    if not esta_saldado(credito) and not puede_cerrar_con_interes_pendiente(credito):
         partes = []
         if credito.saldo_capital > Decimal("0.00"):
             partes.append(f"capital pendiente de {credito.saldo_capital}")
@@ -466,14 +495,35 @@ async def confirmar_cierre_credito(
             detail=f"No se puede confirmar el cierre: el crédito aún tiene {detalle}.",
         )
 
-    cerrar_credito(credito)
+    if esta_saldado(credito):
+        cerrar_credito(credito)
+        await audit_service.registrar_actualizacion_campos(
+            db=db, entidad="creditos", entidad_id=credito.id,
+            usuario_id=current_user.id, ip_origen=get_client_ip(request),
+            cambios={"activo": ("True", "False")},
+        )
+        return _credito_response(credito)
 
-    await audit_service.registrar_actualizacion_campos(
-        db=db, entidad="creditos", entidad_id=credito.id,
-        usuario_id=current_user.id, ip_origen=get_client_ip(request),
-        cambios={"activo": ("True", "False")},
+    if flag and puede_cerrar_con_interes_pendiente(credito):
+        saldo_intereses_anterior = str(credito.saldo_intereses)
+        cerrar_credito_con_interes_pendiente(credito)
+        await audit_service.registrar_actualizacion_campos(
+            db=db, entidad="creditos", entidad_id=credito.id,
+            usuario_id=current_user.id, ip_origen=get_client_ip(request),
+            cambios={
+                "activo": ("True", "False"),
+                "saldo_intereses": (saldo_intereses_anterior, str(credito.saldo_intereses)),
+            },
+        )
+        return _credito_response(credito)
+
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            "No se puede confirmar el cierre: el crédito aún tiene interés pendiente "
+            f"de {credito.saldo_intereses}."
+        ),
     )
-    return _credito_response(credito)
 
 
 @router.delete("/{credito_id}", status_code=status.HTTP_204_NO_CONTENT)

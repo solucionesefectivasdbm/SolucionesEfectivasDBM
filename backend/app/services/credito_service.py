@@ -109,11 +109,10 @@ def esta_saldado(credito: Credito) -> bool:
 
 def cerrar_credito(credito: Credito) -> bool:
     """
-    Regla 9/12 (zero-balance-credit-closure): ÚNICO escritor de
-    `activo=False` por crédito saldado. NUNCA escribe `saldo_capital` ni
-    `saldo_intereses` — la condonación de deuda que existía antes en
-    `_verificar_cierre_credito` (forzar `saldo_capital = 0.00`) queda
-    eliminada por construcción, no por un guard adicional.
+    Regla 9/12 (zero-balance-credit-closure): ÚNICO escritor **físico** de
+    `activo=False`. NUNCA escribe saldos; la única excepción acotada es
+    `cerrar_credito_con_interes_pendiente`, que escribe `saldo_intereses`
+    antes de delegar aquí (regla 14).
 
     Idempotente: si el crédito ya estaba cerrado (`activo == False`), no
     hace nada y retorna `False`. Retorna `True` solo cuando efectivamente
@@ -123,6 +122,50 @@ def cerrar_credito(credito: Credito) -> bool:
         return False
     credito.activo = False
     return True
+
+
+def puede_cerrar_con_interes_pendiente(credito: Credito) -> bool:
+    """
+    Regla 14 (zero-balance-explicit-closure): true si y solo si el crédito
+    está `activo`, es `cuota_fija`, `saldo_capital <= 0` y
+    `saldo_intereses > 0`. Mutuamente excluyente con `esta_saldado` por
+    construcción: cuando este predicado es true, `saldo_intereses > 0`
+    hace que `esta_saldado` sea false para `cuota_fija`.
+
+    Única fuente de verdad — reutilizada por el router (branch de cierre),
+    el response field (`puede_cerrar_con_interes_pendiente`) y la
+    precondición del escritor `cerrar_credito_con_interes_pendiente`.
+    """
+    if not credito.activo:
+        return False
+    if credito.tipo_credito != TipoCredito.cuota_fija:
+        return False
+    if credito.saldo_capital > Decimal("0.00"):
+        return False
+    return credito.saldo_intereses > Decimal("0.00")
+
+
+def cerrar_credito_con_interes_pendiente(credito: Credito) -> Decimal:
+    """
+    Regla 14: ÚNICO camino que escribe `saldo_intereses` al cerrar un
+    crédito. Precondición: `puede_cerrar_con_interes_pendiente(credito)`;
+    si no se cumple, levanta `ValueError` (capital pendiente, tipo
+    `abono_capital` o crédito inactivo nunca llegan aquí).
+
+    Captura el valor previo de `saldo_intereses`, lo fija en `0.00` y
+    delega `activo=False` a `cerrar_credito` — que permanece como único
+    escritor físico de esa transición. Retorna el valor previo para que el
+    llamador (router) lo use en la auditoría.
+    """
+    if not puede_cerrar_con_interes_pendiente(credito):
+        raise ValueError(
+            "cerrar_credito_con_interes_pendiente requiere un crédito activo, "
+            "cuota_fija, con saldo_capital <= 0 y saldo_intereses > 0"
+        )
+    previo = credito.saldo_intereses
+    credito.saldo_intereses = Decimal("0.00")
+    cerrar_credito(credito)
+    return previo
 
 
 def credito_operativamente_abierto():
