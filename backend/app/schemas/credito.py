@@ -99,6 +99,13 @@ class CreditoUpdate(BaseModel):
         return v
 
 
+class CerrarCreditoRequest(BaseModel):
+    """Regla 14: flag opt-in para cerrar un crédito cuota_fija con capital
+    saldado pero interés pendiente. Ausente/false conserva el comportamiento
+    de hoy (422)."""
+    cerrar_con_interes_pendiente: bool = False
+
+
 class DiasPagoUpdate(BaseModel):
     """Payload for PATCH /creditos/{id}/dias-pago — edits anchor days only."""
     anchor_dia_1: int
@@ -133,3 +140,4 @@ class CreditoResponse(BaseModel):
     anchor_dia_1: Optional[int] = None
     anchor_dia_2: Optional[int] = None
     pendiente_de_cierre: bool = False
+    puede_cerrar_con_interes_pendiente: bool = False

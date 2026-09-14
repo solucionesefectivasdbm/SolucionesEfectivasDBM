@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { pagosApi, receptoresApi, creditosApi, gestoresApi } from '@/api'
 import { formatCOP, formatFecha, MESES, MOMENTOS, aniosDisponibles } from '@/utils/formatters'
-import { LoadingPage, EmptyState, Paginacion, PagoBadge, ConfirmarCreacion, type ItemConfirmacion } from '@/components/ui'
+import { LoadingPage, EmptyState, Paginacion, PagoBadge, ConfirmarCreacion, ConfirmarCierreInteresPendiente, type ItemConfirmacion } from '@/components/ui'
 import Modal from '@/components/ui/Modal'
 import { usePermissions } from '@/store/authStore'
 import { mensajeError, esErrorSesionExpirada } from '@/utils/apiErrors'
@@ -55,6 +55,8 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   // Modal pago no programado
   const [modalNoProgramado, setModalNoProgramado] = useState(false)
   const [npCreditoId, setNpCreditoId] = useState('')
+  const [creditoCierre, setCreditoCierre] = useState<Credito | null>(null)
+  const [cerrandoCreditoCierre, setCerrandoCreditoCierre] = useState(false)
   const [npMonto, setNpMonto] = useState('')
   const [npDestino, setNpDestino] = useState<'capital' | 'intereses'>('capital')
   const [npFecha, setNpFecha] = useState(new Date().toISOString().split('T')[0])
@@ -139,6 +141,21 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
     setModalRegistrar(true)
   }
 
+  // Regla 14 (zero-balance-explicit-closure): tras un pago exitoso, re-lee el
+  // crédito y si quedó con capital saldado e interés pendiente, ofrece el
+  // diálogo de cierre explícito. Errores se ignoran: el pago ya se registró
+  // correctamente; el listado de créditos sigue ofreciendo la acción.
+  const verificarCierreInteresPendiente = async (creditoId: string) => {
+    try {
+      const res = await creditosApi.obtener(creditoId)
+      if (res.data.puede_cerrar_con_interes_pendiente) {
+        setCreditoCierre(res.data)
+      }
+    } catch {
+      // silencioso — el pago ya se completó
+    }
+  }
+
   const handleRegistrar = async () => {
     if (!pagoSeleccionado) return
     setSubmitting(true)
@@ -159,6 +176,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
         toast.success(res.data.mensaje)
         setModalConfirmarRegistrar(false)
         cargarPagos(false)
+        verificarCierreInteresPendiente(pagoSeleccionado.credito_id)
       }
     } catch (e: any) {
       const msg = mensajeError(e, 'No se pudo registrar el pago')
@@ -197,6 +215,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       toast.success(res.data.mensaje)
       setModalExcedente(false)
       cargarPagos(false)
+      verificarCierreInteresPendiente(pagoSeleccionado.credito_id)
     } catch (e: any) {
       const msg = mensajeError(e, 'No se pudo confirmar el excedente')
       if (msg) toast.error(msg)
@@ -326,11 +345,30 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       toast.success('Pago no programado registrado')
       setModalConfirmarNoProgramado(false)
       cargarPagos(false)
+      verificarCierreInteresPendiente(npCreditoId)
     } catch (e: any) {
       const msg = mensajeError(e, 'No se pudo registrar el pago no programado')
       if (msg) toast.error(msg)
       if (e.response && !esErrorSesionExpirada(e)) cargarPagos(false)
     } finally { setSubmitting(false) }
+  }
+
+  const handleCerrarCreditoCierre = async () => {
+    if (!creditoCierre) return
+    setCerrandoCreditoCierre(true)
+    try {
+      await creditosApi.cerrar(creditoCierre.id, { cerrar_con_interes_pendiente: true })
+      toast.success('Cierre del crédito confirmado')
+      setCreditoCierre(null)
+      cargarPagos(false)
+    } catch (e: any) {
+      const msg = mensajeError(e, 'No se pudo confirmar el cierre')
+      if (msg) toast.error(msg)
+    } finally { setCerrandoCreditoCierre(false) }
+  }
+
+  const handleSeguirCobrandoCreditoCierre = () => {
+    setCreditoCierre(null)
   }
 
   const itemsNoProgramado = (): ItemConfirmacion[] => {
@@ -901,6 +939,14 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
           textoConfirmar="Confirmar y registrar"
         />
       </Modal>
+
+      <ConfirmarCierreInteresPendiente
+        isOpen={creditoCierre !== null}
+        credito={creditoCierre}
+        onCerrar={handleCerrarCreditoCierre}
+        onSeguir={handleSeguirCobrandoCreditoCierre}
+        loading={cerrandoCreditoCierre}
+      />
     </div>
   )
 }

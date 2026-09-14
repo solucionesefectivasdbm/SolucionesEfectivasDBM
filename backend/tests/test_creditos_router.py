@@ -418,6 +418,276 @@ class TestConfirmarCierre:
         assert r2.status_code == 422
 
 
+class TestConfirmarCierreConInteresPendiente:
+    """
+    Regla 14 (zero-balance-explicit-closure): flag opt-in
+    `cerrar_con_interes_pendiente` en POST /creditos/{id}/cerrar.
+    """
+
+    @pytest.mark.asyncio
+    async def test_sin_body_interes_pendiente_422_mensaje_existente(self, make_client, db_session):
+        credito = _mk_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00"))
+        db_session.add(credito)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        r = await client.post(f"/api/v1/creditos/{credito.id}/cerrar")
+        assert r.status_code == 422
+        assert "interés pendiente" in r.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_body_vacio_interes_pendiente_422_mensaje_existente(self, make_client, db_session):
+        credito = _mk_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00"))
+        db_session.add(credito)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        r = await client.post(f"/api/v1/creditos/{credito.id}/cerrar", json={})
+        assert r.status_code == 422
+        assert "interés pendiente" in r.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_flag_false_interes_pendiente_422_mensaje_existente(self, make_client, db_session):
+        credito = _mk_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00"))
+        db_session.add(credito)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        r = await client.post(
+            f"/api/v1/creditos/{credito.id}/cerrar",
+            json={"cerrar_con_interes_pendiente": False},
+        )
+        assert r.status_code == 422
+        assert "interés pendiente" in r.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_flag_true_interes_pendiente_cierra_y_audita_dos_filas(self, make_client, db_session):
+        from sqlalchemy import select
+        from app.models.audit_log import AuditLog
+
+        credito = _mk_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00"))
+        db_session.add(credito)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        r = await client.post(
+            f"/api/v1/creditos/{credito.id}/cerrar",
+            json={"cerrar_con_interes_pendiente": True},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["saldo_intereses"] == "0.00"
+        assert r.json()["activo"] is False
+        assert credito.activo is False
+        assert credito.saldo_intereses == Decimal("0.00")
+
+        logs = (await db_session.execute(
+            select(AuditLog).where(AuditLog.entidad_id == credito.id)
+        )).scalars().all()
+        campos = {log.campo_modificado for log in logs}
+        assert campos == {"activo", "saldo_intereses"}
+        interes_log = next(log for log in logs if log.campo_modificado == "saldo_intereses")
+        assert interes_log.valor_anterior == "5000.00"
+        assert interes_log.valor_nuevo == "0.00"
+
+    @pytest.mark.asyncio
+    async def test_flag_true_capital_pendiente_cuota_fija_422_no_condonar(self, make_client, db_session):
+        credito = _mk_credito(saldo_capital=Decimal("150000.00"), saldo_intereses=Decimal("5000.00"))
+        db_session.add(credito)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        r = await client.post(
+            f"/api/v1/creditos/{credito.id}/cerrar",
+            json={"cerrar_con_interes_pendiente": True},
+        )
+        assert r.status_code == 422
+        detail = r.json()["detail"]
+        assert "150000" in detail or "150,000" in detail or "150.000" in detail
+        assert "condonar" not in detail.lower()
+        assert credito.activo is True
+
+    @pytest.mark.asyncio
+    async def test_flag_true_capital_pendiente_abono_capital_422(self, make_client, db_session):
+        credito = _mk_credito(
+            tipo_credito=TipoCredito.abono_capital,
+            saldo_capital=Decimal("150000.00"),
+            saldo_intereses=Decimal("0.00"),
+        )
+        db_session.add(credito)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        r = await client.post(
+            f"/api/v1/creditos/{credito.id}/cerrar",
+            json={"cerrar_con_interes_pendiente": True},
+        )
+        assert r.status_code == 422
+        assert credito.activo is True
+
+    @pytest.mark.asyncio
+    async def test_flag_true_fully_settled_cierra_un_audit_row(self, make_client, db_session):
+        from sqlalchemy import select
+        from app.models.audit_log import AuditLog
+
+        credito = _mk_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("0.00"))
+        db_session.add(credito)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        r = await client.post(
+            f"/api/v1/creditos/{credito.id}/cerrar",
+            json={"cerrar_con_interes_pendiente": True},
+        )
+        assert r.status_code == 200
+        assert credito.activo is False
+
+        logs = (await db_session.execute(
+            select(AuditLog).where(AuditLog.entidad_id == credito.id)
+        )).scalars().all()
+        campos = {log.campo_modificado for log in logs}
+        assert campos == {"activo"}
+
+    @pytest.mark.asyncio
+    async def test_flag_true_ya_cerrado_422_sin_audit(self, make_client, db_session):
+        from sqlalchemy import select
+        from app.models.audit_log import AuditLog
+
+        credito = _mk_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("0.00"), activo=False)
+        db_session.add(credito)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        r = await client.post(
+            f"/api/v1/creditos/{credito.id}/cerrar",
+            json={"cerrar_con_interes_pendiente": True},
+        )
+        assert r.status_code == 422
+
+        logs = (await db_session.execute(
+            select(AuditLog).where(AuditLog.entidad_id == credito.id)
+        )).scalars().all()
+        assert len(logs) == 0
+
+    @pytest.mark.asyncio
+    async def test_flag_true_abono_capital_capital_saldado_cierra_sin_tocar_intereses(
+        self, make_client, db_session
+    ):
+        credito = _mk_credito(
+            tipo_credito=TipoCredito.abono_capital,
+            saldo_capital=Decimal("0.00"),
+            saldo_intereses=Decimal("0.00"),
+        )
+        db_session.add(credito)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        r = await client.post(
+            f"/api/v1/creditos/{credito.id}/cerrar",
+            json={"cerrar_con_interes_pendiente": True},
+        )
+        assert r.status_code == 200
+        assert credito.activo is False
+        assert credito.saldo_intereses == Decimal("0.00")
+
+    @pytest.mark.parametrize("rol", [TipoUsuario.admin, TipoUsuario.recaudador, TipoUsuario.registrador])
+    @pytest.mark.asyncio
+    async def test_flag_true_roles_permitidos_200(self, make_client, db_session, rol):
+        credito = _mk_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00"))
+        db_session.add(credito)
+        await db_session.flush()
+
+        client = await make_client(rol)
+        r = await client.post(
+            f"/api/v1/creditos/{credito.id}/cerrar",
+            json={"cerrar_con_interes_pendiente": True},
+        )
+        assert r.status_code == 200, r.text
+
+    @pytest.mark.asyncio
+    async def test_flag_true_gestor_403(self, make_client, db_session):
+        credito = _mk_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00"))
+        db_session.add(credito)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.gestor)
+        r = await client.post(
+            f"/api/v1/creditos/{credito.id}/cerrar",
+            json={"cerrar_con_interes_pendiente": True},
+        )
+        assert r.status_code == 403
+        assert credito.activo is True
+
+
+class TestPuedeCerrarConInteresPendienteResponseField:
+    """Regla 14: `puede_cerrar_con_interes_pendiente` en GET detalle y listado."""
+
+    @pytest.mark.asyncio
+    async def test_get_detalle_true_para_capital_saldado_interes_pendiente(self, make_client, db_session):
+        credito = _mk_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00"))
+        db_session.add(credito)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        r = await client.get(f"/api/v1/creditos/{credito.id}")
+        assert r.status_code == 200
+        assert r.json()["puede_cerrar_con_interes_pendiente"] is True
+        assert r.json()["pendiente_de_cierre"] is False
+
+    @pytest.mark.asyncio
+    async def test_get_detalle_false_tras_cierre(self, make_client, db_session):
+        credito = _mk_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00"))
+        db_session.add(credito)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        await client.post(
+            f"/api/v1/creditos/{credito.id}/cerrar",
+            json={"cerrar_con_interes_pendiente": True},
+        )
+        r = await client.get(f"/api/v1/creditos/{credito.id}")
+        assert r.status_code == 200
+        assert r.json()["puede_cerrar_con_interes_pendiente"] is False
+
+    @pytest.mark.asyncio
+    async def test_get_detalle_false_para_credito_saldado(self, make_client, db_session):
+        credito = _mk_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("0.00"))
+        db_session.add(credito)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        r = await client.get(f"/api/v1/creditos/{credito.id}")
+        assert r.status_code == 200
+        assert r.json()["puede_cerrar_con_interes_pendiente"] is False
+        assert r.json()["pendiente_de_cierre"] is True
+
+    @pytest.mark.asyncio
+    async def test_listado_refleja_la_senal(self, make_client, db_session):
+        from app.models.cliente import Cliente as ClienteModel
+
+        cliente = ClienteModel(
+            id=uuid.uuid4(),
+            gestor_id=uuid.uuid4(),
+            nombre="Lista",
+            apellidos=f"Prueba{uuid.uuid4().hex[:6]}",
+            cedula=str(uuid.uuid4().int)[:10],
+            telefono="3000000000",
+            direccion="Calle test",
+        )
+        db_session.add(cliente)
+        await db_session.flush()
+
+        credito = _mk_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00"))
+        credito.cliente_id = cliente.id
+        db_session.add(credito)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        r = await client.get("/api/v1/creditos")
+        assert r.status_code == 200
+        item = next(i for i in r.json()["items"] if i["id"] == str(credito.id))
+        assert item["puede_cerrar_con_interes_pendiente"] is True
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # POST /creditos — domingo rechazado como fecha_inicial_pago para diario
 # ──────────────────────────────────────────────────────────────────────────────

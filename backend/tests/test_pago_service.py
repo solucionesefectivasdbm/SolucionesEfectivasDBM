@@ -322,6 +322,103 @@ class TestCerrarCredito:
         assert credito.saldo_intereses == Decimal("0.00")
 
 
+class TestPuedeCerrarConInteresPendiente:
+    """
+    Regla 14 (zero-balance-explicit-closure): predicado puro — señal
+    "capital saldado, interés pendiente" para un crédito `cuota_fija`
+    activo. Única fuente de verdad, reutilizada por el router y el
+    response field.
+    """
+
+    def test_true_para_activo_cuota_fija_capital_cero_interes_positivo(self):
+        from app.services.credito_service import puede_cerrar_con_interes_pendiente
+
+        credito = make_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00"))
+        credito.activo = True
+
+        assert puede_cerrar_con_interes_pendiente(credito) is True
+
+    def test_false_si_cerrado(self):
+        from app.services.credito_service import puede_cerrar_con_interes_pendiente
+
+        credito = make_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00"))
+        credito.activo = False
+
+        assert puede_cerrar_con_interes_pendiente(credito) is False
+
+    def test_false_si_capital_positivo(self):
+        from app.services.credito_service import puede_cerrar_con_interes_pendiente
+
+        credito = make_credito(saldo_capital=Decimal("150000.00"), saldo_intereses=Decimal("5000.00"))
+        credito.activo = True
+
+        assert puede_cerrar_con_interes_pendiente(credito) is False
+
+    def test_false_si_ambos_saldos_en_cero(self):
+        from app.services.credito_service import puede_cerrar_con_interes_pendiente
+
+        credito = make_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("0.00"))
+        credito.activo = True
+
+        assert puede_cerrar_con_interes_pendiente(credito) is False
+
+    def test_false_para_abono_capital(self):
+        from app.services.credito_service import puede_cerrar_con_interes_pendiente
+
+        credito = make_credito_abono(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00"))
+        credito.activo = True
+
+        assert puede_cerrar_con_interes_pendiente(credito) is False
+
+
+class TestCerrarCreditoConInteresPendiente:
+    """
+    Regla 14: escritor único que puede fijar `saldo_intereses` al cerrar.
+    Cero `saldo_intereses`, delega `activo=False` a `cerrar_credito`,
+    retorna el valor previo. Rechaza fuera de su precondición.
+    """
+
+    def test_zera_interes_cierra_y_retorna_valor_previo(self):
+        from app.services.credito_service import cerrar_credito_con_interes_pendiente
+
+        credito = make_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00"))
+        credito.activo = True
+
+        previo = cerrar_credito_con_interes_pendiente(credito)
+
+        assert previo == Decimal("5000.00")
+        assert credito.saldo_intereses == Decimal("0.00")
+        assert credito.activo is False
+        assert credito.saldo_capital == Decimal("0.00")
+
+    def test_raise_si_capital_positivo(self):
+        from app.services.credito_service import cerrar_credito_con_interes_pendiente
+
+        credito = make_credito(saldo_capital=Decimal("150000.00"), saldo_intereses=Decimal("5000.00"))
+        credito.activo = True
+
+        with pytest.raises(ValueError):
+            cerrar_credito_con_interes_pendiente(credito)
+
+    def test_raise_si_abono_capital(self):
+        from app.services.credito_service import cerrar_credito_con_interes_pendiente
+
+        credito = make_credito_abono(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00"))
+        credito.activo = True
+
+        with pytest.raises(ValueError):
+            cerrar_credito_con_interes_pendiente(credito)
+
+    def test_raise_si_inactivo(self):
+        from app.services.credito_service import cerrar_credito_con_interes_pendiente
+
+        credito = make_credito(saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("5000.00"))
+        credito.activo = False
+
+        with pytest.raises(ValueError):
+            cerrar_credito_con_interes_pendiente(credito)
+
+
 class TestCierreCreditoAutomatico:
 
     @pytest.mark.asyncio
@@ -611,6 +708,124 @@ class TestCierreEnTodasLasRutas:
 
         assert credito.activo is False
         assert credito.saldo_capital == Decimal("0.00")
+
+    @pytest.mark.asyncio
+    async def test_pago_exacto_capital_saldado_interes_pendiente_no_cierra(self):
+        """
+        Regla 14 (zero-balance-explicit-closure), regresión: un pago EXACTO
+        que deja `saldo_capital` en 0.00 pero `saldo_intereses > 0` (arrastre
+        de interés de cuotas anteriores) NO cierra el crédito — el cierre
+        automático sigue prohibido (regla 9); solo el camino explícito con
+        flag (rule 14) puede zeroing el interés. `generar_siguiente_cuota`
+        NO está mockeado: la siguiente cuota generada es de solo interés
+        (regla 10), topada al saldo restante.
+        """
+        credito = make_credito(
+            saldo_capital=Decimal("10000.00"),
+            saldo_intereses=Decimal("5400.00"),
+            numero_cuotas=12,
+            tasa=Decimal("0.0300"),
+        )
+        credito.capital_prestado = Decimal("120000.00")  # 120000/12 = 10000 capital/cuota; interés/cuota = 3600
+        pago = make_pago(
+            numero_cuota=12,
+            monto_a_pagar=Decimal("13600.00"),
+            capital=Decimal("10000.00"),
+            interes=Decimal("3600.00"),
+        )
+        db = AsyncMock()
+
+        request = RegistrarPagoRequest(
+            capital_pagado=Decimal("10000.00"),
+            interes_pagado=Decimal("3600.00"),
+        )
+
+        await PagoService.registrar_pago(db, pago, credito, request, date(2027, 3, 10))
+
+        assert credito.saldo_capital == Decimal("0.00")
+        assert credito.saldo_intereses == Decimal("1800.00")
+        assert credito.activo is True
+
+        assert db.add.called
+        nueva_cuota = db.add.call_args.args[0]
+        assert nueva_cuota.tipo_cuota == TipoCuota.interes
+        assert nueva_cuota.capital_a_pagar == Decimal("0.00")
+        assert nueva_cuota.interes_a_pagar == Decimal("1800.00")
+
+    @pytest.mark.asyncio
+    async def test_pago_parcial_capital_saldado_interes_pendiente_no_cierra(self):
+        """Regla 14, regresión: pago PARCIAL que deja capital en 0.00 con
+        interés aún pendiente no cierra; siguiente cuota es de solo interés."""
+        credito = make_credito(
+            saldo_capital=Decimal("5000.00"),
+            saldo_intereses=Decimal("3600.00"),
+            numero_cuotas=12,
+            tasa=Decimal("0.0300"),
+        )
+        credito.capital_prestado = Decimal("120000.00")
+        pago = make_pago(
+            numero_cuota=12,
+            monto_a_pagar=Decimal("8600.00"),
+            capital=Decimal("5000.00"),
+            interes=Decimal("3600.00"),
+        )
+        db = AsyncMock()
+
+        # Solo paga 5000 de capital, nada de interés → parcial (total < monto_a_pagar)
+        request = RegistrarPagoRequest(
+            capital_pagado=Decimal("5000.00"),
+            interes_pagado=Decimal("0.00"),
+        )
+
+        await PagoService.registrar_pago(db, pago, credito, request, date(2027, 3, 10))
+
+        assert credito.saldo_capital == Decimal("0.00")
+        assert credito.saldo_intereses == Decimal("3600.00")
+        assert credito.activo is True
+
+        assert db.add.called
+        nueva_cuota = db.add.call_args.args[0]
+        assert nueva_cuota.tipo_cuota == TipoCuota.interes
+        assert nueva_cuota.capital_a_pagar == Decimal("0.00")
+
+    @pytest.mark.asyncio
+    async def test_confirmar_excedente_capital_saldado_interes_pendiente_no_cierra(self):
+        """Regla 14, regresión: excedente dirigido a capital que lo salda
+        pero deja interés pendiente no cierra; siguiente cuota solo interés."""
+        credito = make_credito(
+            saldo_capital=Decimal("10000.00"),
+            saldo_intereses=Decimal("5400.00"),
+            numero_cuotas=12,
+            tasa=Decimal("0.0300"),
+        )
+        credito.capital_prestado = Decimal("120000.00")
+        pago = make_pago(
+            numero_cuota=12,
+            monto_a_pagar=Decimal("13600.00"),
+            capital=Decimal("10000.00"),
+            interes=Decimal("3600.00"),
+        )
+        db = AsyncMock()
+
+        # Total pagado 18600 > monto_a_pagar (13600) → excedente de 5000, a capital.
+        request = RegistrarPagoRequest(
+            capital_pagado=Decimal("15000.00"),
+            interes_pagado=Decimal("3600.00"),
+        )
+
+        await PagoService.confirmar_excedente(
+            db, pago, credito, request, DestinoExcedente.capital, date(2027, 3, 10)
+        )
+
+        assert credito.saldo_capital == Decimal("0.00")
+        assert credito.saldo_intereses == Decimal("1800.00")
+        assert credito.activo is True
+
+        assert db.add.called
+        nueva_cuota = db.add.call_args.args[0]
+        assert nueva_cuota.tipo_cuota == TipoCuota.interes
+        assert nueva_cuota.capital_a_pagar == Decimal("0.00")
+        assert nueva_cuota.interes_a_pagar == Decimal("1800.00")
 
     def test_abono_capital_interes_pagado_redondea_round_half_up(self):
         """
