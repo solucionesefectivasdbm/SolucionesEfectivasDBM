@@ -70,14 +70,14 @@ Chain strategy: pending
 
 ## Phase 8: Backfill Rollout (PR-2, prod)
 
-- [ ] 8.1 Run `dry_run=true` on Railway prod; review `detalle[]`
-- [ ] 8.2 Apply once (`dry_run=false`)
-- [ ] 8.3 Verify: backfill predicate SQL count = 0 after apply
+- [x] 8.1 Run `dry_run=true` on Railway prod; review `detalle[]` — dry_run on prod 2026-09-14 → revisados 0, corregidos 0, detalle []
+- [x] 8.2 Apply once (`dry_run=false`) — no-op: dry_run returned 0 rows, apply not executed (predicate count already 0)
+- [x] 8.3 Verify: backfill predicate SQL count = 0 after apply — no-op: dry_run returned 0 rows, apply not executed (predicate count already 0)
 
 ## Phase 9: Cleanup & Archive (PR-3)
 
-- [ ] 9.1 Delete `POST /pagos/admin/backfill-arrastre-abono-capital`, its schema, and `test_pagos_backfill_arrastre_abono_capital.py`
-- [ ] 9.2 `backend/venv/Scripts/python.exe -m pytest` green after deletion (no orphaned imports/fixtures)
+- [x] 9.1 Delete `POST /pagos/admin/backfill-arrastre-abono-capital`, its schema, and `test_pagos_backfill_arrastre_abono_capital.py`
+- [x] 9.2 `backend/venv/Scripts/python.exe -m pytest` green after deletion (no orphaned imports/fixtures)
 - [ ] 9.3 ARCHIVE NOTE: manually merge `payment-carryover` Non-Goals amendment into `specs/payment-carryover/spec.md` — it is a Non-Goals text replacement, not a Requirement block, so `sdd-archive` tooling will not auto-apply it
 
 ## Follow-ups (not in scope, not tasks)
