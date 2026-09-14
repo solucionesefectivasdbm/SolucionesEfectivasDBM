@@ -36,6 +36,8 @@ def _mk_pago(
     interes_pagado: Decimal,
     pagado: bool = True,
     deleted_at=None,
+    capital_pagado: Decimal = Decimal("0.00"),
+    monto_a_pagar: Decimal | None = None,
 ) -> Pago:
     p = Pago()
     p.id = uuid.uuid4()
@@ -44,9 +46,9 @@ def _mk_pago(
     p.tipo_cuota = tipo_cuota
     p.capital_a_pagar = Decimal("0.00")
     p.interes_a_pagar = interes_a_pagar
-    p.capital_pagado = Decimal("0.00")
+    p.capital_pagado = capital_pagado
     p.interes_pagado = interes_pagado
-    p.monto_a_pagar = interes_a_pagar
+    p.monto_a_pagar = monto_a_pagar if monto_a_pagar is not None else interes_a_pagar
     p.pagado = pagado
     p.deleted_at = deleted_at
     return p
@@ -69,6 +71,21 @@ class TestArrastreInteresAbonoCapital:
     def test_cuota_tipo_abono_retorna_cero(self):
         """Las cuotas de abono nunca cargan ni transmiten interés."""
         cuota = _mk_pago(1, TipoCuota.abono, Decimal("0.00"), Decimal("0.00"))
+        assert arrastre_interes_abono_capital(cuota) == Decimal("0.00")
+
+    def test_pagada_via_excedente_con_split_mal_reportado_clampa_a_cero(self):
+        """
+        Review follow-up (PR-1, Engram #969, risk WARNING): una cuota saldada
+        vía excedente puede reportar un split capital/interés que, leído
+        aislado, parece un faltante de interés (interes_pagado < interes_a_pagar)
+        aunque la cuota fue pagada en su totalidad
+        (capital_pagado + interes_pagado >= monto_a_pagar). Ese "faltante"
+        no debe arrastrarse — la cuota está saldada.
+        """
+        cuota = _mk_pago(
+            1, TipoCuota.interes, Decimal("50000.00"), Decimal("30000.00"),
+            capital_pagado=Decimal("20000.00"), monto_a_pagar=Decimal("50000.00"),
+        )
         assert arrastre_interes_abono_capital(cuota) == Decimal("0.00")
 
 
@@ -104,52 +121,60 @@ class TestUltimaCuotaInteresPagada:
 
     @pytest.mark.asyncio
     async def test_ignora_no_pagada_soft_deleted_abono_y_no_programada(self, db_session):
+        """
+        Reliability follow-up (PR-1 review, Engram #969): the excluded rows
+        (unpaid, soft-deleted) are placed as the MOST RECENT rows (highest
+        `numero_cuota`). This actually proves the predicate skips them — if
+        the implementation didn't filter `pagado`/`deleted_at`, a naive
+        `ORDER BY numero_cuota DESC LIMIT 1` would wrongly return the unpaid
+        row at numero_cuota=5 instead of the valid paid row at numero_cuota=1.
+        """
         credito = _credito_abono_capital(Periodicidad.quincenal)
         db_session.add(credito)
         await db_session.flush()
 
-        no_pagada = Pago(
+        valida = Pago(
             id=uuid.uuid4(), credito_id=credito.id, numero_cuota=1,
             tipo_cuota=TipoCuota.interes, monto_a_pagar=Decimal("50000.00"),
             capital_a_pagar=Decimal("0.00"), interes_a_pagar=Decimal("50000.00"),
-            capital_pagado=Decimal("0.00"), interes_pagado=Decimal("0.00"),
-            momento="m3", fecha_maxima=date(2026, 1, 10), pagado=False,
-        )
-        soft_deleted = Pago(
-            id=uuid.uuid4(), credito_id=credito.id, numero_cuota=2,
-            tipo_cuota=TipoCuota.interes, monto_a_pagar=Decimal("50000.00"),
-            capital_a_pagar=Decimal("0.00"), interes_a_pagar=Decimal("50000.00"),
-            capital_pagado=Decimal("0.00"), interes_pagado=Decimal("30000.00"),
-            momento="m3", fecha_maxima=date(2026, 1, 25), pagado=True,
-            deleted_at=datetime(2026, 2, 1),
+            capital_pagado=Decimal("0.00"), interes_pagado=Decimal("40000.00"),
+            momento="m3", fecha_maxima=date(2026, 1, 10), pagado=True,
         )
         abono_pagada = Pago(
-            id=uuid.uuid4(), credito_id=credito.id, numero_cuota=3,
+            id=uuid.uuid4(), credito_id=credito.id, numero_cuota=2,
             tipo_cuota=TipoCuota.abono, monto_a_pagar=Decimal("100000.00"),
             capital_a_pagar=Decimal("100000.00"), interes_a_pagar=Decimal("0.00"),
             capital_pagado=Decimal("100000.00"), interes_pagado=Decimal("0.00"),
-            momento="m3", fecha_maxima=date(2026, 2, 10), pagado=True,
+            momento="m3", fecha_maxima=date(2026, 1, 25), pagado=True,
         )
         no_programada = Pago(
-            id=uuid.uuid4(), credito_id=credito.id, numero_cuota=4,
+            id=uuid.uuid4(), credito_id=credito.id, numero_cuota=3,
             tipo_cuota=TipoCuota.no_programada, monto_a_pagar=Decimal("10000.00"),
             capital_a_pagar=Decimal("10000.00"), interes_a_pagar=Decimal("0.00"),
             capital_pagado=Decimal("10000.00"), interes_pagado=Decimal("0.00"),
-            momento="m3", fecha_maxima=date(2026, 2, 15), pagado=True,
+            momento="m3", fecha_maxima=date(2026, 2, 10), pagado=True,
         )
-        valida = Pago(
+        soft_deleted = Pago(
+            id=uuid.uuid4(), credito_id=credito.id, numero_cuota=4,
+            tipo_cuota=TipoCuota.interes, monto_a_pagar=Decimal("50000.00"),
+            capital_a_pagar=Decimal("0.00"), interes_a_pagar=Decimal("50000.00"),
+            capital_pagado=Decimal("0.00"), interes_pagado=Decimal("30000.00"),
+            momento="m3", fecha_maxima=date(2026, 2, 15), pagado=True,
+            deleted_at=datetime(2026, 2, 20),
+        )
+        no_pagada = Pago(
             id=uuid.uuid4(), credito_id=credito.id, numero_cuota=5,
             tipo_cuota=TipoCuota.interes, monto_a_pagar=Decimal("50000.00"),
             capital_a_pagar=Decimal("0.00"), interes_a_pagar=Decimal("50000.00"),
-            capital_pagado=Decimal("0.00"), interes_pagado=Decimal("40000.00"),
-            momento="m3", fecha_maxima=date(2026, 2, 25), pagado=True,
+            capital_pagado=Decimal("0.00"), interes_pagado=Decimal("0.00"),
+            momento="m3", fecha_maxima=date(2026, 2, 25), pagado=False,
         )
-        db_session.add_all([no_pagada, soft_deleted, abono_pagada, no_programada, valida])
+        db_session.add_all([valida, abono_pagada, no_programada, soft_deleted, no_pagada])
         await db_session.flush()
 
         resultado = await _ultima_cuota_interes_pagada(db_session, credito.id, antes_de=6)
         assert resultado is not None
-        assert resultado.numero_cuota == 5
+        assert resultado.numero_cuota == 1
 
     @pytest.mark.asyncio
     async def test_sin_fila_previa_retorna_none(self, db_session):
