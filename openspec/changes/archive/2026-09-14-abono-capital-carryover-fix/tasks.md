@@ -78,7 +78,7 @@ Chain strategy: pending
 
 - [x] 9.1 Delete `POST /pagos/admin/backfill-arrastre-abono-capital`, its schema, and `test_pagos_backfill_arrastre_abono_capital.py`
 - [x] 9.2 `backend/venv/Scripts/python.exe -m pytest` green after deletion (no orphaned imports/fixtures)
-- [ ] 9.3 ARCHIVE NOTE: manually merge `payment-carryover` Non-Goals amendment into `specs/payment-carryover/spec.md` — it is a Non-Goals text replacement, not a Requirement block, so `sdd-archive` tooling will not auto-apply it
+- [x] 9.3 ARCHIVE NOTE: manually merge `payment-carryover` Non-Goals amendment into `specs/payment-carryover/spec.md` — DONE during sdd-archive 2026-09-14: Non-Goals line replaced with the delta text cross-referencing abono-capital-carryover
 
 ## Follow-ups (not in scope, not tasks)
 

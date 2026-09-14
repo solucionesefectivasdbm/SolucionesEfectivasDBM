@@ -4,6 +4,9 @@
 
 Defines how a `cuota_fija` shortfall (arrastre) is disaggregated per component,
 folded into the next installment's targets, validated, projected and backfilled.
+The Component Sum Invariant below applies to every credit type; the
+`abono_capital` interest-only carry itself is specified in
+`abono-capital-carryover`.
 All amounts are `Decimal`; comparisons use the existing tolerance `TOL`.
 
 ## Requirements
@@ -52,13 +55,20 @@ MUST NOT be proportional and MUST NOT default to interest.
 
 ### Requirement: Component Sum Invariant
 
-For every generated `cuota_fija` row the system MUST satisfy
-`capital_a_pagar + interes_a_pagar == monto_a_pagar` within `TOL`.
+For every generated or recalculated installment row, regardless of
+`tipo_credito` (`cuota_fija` or `abono_capital`) or `tipo_cuota`, the system
+MUST satisfy `capital_a_pagar + interes_a_pagar == monto_a_pagar` within `TOL`.
 
 #### Scenario: Invariant with arrastre
 
 - GIVEN any generated cuota with a pending arrastre
 - WHEN the row is persisted
+- THEN the component sum equals `monto_a_pagar`
+
+#### Scenario: Invariant after recalculation
+
+- GIVEN a current unpaid cuota of either credit type
+- WHEN `recalcular_cuota_actual_si_no_pagada` runs
 - THEN the component sum equals `monto_a_pagar`
 
 ### Requirement: Arrastre-inclusive Payment Acceptance
@@ -167,5 +177,6 @@ is intended correctness, not a regression.
 - Closing-rule / blocker redesign is out of scope (corrective #3).
 - No Alembic migration and no new arrastre column (corrective #8); the split is
   derived from persisted prior-row fields.
-- `abono_capital` behavior is unchanged; it has no `saldo_intereses`.
+- `abono_capital` carry-over is specified in `abono-capital-carryover`
+  (interest-only carry); it still has no `saldo_intereses`.
 - No frontend changes and no visual arrastre indicator in this slice.
