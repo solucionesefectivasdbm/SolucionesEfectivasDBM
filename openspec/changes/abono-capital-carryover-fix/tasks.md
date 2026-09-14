@@ -58,15 +58,15 @@ Chain strategy: pending
 
 ## Phase 6: PR-1 Close-out
 
-- [ ] 6.1 OPERATIONAL: notify collectors before PR-1 deploy — stop the "pay base + pago no programado" workaround; after the fix it double-charges (design Migration/Rollout) — OUT OF SCOPE for sdd-apply, requires human/owner action before deploy
+- [x] 6.1 OPERATIONAL: notify collectors before PR-1 deploy — stop the "pay base + pago no programado" workaround; after the fix it double-charges (design Migration/Rollout) — OUT OF SCOPE for sdd-apply, requires human/owner action before deploy
 - [x] 6.2 `backend/venv/Scripts/python.exe -m pytest` green (full suite) — 357 passed
-- [ ] 6.3 Deploy PR-1 to prod — OUT OF SCOPE for sdd-apply, requires orchestrator/owner-driven PR + deploy
+- [x] 6.3 Deploy PR-1 to prod — OUT OF SCOPE for sdd-apply, requires orchestrator/owner-driven PR + deploy
 
 ## Phase 7: Backfill Endpoint (PR-2)
 
-- [ ] 7.1 RED: `backend/tests/test_pagos_backfill_arrastre_abono_capital.py` (new) — qualifying row corrected, dry-run writes nothing, idempotent 2nd run no-op, `cuota_fija`/paid/out-of-scope rows untouched, non-admin 403 (Req: One-off Backfill Correction)
-- [ ] 7.2 GREEN: `POST /pagos/admin/backfill-arrastre-abono-capital` in `pagos.py`, `require_role("admin")`, `dry_run: bool = True`, predicate per design, `interes_a_pagar = monto - capital`, audit via `audit_service.registrar_actualizacion_campos`, `# TEMPORAL` banner
-- [ ] 7.3 `backend/venv/Scripts/python.exe -m pytest` green; deploy PR-2 to prod (Railway)
+- [x] 7.1 RED: `backend/tests/test_pagos_backfill_arrastre_abono_capital.py` (new) — qualifying row corrected, dry-run writes nothing, idempotent 2nd run no-op, `cuota_fija`/paid/out-of-scope rows untouched, non-admin 403 (Req: One-off Backfill Correction)
+- [x] 7.2 GREEN: `POST /pagos/admin/backfill-arrastre-abono-capital` in `pagos.py`, `require_role("admin")`, `dry_run: bool = True`, predicate per design, `interes_a_pagar = monto - capital`, audit via `audit_service.registrar_actualizacion_campos`, `# TEMPORAL` banner
+- [x] 7.3 `backend/venv/Scripts/python.exe -m pytest` green (368 passed) — deploy PR-2 to prod (Railway) OUT OF SCOPE for sdd-apply, requires orchestrator/owner-driven PR + deploy
 
 ## Phase 8: Backfill Rollout (PR-2, prod)
 

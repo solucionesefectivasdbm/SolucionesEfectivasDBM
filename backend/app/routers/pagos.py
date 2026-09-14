@@ -15,7 +15,7 @@ import math
 import uuid
 from datetime import date, datetime, timezone
 from app.utils.fechas import hoy_bogota
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, NoReturn, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
@@ -966,6 +966,93 @@ async def alertas_vencidos(
         "total_pagos_vencidos": len(pagos),
         "total_monto_mora": float(total_mora),
         "pagos": [PagoResponse.model_validate(p) for p in pagos],
+    }
+
+
+# ---------------------------------------------------------------------------
+# ENDPOINT TEMPORAL — eliminar tras ejecutar en producción (abono-capital-carryover-fix)
+# ---------------------------------------------------------------------------
+class BackfillArrastreAbonoCapitalBody(BaseModel):
+    dry_run: bool = True
+
+
+@router.post("/admin/backfill-arrastre-abono-capital")
+async def backfill_arrastre_abono_capital(
+    body: BackfillArrastreAbonoCapitalBody,
+    request: Request,
+    current_user: Usuario = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Backfill idempotente: corrige `interes_a_pagar` de cuotas `abono_capital`
+    generadas antes del fix de arrastre de interés (`abono-capital-carryover-fix`).
+
+    Alcance: cuotas NO pagadas (`capital_pagado == 0` y `interes_pagado == 0`),
+    no eliminadas, de tipo `programada` o `interes`, de créditos `abono_capital`
+    activos y no eliminados, donde `monto_a_pagar` excede
+    `capital_a_pagar + interes_a_pagar` en más del margen de tolerancia
+    (0.01). El 100% del faltante va a `interes_a_pagar` — no se requiere
+    walk-back, el faltante ya está implícito en `monto_a_pagar`.
+
+    `saldo_capital`/`saldo_intereses` del crédito y los montos pagados de la
+    cuota NUNCA se modifican. Idempotente por construcción: tras aplicar, la
+    fila deja de cumplir el predicado. No recupera cuotas cuyo `monto_a_pagar`
+    ya fue reescrito por los casos 3/4 del walk-back ni las saldadas por el
+    workaround de "pago no programado" (ver design.md).
+
+    ENDPOINT TEMPORAL — eliminar tras ejecutar una vez en producción (PR-3).
+    """
+    TOL = Decimal("0.01")
+    _Q = Decimal("0.01")
+
+    result = await db.execute(
+        select(Pago)
+        .join(Credito, Pago.credito_id == Credito.id)
+        .where(
+            Pago.deleted_at == None,  # noqa: E711
+            Pago.pagado == False,  # noqa: E712
+            Pago.capital_pagado == Decimal("0.00"),
+            Pago.interes_pagado == Decimal("0.00"),
+            Pago.tipo_cuota.in_([TipoCuota.programada, TipoCuota.interes]),
+            Credito.tipo_credito == TipoCredito.abono_capital,
+            Credito.activo == True,  # noqa: E712
+            Credito.deleted_at == None,  # noqa: E711
+            Pago.monto_a_pagar > Pago.capital_a_pagar + Pago.interes_a_pagar + TOL,
+        )
+    )
+    filas = result.scalars().all()
+
+    detalle: list[dict] = []
+    corregidos = 0
+    for pago in filas:
+        anterior = pago.interes_a_pagar
+        nuevo = (pago.monto_a_pagar - pago.capital_a_pagar).quantize(
+            _Q, rounding=ROUND_HALF_UP
+        )
+        detalle.append({
+            "pago_id": str(pago.id),
+            "credito_id": str(pago.credito_id),
+            "numero_cuota": pago.numero_cuota,
+            "interes_a_pagar": [str(anterior), str(nuevo)],
+        })
+
+        if not body.dry_run:
+            pago.interes_a_pagar = nuevo
+            await audit_service.registrar_actualizacion_campos(
+                db=db, entidad="pagos", entidad_id=pago.id,
+                usuario_id=current_user.id, ip_origen=get_client_ip(request),
+                cambios={"interes_a_pagar": (str(anterior), str(nuevo))},
+            )
+            corregidos += 1
+
+    if not body.dry_run and filas:
+        await db.flush()
+
+    return {
+        "dry_run": body.dry_run,
+        "revisados": len(filas),
+        "corregidos": corregidos,
+        "detalle": detalle,
     }
 
 

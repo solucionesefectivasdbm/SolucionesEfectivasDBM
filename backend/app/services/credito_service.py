@@ -188,8 +188,17 @@ def arrastre_interes_abono_capital(cuota_pagada: "Pago | None") -> Decimal:
     "abono no realizado" (ver `_pago_parcial`). Retorna `0.00` cuando no hay
     cuota previa o cuando la cuota previa es de tipo `abono` — esas cuotas
     nunca cargan ni transmiten interés.
+
+    También retorna `0.00` cuando la cuota quedó saldada en su totalidad
+    (`capital_pagado + interes_pagado >= monto_a_pagar`), aunque su split
+    capital/interés individual reporte un "faltante" de interés — por
+    ejemplo, una cuota saldada vía excedente con
+    `es_excedente_a=capital`. Sin este guard, ese split mal repartido se
+    leería como un faltante real y se arrastraría indebidamente.
     """
     if cuota_pagada is None or cuota_pagada.tipo_cuota == TipoCuota.abono:
+        return Decimal("0.00")
+    if cuota_pagada.capital_pagado + cuota_pagada.interes_pagado >= cuota_pagada.monto_a_pagar:
         return Decimal("0.00")
     falta = (cuota_pagada.interes_a_pagar - cuota_pagada.interes_pagado).quantize(
         _Q_ARRASTRE, rounding=ROUND_HALF_UP
