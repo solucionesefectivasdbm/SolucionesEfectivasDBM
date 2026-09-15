@@ -102,27 +102,26 @@ def get_periodo_momento(anio: int, mes: int, momento: str) -> tuple[date, date]:
     """
     import calendar
 
+    ultimo_dia = calendar.monthrange(anio, mes)[1]
+    anio_sig, mes_sig = (anio + 1, 1) if mes == 12 else (anio, mes + 1)
+
     if momento == "m1":
-        # días 25-29 del mes
+        # días 25-29 del mes (febrero termina el 28 o 29, según el año)
         inicio = date(anio, mes, 25)
-        fin = date(anio, mes, 29)
+        fin = date(anio, mes, min(29, ultimo_dia))
         return (inicio, fin)
 
     elif momento == "m2":
         # día 30 del mes hasta día 4 del mes siguiente
-        # Manejo especial: algunos meses no tienen día 30
-        ultimo_dia = calendar.monthrange(anio, mes)[1]
+        # Manejo especial: febrero no tiene día 30 → empieza el día 1 del
+        # mes siguiente (coherente con get_momento y fecha_limite_mora)
         if ultimo_dia >= 30:
             inicio = date(anio, mes, 30)
         else:
-            # Febrero: empieza en día 1 del mes siguiente
-            inicio = date(anio, mes, ultimo_dia)
+            inicio = date(anio_sig, mes_sig, 1)
 
         # fin: día 4 del mes siguiente
-        if mes == 12:
-            fin = date(anio + 1, 1, 4)
-        else:
-            fin = date(anio, mes + 1, 4)
+        fin = date(anio_sig, mes_sig, 4)
         return (inicio, fin)
 
     elif momento == "m3":
@@ -152,10 +151,7 @@ def fecha_limite_mora(hoy: date) -> date:
     un momento YA CERRADO en `hoy` → está en mora (ver en_mora()).
 
     DECISIÓN TÉCNICA: se deriva directamente de los umbrales de día del mes
-    (igual que get_momento), sin depender de get_periodo_momento(). Esa
-    función construye date(año, 2, 29) en su rama "m1" (fin = día 29) y falla
-    en febrero de años no bisiestos; arreglarla cambiaría el filtro por
-    momento en reportes.py (fuera de alcance de este cambio).
+    (igual que get_momento), sin depender de get_periodo_momento().
 
     Args:
         hoy: La fecha de referencia (hoy_bogota()).
