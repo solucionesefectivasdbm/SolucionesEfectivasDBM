@@ -15,7 +15,7 @@ import math
 import uuid
 from datetime import date, datetime, timezone
 from app.utils.fechas import hoy_bogota
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Annotated, NoReturn, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
@@ -27,7 +27,7 @@ from pydantic import BaseModel
 from app.database import get_db
 from app.dependencies import get_client_ip, get_current_user, require_role
 from app.models.cliente import Cliente
-from app.models.credito import Credito, Periodicidad, TipoCredito
+from app.models.credito import Credito, Periodicidad
 from app.models.gestor import Gestor
 from app.models.pago import Pago, TipoCuota
 from app.models.usuario import TipoUsuario, Usuario
@@ -44,11 +44,7 @@ from app.schemas.pago import (
     ValidarPagoRequest,
 )
 from app.services import audit_service
-from app.services.credito_service import (
-    calcular_capital_cuota_fija,
-    calcular_interes_cuota_fija,
-    credito_operativamente_abierto,
-)
+from app.services.credito_service import credito_operativamente_abierto
 from app.services.pago_service import PagoService
 from app.utils.fechas import siguiente_fecha_maxima
 from app.utils.momentos import get_momento, get_periodo_momento
@@ -974,122 +970,6 @@ async def alertas_vencidos(
         "total_pagos_vencidos": len(pagos),
         "total_monto_mora": float(total_mora),
         "pagos": [PagoResponse.model_validate(p) for p in pagos],
-    }
-
-
-# ---------------------------------------------------------------------------
-# ENDPOINT TEMPORAL — eliminar tras ejecutar en producción (carryover-scope-fixes, PR-C)
-# ---------------------------------------------------------------------------
-@router.post("/admin/backfill-cuota-fija-fuera-de-plazo")
-async def backfill_cuota_fija_fuera_de_plazo(
-    request: Request,
-    dry_run: bool = Query(True),
-    current_user: Usuario = Depends(require_role("admin")),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    """
-    Backfill idempotente: corrige cuotas `cuota_fija` fuera de plazo
-    (`numero_cuota > numero_cuotas`, no pagadas) generadas antes del fix de
-    la regla 15 (`carryover-scope-fixes`), que arrastraban el faltante de la
-    última cuota regular en vez de cobrar la base sin arrastre.
-
-    Alcance: cuotas NO pagadas (`capital_pagado == 0` e `interes_pagado ==
-    0`), no eliminadas, `tipo_cuota == programada`, de créditos `cuota_fija`
-    activos, no eliminados, con `saldo_capital > 0`, donde el componente de
-    capital o de interés excede (más allá de la tolerancia) la base
-    recalculada desde `capital_prestado` / `numero_cuotas`.
-
-    `saldo_capital`/`saldo_intereses` del crédito y los montos pagados de la
-    cuota NUNCA se modifican. Idempotente por construcción: tras aplicar, la
-    fila deja de cumplir el predicado.
-
-    ENDPOINT TEMPORAL — eliminar tras ejecutar una vez en producción (PR-C).
-    """
-    TOL = Decimal("0.01")
-    _Q = Decimal("0.01")
-
-    result = await db.execute(
-        select(Pago)
-        .join(Credito, Pago.credito_id == Credito.id)
-        .where(
-            Pago.deleted_at == None,  # noqa: E711
-            Pago.pagado == False,  # noqa: E712
-            Pago.capital_pagado == Decimal("0.00"),
-            Pago.interes_pagado == Decimal("0.00"),
-            Pago.tipo_cuota == TipoCuota.programada,
-            Credito.tipo_credito == TipoCredito.cuota_fija,
-            Credito.numero_cuotas.isnot(None),
-            Pago.numero_cuota > Credito.numero_cuotas,
-            Credito.saldo_capital > Decimal("0.00"),
-            Credito.activo == True,  # noqa: E712
-            Credito.deleted_at == None,  # noqa: E711
-        )
-        .options(selectinload(Pago.credito))
-    )
-    filas = result.scalars().all()
-
-    detalle: list[dict] = []
-    corregidos = 0
-    for pago in filas:
-        credito = pago.credito
-        base_cap = calcular_capital_cuota_fija(
-            credito.capital_prestado, credito.numero_cuotas,
-        )
-        base_int = calcular_interes_cuota_fija(
-            credito.capital_prestado, credito.tasa_interes_mensual, credito.periodicidad,
-        )
-        if not (
-            pago.capital_a_pagar > base_cap + TOL
-            or pago.interes_a_pagar > base_int + TOL
-        ):
-            continue
-
-        antes = {
-            "capital": str(pago.capital_a_pagar),
-            "interes": str(pago.interes_a_pagar),
-            "monto": str(pago.monto_a_pagar),
-        }
-        nuevo_monto = (base_cap + base_int).quantize(_Q, rounding=ROUND_HALF_UP)
-        nuevo_es_ultimo = credito.saldo_capital <= base_cap and credito.saldo_intereses <= base_int
-        despues = {
-            "capital": str(base_cap),
-            "interes": str(base_int),
-            "monto": str(nuevo_monto),
-        }
-        detalle.append({
-            "pago_id": str(pago.id),
-            "credito_id": str(credito.id),
-            "numero_credito_cliente": credito.numero_credito_cliente,
-            "numero_cuota": pago.numero_cuota,
-            "antes": antes,
-            "despues": despues,
-        })
-
-        if not dry_run:
-            cambios = {
-                "capital_a_pagar": (antes["capital"], despues["capital"]),
-                "interes_a_pagar": (antes["interes"], despues["interes"]),
-                "monto_a_pagar": (antes["monto"], despues["monto"]),
-            }
-            pago.capital_a_pagar = base_cap
-            pago.interes_a_pagar = base_int
-            pago.monto_a_pagar = nuevo_monto
-            pago.es_ultimo_pago = nuevo_es_ultimo
-            await audit_service.registrar_actualizacion_campos(
-                db=db, entidad="pagos", entidad_id=pago.id,
-                usuario_id=current_user.id, ip_origen=get_client_ip(request),
-                cambios=cambios,
-            )
-            corregidos += 1
-
-    if not dry_run and corregidos:
-        await db.flush()
-
-    return {
-        "dry_run": dry_run,
-        "revisados": len(filas),
-        "corregidos": corregidos,
-        "detalle": detalle,
     }
 
 
