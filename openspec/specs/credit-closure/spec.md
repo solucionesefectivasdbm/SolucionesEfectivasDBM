@@ -81,6 +81,95 @@ sites and the settled-only closure primitive MUST remain unchanged.
 - WHEN the settled-only closure primitive runs
 - THEN `saldo_capital` and `saldo_intereses` are byte-identical before and after
 
+#### Scenario: Last installment paid partially with balance outstanding
+
+- GIVEN a `cuota_fija` credit at `numero_cuota == numero_cuotas` (base `13600.00`)
+- WHEN it is paid partially (e.g. `8000.00`) and capital remains
+- THEN `activo` stays `True`, balances reflect the real remaining amounts
+- AND the further installment is generated with the SAME base value (`13600.00`),
+  carrying no arrastre
+
+### Requirement: Past-term Base Installment
+
+While a `cuota_fija` credit has `saldo_capital > 0` and the installment being generated
+or recalculated has `numero_cuota > numero_cuotas`, that installment MUST equal the full
+base installment: `capital_a_pagar = capital_por_cuota` (from `capital_prestado /
+numero_cuotas`) and `interes_a_pagar` = base interest computed on `capital_prestado`,
+with `monto_a_pagar` their sum. It MUST carry no arrastre and MUST NOT be capped to the
+remaining `saldo_capital`. This MUST hold on both the generation path
+(`generar_siguiente_cuota`) and the recalculation path
+(`recalcular_cuota_actual_si_no_pagada`). Past-term installments MUST repeat until
+`saldo_capital = 0`; from then on the Interest-only Installment Tail (rule 14) applies.
+
+#### Scenario: Partial payment of the last regular installment (prod case)
+
+- GIVEN cuota `12` of `12` with `monto_a_pagar 13600.00` and `saldo_capital 10000.00`
+- WHEN it is paid partially with `8000.00`
+- THEN cuota `13` is generated with `capital_a_pagar 10000.00`, `interes_a_pagar 3600.00`,
+  `monto_a_pagar 13600.00`
+- AND `activo` stays `True`, balances reflect the real remaining amounts
+
+#### Scenario: Past-term installment is not capped to remaining capital
+
+- GIVEN a past-term credit with `saldo_capital 2000.00` and base `capital_por_cuota 10000.00`
+- WHEN the next installment is generated
+- THEN `capital_a_pagar = 10000.00` (not `2000.00`) AND `interes_a_pagar = 3600.00`
+
+#### Scenario: Admin edit on a past-term unpaid installment keeps base values
+
+- GIVEN an unpaid cuota `13` of `12` and a prior partially paid cuota `12`
+- WHEN the credit is edited (capital or tasa) and the installment is recalculated
+- THEN its components equal the base values derived from the edited credit
+- AND no shortfall from cuota 12 is re-added
+
+#### Scenario: Past-term sequence ends in the interest-only tail
+
+- GIVEN a past-term credit whose payment brings `saldo_capital` to `0.00` with
+  `saldo_intereses > 0`
+- WHEN the next installment is generated
+- THEN it is interest-only per the Interest-only Installment Tail requirement
+
+#### Scenario: Component sum invariant holds past term
+
+- WHEN any past-term installment is generated or recalculated
+- THEN `capital_a_pagar + interes_a_pagar == monto_a_pagar` within `TOL`
+
+### Requirement: One-off Past-term Arrastre Backfill
+
+A temporary admin-only endpoint MUST correct unpaid `cuota_fija` rows with
+`numero_cuota > numero_cuotas`, `capital_pagado = 0` and `interes_pagado = 0`, whose
+`capital_a_pagar` or `interes_a_pagar` exceeds (beyond `TOL`) the base recomputed from
+`capital_prestado` / `numero_cuotas`. It MUST reset both components to base, recompute
+`monto_a_pagar`, and audit previous values via `audit_service`. It MUST support dry-run
+and apply, scan all credits (no hard-coded IDs), be idempotent, and be removed after one
+production run.
+
+#### Scenario: Dry-run lists without writing
+
+- GIVEN one qualifying inflated past-term row
+- WHEN the backfill runs in dry-run mode
+- THEN the row (credit, `numero_cuota`, current and base components) is reported
+- AND no row is modified and no audit entry is written
+
+#### Scenario: Apply corrects the row
+
+- GIVEN cuota `13` of `12` with `capital_a_pagar 12000.00`, `interes_a_pagar 5200.00`
+- WHEN the backfill applies
+- THEN `capital_a_pagar = 10000.00`, `interes_a_pagar = 3600.00`, `monto_a_pagar = 13600.00`
+- AND previous values are audited
+
+#### Scenario: Idempotent re-run
+
+- WHEN the backfill applies a second time
+- THEN zero rows qualify and nothing is modified
+
+#### Scenario: Out-of-scope rows untouched
+
+- GIVEN rows with any payment recorded, rows within term, `abono_capital` rows,
+  interest-only tail rows, and credit balances
+- WHEN the backfill runs
+- THEN none of them are modified
+
 ### Requirement: Interest-only Installment Tail
 
 While `saldo_capital <= 0 < saldo_intereses` on a `cuota_fija` credit, generation
@@ -327,11 +416,19 @@ rejection MUST surface `detail` rather than a generic literal.
 
 #### Scenario: Capital sent against an interest-only installment
 
-- GIVEN a pending installment with `capital_a_pagar = 0`
+- GIVEN a pending `cuota_fija` installment with `capital_a_pagar = 0` (interest-only tail)
 - WHEN a payment with capital above tolerance is registered
 - THEN the response is `422`
 - AND `detail` explains that the installment charges interest only because the
   capital is already settled, instead of reporting a bare component-exceeded error
+
+#### Scenario: Settled-capital reason never issued for abono_capital
+
+- GIVEN a pending `abono_capital` `interes` installment with `capital_a_pagar = 0`
+- WHEN a payment with capital above tolerance is registered as an exact payment
+- THEN the response is `422`
+- AND `detail` MUST NOT state that the capital is settled (see
+  `abono-capital-carryover`, "Interés Installment Is Not Capital-Settled")
 
 #### Scenario: Frontend surfaces the reason
 
