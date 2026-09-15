@@ -142,3 +142,77 @@ def get_periodo_momento(anio: int, mes: int, momento: str) -> tuple[date, date]:
 
     else:
         raise ValueError(f"Momento inválido: {momento}. Debe ser m1..m5")
+
+
+def fecha_limite_mora(hoy: date) -> date:
+    """
+    Retorna el primer día del momento (m1..m5) que contiene `hoy`.
+
+    Un pago no pagado con `fecha_maxima < fecha_limite_mora(hoy)` pertenece a
+    un momento YA CERRADO en `hoy` → está en mora (ver en_mora()).
+
+    DECISIÓN TÉCNICA: se deriva directamente de los umbrales de día del mes
+    (igual que get_momento), sin depender de get_periodo_momento(). Esa
+    función construye date(año, 2, 29) en su rama "m1" (fin = día 29) y falla
+    en febrero de años no bisiestos; arreglarla cambiaría el filtro por
+    momento en reportes.py (fuera de alcance de este cambio).
+
+    Args:
+        hoy: La fecha de referencia (hoy_bogota()).
+
+    Returns:
+        La fecha de inicio del momento que contiene `hoy`.
+    """
+    import calendar
+
+    dia = hoy.day
+
+    if dia >= 30:
+        return date(hoy.year, hoy.month, 30)
+    if 25 <= dia <= 29:
+        return date(hoy.year, hoy.month, 25)
+    if 19 <= dia <= 24:
+        return date(hoy.year, hoy.month, 19)
+    if 14 <= dia <= 18:
+        return date(hoy.year, hoy.month, 14)
+    if 5 <= dia <= 13:
+        return date(hoy.year, hoy.month, 5)
+
+    # días 1-4: el m2 que los contiene empieza el día 30 del mes anterior,
+    # salvo que ese mes tenga menos de 30 días (solo febrero), en cuyo caso
+    # el m2 empieza el día 1 del mes actual.
+    if hoy.month == 1:
+        anio_anterior, mes_anterior = hoy.year - 1, 12
+    else:
+        anio_anterior, mes_anterior = hoy.year, hoy.month - 1
+    ultimo_dia_mes_anterior = calendar.monthrange(anio_anterior, mes_anterior)[1]
+    if ultimo_dia_mes_anterior >= 30:
+        return date(anio_anterior, mes_anterior, 30)
+    return date(hoy.year, hoy.month, 1)
+
+
+def en_mora(fecha_maxima: date, hoy: date) -> bool:
+    """
+    Un pago no pagado con `fecha_maxima` está en mora en `hoy` si su momento
+    ya cerró, es decir si `fecha_maxima` es anterior al inicio del momento
+    que contiene `hoy`.
+    """
+    return fecha_maxima < fecha_limite_mora(hoy)
+
+
+def flags_mora(fecha_maxima: date, pagado: bool, hoy: date, limite: date) -> dict:
+    """
+    Calcula los flags de mora de un pago (scheduled-overdue-evaluation):
+    `vencido` (alerta visual: fecha ya pasó) y `en_mora` (momento que
+    contiene `fecha_maxima` ya cerró, ver en_mora()). Un pago pagado nunca
+    está vencido ni en mora.
+
+    `limite` es `fecha_limite_mora(hoy)` precalculado UNA vez por request por
+    el caller, para no recomputarlo por cada fila del listado.
+    """
+    if pagado:
+        return {"vencido": False, "en_mora": False}
+    return {
+        "vencido": fecha_maxima < hoy,
+        "en_mora": fecha_maxima < limite,
+    }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { pagosApi, clientesApi, creditosApi } from '@/api'
 import { formatCOP, formatFecha } from '@/utils/formatters'
-import { StatCard, LoadingPage, MoraBadge } from '@/components/ui'
+import { StatCard, LoadingPage } from '@/components/ui'
 import { useAuthStore } from '@/store/authStore'
 import type { Pago, AlertasVencidos } from '@/types'
 import { AlertTriangle, Clock } from 'lucide-react'

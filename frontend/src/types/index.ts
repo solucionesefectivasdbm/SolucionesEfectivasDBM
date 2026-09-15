@@ -125,6 +125,8 @@ export interface Pago {
   es_proyectada?: boolean
   razon_bloqueo?: string | null
   tipo_credito?: TipoCredito | null
+  vencido: boolean
+  en_mora: boolean
 }
 
 export interface RegistrarPagoResponse {

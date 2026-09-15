@@ -40,14 +40,6 @@ export function PagoBadge({ pagado, validado }: { pagado: boolean; validado: boo
   return <span className="badge-warning">Pendiente</span>
 }
 
-// Badge mora
-export function MoraBadge({ fechaMaxima }: { fechaMaxima: string }) {
-  const hoy = new Date()
-  const vence = new Date(fechaMaxima)
-  if (vence < hoy) return <span className="badge-danger">Vencido</span>
-  return null
-}
-
 // Paginación
 interface PaginacionProps {
   page: number

@@ -128,8 +128,6 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
     }
   }, [modalReceptor])
 
-  const isVencido = (p: Pago) => !p.pagado && new Date(p.fecha_maxima) < new Date()
-
   const handleSolicitarRegistrar = () => {
     // Antes de registrar, mostrar confirmación con los montos
     setModalRegistrar(false)
@@ -529,8 +527,8 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                           p.es_proyectada
                             ? 'bg-gray-50 text-gray-400'
                             : i % 2 === 0 ? 'table-row-even' : 'table-row-odd',
-                          !p.es_proyectada && !isVencido(p) && !p.pagado && p.veces_aplazado > 0 && 'bg-violet-50',
-                          !p.es_proyectada && isVencido(p) && 'bg-red-50',
+                          !p.es_proyectada && !p.vencido && !p.pagado && p.veces_aplazado > 0 && 'bg-violet-50',
+                          !p.es_proyectada && p.vencido && 'bg-red-50',
                           p.es_ultimo_pago && 'border-l-4 border-l-accent',
                         )}
                         title={p.es_proyectada ? `Proyectada — ${p.razon_bloqueo ?? ''}` : undefined}
@@ -625,7 +623,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                         <td className="table-cell text-green-700">{formatCOP(p.capital_pagado)}</td>
                         <td className="table-cell text-green-700">{formatCOP(p.interes_pagado)}</td>
                         <td className="table-cell">
-                          <span className={clsx('text-xs', isVencido(p) && 'text-danger font-bold')}>
+                          <span className={clsx('text-xs', p.vencido && 'text-danger font-bold')}>
                             {formatFecha(p.fecha_maxima)}
                           </span>
                         </td>
@@ -653,7 +651,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                                 p.tipo_validacion.charAt(0).toUpperCase() + p.tipo_validacion.slice(1)}
                             </span>
                           )}
-                          {!p.es_proyectada && isVencido(p) && <span className="badge-danger ml-1">Vencido</span>}
+                          {!p.es_proyectada && p.en_mora && <span className="badge-danger ml-1">Vencido</span>}
                           {!p.es_proyectada && p.veces_aplazado > 0 && (
                             <span
                               className="ml-1 text-xs px-2 py-0.5 rounded-full font-medium bg-violet-100 text-violet-700"

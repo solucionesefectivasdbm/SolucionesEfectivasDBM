@@ -294,7 +294,7 @@ export default function ClientesPage() {
               Afiliación militar
             </label>
             <span className="text-xs text-gray-400 italic">
-              Estado "al día" se calcula automáticamente según pagos vencidos pendientes.
+              Estado "al día" se calcula automáticamente: un cliente queda en atraso cuando el momento de una cuota cierra sin pago.
             </span>
           </div>
           <div className="col-span-2 flex gap-3 justify-end pt-2">

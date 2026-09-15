@@ -41,7 +41,8 @@ from app.services.credito_service import (
     recalcular_cuotas_futuras,
     recalcular_saldo_intereses,
 )
-from app.utils.fechas import es_domingo, siguiente_fecha_maxima
+from app.utils.fechas import es_domingo, hoy_bogota, siguiente_fecha_maxima
+from app.utils.momentos import fecha_limite_mora, flags_mora
 from app.utils.tz import ahora_bogota
 
 router = APIRouter(prefix="/creditos", tags=["Créditos"])
@@ -591,13 +592,23 @@ async def historial_cuotas(
     current_user: Usuario = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Historial completo de cuotas de un crédito."""
+    """
+    Historial completo de cuotas de un crédito, con flags `vencido`/`en_mora`
+    calculados igual que en /pagos (scheduled-overdue-evaluation).
+    """
+    hoy = hoy_bogota()
+    limite = fecha_limite_mora(hoy)
     result = await db.execute(
         select(Pago)
         .where(Pago.credito_id == credito_id, Pago.deleted_at == None)  # noqa: E711
         .order_by(Pago.numero_cuota)
     )
     pagos = result.scalars().all()
-    return [PagoResponse.model_validate(p) for p in pagos]
+    return [
+        PagoResponse.model_validate(p).model_copy(
+            update=flags_mora(p.fecha_maxima, p.pagado, hoy, limite)
+        )
+        for p in pagos
+    ]
 
 
