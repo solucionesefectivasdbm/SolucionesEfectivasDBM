@@ -495,6 +495,49 @@ class TestCierreCreditoAutomatico:
         assert nueva_cuota.interes_a_pagar == Decimal("3600.00")
         assert nueva_cuota.monto_a_pagar == Decimal("13600.00")
 
+    @pytest.mark.asyncio
+    async def test_ultima_cuota_pagada_parcial_con_capital_pendiente_genera_base(self):
+        """
+        Task 8.1 (carryover-scope-fixes, regla 15): sibling PARCIAL del test
+        anterior. Un pago PARCIAL (8000 capital + 3600 interés, faltante
+        2200) en la cuota 12/12 no debe arrastrar el faltante a la cuota 13
+        (fuera de plazo) — la cuota 13 debe ser la base (10000/3600/13600),
+        sin arrastre re-sumado (caso Sanabria).
+        """
+        credito = make_credito(
+            saldo_capital=Decimal("15000.00"),
+            saldo_intereses=Decimal("3600.00"),
+            numero_cuotas=12,
+            tasa=Decimal("0.0300"),
+        )
+        credito.capital_prestado = Decimal("120000.00")  # 120000/12 = 10000 por cuota
+        pago = make_pago(
+            numero_cuota=12,
+            monto_a_pagar=Decimal("13600.00"),
+            capital=Decimal("10000.00"),
+            interes=Decimal("3600.00"),
+        )
+        pago.fecha_maxima = date(2027, 2, 15)
+        db = AsyncMock()
+
+        request = RegistrarPagoRequest(
+            capital_pagado=Decimal("8000.00"),
+            interes_pagado=Decimal("3600.00"),
+        )
+
+        result = await PagoService.registrar_pago(db, pago, credito, request, date(2027, 2, 15))
+
+        assert credito.saldo_capital == Decimal("7000.00")
+        assert credito.activo is True
+
+        assert db.add.called
+        nueva_cuota = db.add.call_args.args[0]
+        assert nueva_cuota.numero_cuota == 13
+        assert nueva_cuota.capital_a_pagar == Decimal("10000.00")
+        assert nueva_cuota.interes_a_pagar == Decimal("3600.00")
+        assert nueva_cuota.monto_a_pagar == Decimal("13600.00")
+        assert nueva_cuota.tipo_cuota == TipoCuota.programada
+
 
 class TestCierreEnTodasLasRutas:
     """
