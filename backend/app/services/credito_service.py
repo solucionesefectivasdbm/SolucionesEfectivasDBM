@@ -219,6 +219,21 @@ def desglosar_arrastre(
     return arr_cap, (total - arr_cap)
 
 
+def _es_cuota_fija_fuera_de_plazo(credito: Credito, numero: int) -> bool:
+    """
+    Regla 15 (carryover-scope-fixes): una cuota `cuota_fija` está fuera de
+    plazo cuando su número supera `numero_cuotas` y aún queda capital
+    pendiente. Rule 14 (capital saldado, `saldo_capital <= 0`) domina —
+    los llamadores deben chequearla ANTES de esta.
+    """
+    return (
+        credito.tipo_credito == TipoCredito.cuota_fija
+        and credito.numero_cuotas is not None
+        and numero > credito.numero_cuotas
+        and credito.saldo_capital > Decimal("0.00")
+    )
+
+
 def arrastre_interes_abono_capital(cuota_pagada: "Pago | None") -> Decimal:
     """
     Calcula el interés pendiente (faltante) de la última cuota pagada que
@@ -634,7 +649,13 @@ def _siguiente_cuota_fija(
         credito.capital_prestado, credito.tasa_interes_mensual, credito.periodicidad,
     )
 
-    arr_cap, arr_int = desglosar_arrastre(cuota_anterior, saldo_pendiente)
+    if _es_cuota_fija_fuera_de_plazo(credito, numero):
+        # Regla 15: cuota fuera del plazo original — base sin arrastre, sin
+        # tope (el arrastre de un ciclo con más cuotas de las pactadas no se
+        # re-suma indefinidamente; ver design decision 6/7).
+        arr_cap, arr_int = Decimal("0.00"), Decimal("0.00")
+    else:
+        arr_cap, arr_int = desglosar_arrastre(cuota_anterior, saldo_pendiente)
     capital_a_pagar = (capital_por_cuota + arr_cap).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     interes_a_pagar = (interes + arr_int).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     monto_total = (capital_a_pagar + interes_a_pagar).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -890,29 +911,34 @@ async def recalcular_cuota_actual_si_no_pagada(
                 credito.capital_prestado, credito.tasa_interes_mensual, credito.periodicidad,
             )
 
-        # Re-derivar el arrastre pendiente desde la cuota pagada inmediatamente
-        # anterior, para no sobrescribirlo con los valores base recalculados
-        # (mismo defecto de clase que el reset de saldo_capital en edición).
-        cuota_previa_pagada = (await db.execute(
-            select(Pago).where(
-                Pago.credito_id == credito.id,
-                Pago.numero_cuota < actual.numero_cuota,
-                Pago.pagado == True,  # noqa: E712
-                Pago.deleted_at == None,  # noqa: E711
-            ).order_by(Pago.numero_cuota.desc()).limit(1)
-        )).scalar_one_or_none()
+        if _es_cuota_fija_fuera_de_plazo(credito, actual.numero_cuota):
+            # Regla 15: cuota fuera de plazo — base sin arrastre, se evita la
+            # consulta de la cuota pagada anterior (no aporta valor aquí).
+            arr_cap, arr_int = Decimal("0.00"), Decimal("0.00")
+        else:
+            # Re-derivar el arrastre pendiente desde la cuota pagada inmediatamente
+            # anterior, para no sobrescribirlo con los valores base recalculados
+            # (mismo defecto de clase que el reset de saldo_capital en edición).
+            cuota_previa_pagada = (await db.execute(
+                select(Pago).where(
+                    Pago.credito_id == credito.id,
+                    Pago.numero_cuota < actual.numero_cuota,
+                    Pago.pagado == True,  # noqa: E712
+                    Pago.deleted_at == None,  # noqa: E711
+                ).order_by(Pago.numero_cuota.desc()).limit(1)
+            )).scalar_one_or_none()
 
-        saldo_pendiente = Decimal("0.00")
-        if cuota_previa_pagada is not None:
-            saldo_pendiente = max(
-                Decimal("0.00"),
-                (
-                    cuota_previa_pagada.monto_a_pagar
-                    - cuota_previa_pagada.capital_pagado
-                    - cuota_previa_pagada.interes_pagado
-                ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
-            )
-        arr_cap, arr_int = desglosar_arrastre(cuota_previa_pagada, saldo_pendiente)
+            saldo_pendiente = Decimal("0.00")
+            if cuota_previa_pagada is not None:
+                saldo_pendiente = max(
+                    Decimal("0.00"),
+                    (
+                        cuota_previa_pagada.monto_a_pagar
+                        - cuota_previa_pagada.capital_pagado
+                        - cuota_previa_pagada.interes_pagado
+                    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+                )
+            arr_cap, arr_int = desglosar_arrastre(cuota_previa_pagada, saldo_pendiente)
 
         capital_x = (capital_x + arr_cap).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         interes = (interes + arr_int).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)

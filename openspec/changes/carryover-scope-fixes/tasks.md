@@ -45,41 +45,41 @@
 
 ## Phase 5: Past-term Predicate (PR-B)
 
-- [ ] 5.1 RED: `backend/tests/test_credito_service.py` — `_es_cuota_fija_fuera_de_plazo(credito, numero)`: true only when `tipo_credito == cuota_fija`, `numero > numero_cuotas`, `saldo_capital > 0`; false for `abono_capital`, within-term, and `saldo_capital <= 0` (Req: credit-closure / "Past-term Base Installment")
-- [ ] 5.2 GREEN: `backend/app/services/credito_service.py` — add pure predicate `_es_cuota_fija_fuera_de_plazo` next to `desglosar_arrastre` per design decision 4
+- [x] 5.1 RED: `backend/tests/test_credito_service.py` — `_es_cuota_fija_fuera_de_plazo(credito, numero)`: true only when `tipo_credito == cuota_fija`, `numero > numero_cuotas`, `saldo_capital > 0`; false for `abono_capital`, within-term, and `saldo_capital <= 0` (Req: credit-closure / "Past-term Base Installment")
+- [x] 5.2 GREEN: `backend/app/services/credito_service.py` — add pure predicate `_es_cuota_fija_fuera_de_plazo` next to `desglosar_arrastre` per design decision 4
 
 ## Phase 6: Generation Carve-out (PR-B)
 
-- [ ] 6.1 RED: `backend/tests/test_credito_service.py` — `_siguiente_cuota_fija` on installment 13-of-12 after a PARTIAL payment on 12/12 (`saldo_pendiente=5000`) → cuota 13 = base (10000/3600/13600), no arrastre, `programada` (Req: payment-carryover exception scenario, credit-closure)
-- [ ] 6.2 RED: same file — installment 13→14 after ANOTHER partial payment on 13/12 → cuota 14 still equals base, no arrastre re-added (validator-found gap)
-- [ ] 6.3 RED: same file — past-term installment is NOT capped when remaining `saldo_capital` (e.g. 2000) is below `capital_por_cuota` (e.g. 10000) → `capital_a_pagar` stays 10000, uncapped (validator-found gap; Req: credit-closure "not capped" scenario)
-- [ ] 6.4 RED: same file — once `saldo_capital` reaches 0 mid past-term-tail, the following installment switches to the rule-14 interest-only tail (Req: credit-closure)
-- [ ] 6.5 GREEN: `backend/app/services/credito_service.py:608-654` — call `_es_cuota_fija_fuera_de_plazo` in `_siguiente_cuota_fija` after the `saldo_capital<=0` tail check (rule 14 dominates rule 15); when true, emit base cap + base interest, arrastre 0, uncapped, `programada`, existing `es_ultima` formula unchanged
+- [x] 6.1 RED: `backend/tests/test_credito_service.py` — `_siguiente_cuota_fija` on installment 13-of-12 after a PARTIAL payment on 12/12 (`saldo_pendiente=5000`) → cuota 13 = base (10000/3600/13600), no arrastre, `programada` (Req: payment-carryover exception scenario, credit-closure)
+- [x] 6.2 RED: same file — installment 13→14 after ANOTHER partial payment on 13/12 → cuota 14 still equals base, no arrastre re-added (validator-found gap)
+- [x] 6.3 RED: same file — past-term installment is NOT capped when remaining `saldo_capital` (e.g. 2000) is below `capital_por_cuota` (e.g. 10000) → `capital_a_pagar` stays 10000, uncapped (validator-found gap; Req: credit-closure "not capped" scenario)
+- [x] 6.4 RED: same file — once `saldo_capital` reaches 0 mid past-term-tail, the following installment switches to the rule-14 interest-only tail (Req: credit-closure)
+- [x] 6.5 GREEN: `backend/app/services/credito_service.py:608-654` — call `_es_cuota_fija_fuera_de_plazo` in `_siguiente_cuota_fija` after the `saldo_capital<=0` tail check (rule 14 dominates rule 15); when true, emit base cap + base interest, arrastre 0, uncapped, `programada`, existing `es_ultima` formula unchanged
 
 ## Phase 7: Recalculation Carve-out (PR-B)
 
-- [ ] 7.1 RED: `backend/tests/test_credito_service.py` (via `db_session`) — `recalcular_cuota_actual_si_no_pagada` on an unpaid past-term cuota after an admin field edit keeps base values, no re-added shortfall, skips the walk-back query (Req: credit-closure "admin edit on unpaid 13/12 keeps base")
-- [ ] 7.2 GREEN: `backend/app/services/credito_service.py:879-926` — same predicate check in `recalcular_cuota_actual_si_no_pagada`, mirroring Phase 6's branch
+- [x] 7.1 RED: `backend/tests/test_credito_service.py` (via `db_session`) — `recalcular_cuota_actual_si_no_pagada` on an unpaid past-term cuota after an admin field edit keeps base values, no re-added shortfall, skips the walk-back query (Req: credit-closure "admin edit on unpaid 13/12 keeps base")
+- [x] 7.2 GREEN: `backend/app/services/credito_service.py:879-926` — same predicate check in `recalcular_cuota_actual_si_no_pagada`, mirroring Phase 6's branch
 
 ## Phase 8: Payment-side Regression Coverage (PR-B)
 
-- [ ] 8.1 RED: `backend/tests/test_pago_service.py` — PARTIAL-payment sibling of `test_ultima_cuota_pagada_con_capital_pendiente_no_cierra` (line 449): partial payment (e.g. 8000 capital + 3600 interest) on installment 12/12 → installment 13 = 10000/3600/13600, no arrastre (Req: credit-closure)
-- [ ] 8.2 GREEN: update `backend/tests/test_pago_service.py:1213` `test_capital_contra_cuota_solo_interes_lanza_mensaje_explicativo` to pass `tipo_credito=cuota_fija` explicitly (message scoping from Phase 3 makes the implicit default insufficient)
-- [ ] 8.3 `backend/venv/Scripts/python.exe -m pytest backend/tests/test_credito_service.py backend/tests/test_pago_service.py` green
+- [x] 8.1 RED: `backend/tests/test_pago_service.py` — PARTIAL-payment sibling of `test_ultima_cuota_pagada_con_capital_pendiente_no_cierra` (line 449): partial payment (e.g. 8000 capital + 3600 interest) on installment 12/12 → installment 13 = 10000/3600/13600, no arrastre (Req: credit-closure)
+- [ ] 8.2 NOT APPLICABLE in this batch: `_validar_split`'s `tipo_credito` message-scoping kwarg (Phase 3) lives only on PR-A's branch (`fix/abono-capital-interes-input-guard`), which this branch does not contain — `test_capital_contra_cuota_solo_interes_lanza_mensaje_explicativo` still passes unmodified against the current `_validar_split` signature. Revisit at PR-A/PR-B merge or rebase time.
+- [x] 8.3 `backend/venv/Scripts/python.exe -m pytest backend/tests/test_credito_service.py backend/tests/test_pago_service.py` green (107 passed)
 
 ## Phase 9: Spec Deltas (PR-B)
 
-- [ ] 9.1 Confirm `openspec/changes/carryover-scope-fixes/specs/{payment-carryover,credit-closure,abono-capital-carryover}/spec.md` match the merged behavior implemented in Phases 5-8 (delta files already exist from sdd-spec; no runtime code lives here — they are merged into `openspec/specs/*` at sdd-archive per the abono-capital-carryover-fix precedent, not inside this PR)
+- [x] 9.1 Confirmed `openspec/changes/carryover-scope-fixes/specs/{payment-carryover,credit-closure}/spec.md` match the implemented behavior (Phases 5-8); no edits needed. `abono-capital-carryover/spec.md` delta belongs to PR-A, out of scope here.
 
 ## Phase 10: Backfill Endpoint (PR-B, or split PR-B2)
 
-- [ ] 10.1 RED: `backend/tests/test_pagos_backfill_cuota_fija_fuera_de_plazo.py` (new) — qualifying row (unpaid, zero paid, `programada`, `cuota_fija`, `numero_cuota > numero_cuotas`, `saldo_capital > 0`, components > base+TOL) corrected to base; dry-run writes nothing; idempotent second run is a no-op; `abono_capital`/paid/within-term/tail rows untouched; non-admin → 403 (Req: credit-closure "One-off Past-term Arrastre Backfill")
-- [ ] 10.2 GREEN: `POST /pagos/admin/backfill-cuota-fija-fuera-de-plazo` in `backend/app/routers/pagos.py` (design decision 5 overrides proposal's `admin.py` mention), `require_role("admin")`, `dry_run: bool = True` default, `# TEMPORAL` banner; SQL predicate per design; Python filter on components vs. `calcular_*_cuota_fija(capital_prestado)`; write cap/int/monto/es_ultimo_pago; saldos untouched; audit via `audit_service.registrar_actualizacion_campos`; response `{dry_run, revisados, corregidos, detalle[]}`
-- [ ] 10.3 `backend/venv/Scripts/python.exe -m pytest backend/tests/test_pagos_backfill_cuota_fija_fuera_de_plazo.py` green
+- [x] 10.1 RED: `backend/tests/test_pagos_backfill_cuota_fija_fuera_de_plazo.py` (new) — qualifying row (unpaid, zero paid, `programada`, `cuota_fija`, `numero_cuota > numero_cuotas`, `saldo_capital > 0`, components > base+TOL) corrected to base; dry-run writes nothing; idempotent second run is a no-op; `abono_capital`/paid/within-term/base rows untouched; non-admin → 403 (Req: credit-closure "One-off Past-term Arrastre Backfill")
+- [x] 10.2 GREEN: `POST /pagos/admin/backfill-cuota-fija-fuera-de-plazo` in `backend/app/routers/pagos.py`, `require_role("admin")`, `dry_run: bool = Query(True)` default, `# TEMPORAL` banner; SQL predicate per design; Python filter on components vs. `calcular_*_cuota_fija(capital_prestado)`; write cap/int/monto/es_ultimo_pago; saldos untouched; audit via `audit_service.registrar_actualizacion_campos`; response `{dry_run, revisados, corregidos, detalle[]}`
+- [x] 10.3 `backend/venv/Scripts/python.exe -m pytest backend/tests/test_pagos_backfill_cuota_fija_fuera_de_plazo.py` green (8 passed)
 
 ## Phase 11: PR-B Close-out
 
-- [ ] 11.1 `backend/venv/Scripts/python.exe -m pytest` full suite green
+- [x] 11.1 `backend/venv/Scripts/python.exe -m pytest` full suite green (405 passed)
 - [ ] 11.2 Open PR-B (independent branch off `main`; split into PR-B/PR-B2 if the diff exceeds ~370 lines) — OUT OF SCOPE for sdd-apply, requires orchestrator/owner-driven PR + deploy
 
 ## Phase 12: Backfill Rollout (prod, manual)

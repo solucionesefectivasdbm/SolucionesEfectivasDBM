@@ -22,6 +22,8 @@ from app.services.credito_service import (
     calcular_interes_periodo,
     esta_saldado,
     generar_siguiente_cuota,
+    recalcular_cuota_actual_si_no_pagada,
+    _es_cuota_fija_fuera_de_plazo,
     _siguiente_cuota_fija,
 )
 from app.utils.fechas import (
@@ -685,3 +687,157 @@ class TestRecalcularCuotaActualSoloInteres:
         assert cuota_actual.capital_a_pagar == Decimal("0.00")
         assert cuota_actual.interes_a_pagar == Decimal("5000.00")
         assert cuota_actual.monto_a_pagar == Decimal("5000.00")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# carryover-scope-fixes — PR-B: past-term base installment (rule 15)
+# design decisions 6-9
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestEsCuotaFijaFueraDePlazo:
+    """Task 5.1 — Req: Past-term Base Installment (predicate)."""
+
+    def test_cuota_fija_numero_mayor_a_numero_cuotas_y_saldo_capital_positivo_true(self):
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("5000.00"), numero_cuotas=12,
+        )
+        assert _es_cuota_fija_fuera_de_plazo(credito, 13) is True
+
+    def test_cuota_fija_dentro_de_plazo_false(self):
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("5000.00"), numero_cuotas=12,
+        )
+        assert _es_cuota_fija_fuera_de_plazo(credito, 12) is False
+
+    def test_abono_capital_false(self):
+        credito = _credito_abono_capital(saldo_capital=Decimal("5000.00"))
+        assert _es_cuota_fija_fuera_de_plazo(credito, 20) is False
+
+    def test_saldo_capital_cero_false(self):
+        """Rule 14 (capital saldado) dominates rule 15 — not past-term."""
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("0.00"), numero_cuotas=12,
+        )
+        assert _es_cuota_fija_fuera_de_plazo(credito, 13) is False
+
+
+class TestSiguienteCuotaFijaFueraDePlazo:
+    """Tasks 6.1-6.4 — Req: Past-term Base Installment, generation carve-out."""
+
+    def test_pago_parcial_en_ultima_cuota_genera_base_sin_arrastre(self):
+        """Partial payment on 12/12 leaves saldo_pendiente=5000; cuota 13 must
+        be the base installment (10000/3600/13600), arrastre ignored."""
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("300000.00"), numero_cuotas=12,
+            capital_prestado=Decimal("120000.00"), tasa=Decimal("0.0300"),
+        )
+        cuota_anterior = Pago(
+            id=uuid.uuid4(), credito_id=credito.id, numero_cuota=12,
+            tipo_cuota=TipoCuota.programada,
+            monto_a_pagar=Decimal("13600.00"),
+            capital_a_pagar=Decimal("10000.00"), interes_a_pagar=Decimal("3600.00"),
+            capital_pagado=Decimal("8000.00"), interes_pagado=Decimal("0.00"),
+            momento="m3", fecha_maxima=date(2026, 12, 15), pagado=True,
+        )
+        nueva = _siguiente_cuota_fija(
+            credito, cuota_anterior, 13, date(2027, 1, 15), "m3", None, Decimal("5600.00"),
+        )
+        assert nueva.capital_a_pagar == Decimal("10000.00")
+        assert nueva.interes_a_pagar == Decimal("3600.00")
+        assert nueva.monto_a_pagar == Decimal("13600.00")
+        assert nueva.tipo_cuota == TipoCuota.programada
+
+    def test_segunda_cuota_fuera_de_plazo_no_reacumula_arrastre(self):
+        """13→14 after another partial on 13/12: cuota 14 still equals base,
+        the previous shortfall is not re-added."""
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("290000.00"), numero_cuotas=12,
+            capital_prestado=Decimal("120000.00"), tasa=Decimal("0.0300"),
+        )
+        cuota_anterior = Pago(
+            id=uuid.uuid4(), credito_id=credito.id, numero_cuota=13,
+            tipo_cuota=TipoCuota.programada,
+            monto_a_pagar=Decimal("13600.00"),
+            capital_a_pagar=Decimal("10000.00"), interes_a_pagar=Decimal("3600.00"),
+            capital_pagado=Decimal("7000.00"), interes_pagado=Decimal("0.00"),
+            momento="m3", fecha_maxima=date(2027, 1, 15), pagado=True,
+        )
+        nueva = _siguiente_cuota_fija(
+            credito, cuota_anterior, 14, date(2027, 2, 15), "m3", None, Decimal("6600.00"),
+        )
+        assert nueva.capital_a_pagar == Decimal("10000.00")
+        assert nueva.interes_a_pagar == Decimal("3600.00")
+        assert nueva.monto_a_pagar == Decimal("13600.00")
+
+    def test_no_se_topa_cuando_saldo_capital_es_menor_al_capital_por_cuota(self):
+        """saldo_capital (2000) below capital_por_cuota (10000) — past-term
+        installment stays uncapped at the base amount."""
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("2000.00"), numero_cuotas=12,
+            capital_prestado=Decimal("120000.00"), tasa=Decimal("0.0300"),
+        )
+        nueva = _siguiente_cuota_fija(
+            credito, None, 13, date(2027, 1, 15), "m3", None, Decimal("0.00"),
+        )
+        assert nueva.capital_a_pagar == Decimal("10000.00")
+
+    def test_saldo_capital_llega_a_cero_cambia_a_cola_solo_interes(self):
+        """Once saldo_capital reaches 0 mid past-term-tail, the following
+        installment switches to the rule-14 interest-only tail."""
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("2000.00"),
+            numero_cuotas=12, capital_prestado=Decimal("120000.00"),
+            tasa=Decimal("0.0300"),
+        )
+        nueva = _siguiente_cuota_fija(
+            credito, None, 15, date(2027, 4, 15), "m3", None, Decimal("0.00"),
+        )
+        assert nueva.tipo_cuota == TipoCuota.interes
+        assert nueva.capital_a_pagar == Decimal("0.00")
+
+
+class TestRecalcularCuotaActualFueraDePlazo:
+    """Task 7.1 — Req: Admin edit on unpaid past-term cuota keeps base,
+    skips the walk-back query."""
+
+    @pytest.mark.asyncio
+    async def test_recalcular_cuota_pasada_de_plazo_mantiene_base(self, db_session):
+        credito = _credito_cuota_fija_saldo(
+            saldo_capital=Decimal("300000.00"), numero_cuotas=12,
+            capital_prestado=Decimal("120000.00"), tasa=Decimal("0.0300"),
+        )
+        db_session.add(credito)
+        await db_session.flush()
+
+        cuota_previa_pagada = Pago(
+            id=uuid.uuid4(), credito_id=credito.id, numero_cuota=12,
+            tipo_cuota=TipoCuota.programada,
+            monto_a_pagar=Decimal("13600.00"),
+            capital_a_pagar=Decimal("10000.00"), interes_a_pagar=Decimal("3600.00"),
+            capital_pagado=Decimal("8000.00"), interes_pagado=Decimal("0.00"),
+            momento="m3", fecha_maxima=date(2026, 12, 15), pagado=True,
+            validado_recaudador=True, es_ultimo_pago=False,
+        )
+        db_session.add(cuota_previa_pagada)
+        await db_session.flush()
+
+        cuota_actual = Pago(
+            id=uuid.uuid4(), credito_id=credito.id, numero_cuota=13,
+            tipo_cuota=TipoCuota.programada,
+            monto_a_pagar=Decimal("19200.00"),
+            capital_a_pagar=Decimal("15600.00"), interes_a_pagar=Decimal("3600.00"),
+            capital_pagado=Decimal("0.00"), interes_pagado=Decimal("0.00"),
+            momento="m3", fecha_maxima=date(2027, 1, 15),
+            pagado=False, validado_recaudador=False, es_ultimo_pago=False,
+        )
+        db_session.add(cuota_actual)
+        await db_session.flush()
+
+        ok = await recalcular_cuota_actual_si_no_pagada(db_session, credito)
+
+        assert ok is True
+        assert cuota_actual.tipo_cuota == TipoCuota.programada
+        assert cuota_actual.capital_a_pagar == Decimal("10000.00")
+        assert cuota_actual.interes_a_pagar == Decimal("3600.00")
+        assert cuota_actual.monto_a_pagar == Decimal("13600.00")
