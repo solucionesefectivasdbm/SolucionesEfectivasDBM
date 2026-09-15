@@ -20,6 +20,15 @@ prior row: `falta_capital = capital_a_pagar - capital_pagado` and
 shortfall MUST be added to its own component of the new installment. Distribution
 MUST NOT be proportional and MUST NOT default to interest.
 
+EXCEPTION (rule 15): when the installment being generated or recalculated has
+`numero_cuota > numero_cuotas` and the credit still has `saldo_capital > 0`, NO
+shortfall MUST be carried. The installment MUST equal the full base:
+`capital_a_pagar = capital_por_cuota` (derived from `capital_prestado / numero_cuotas`)
+and `interes_a_pagar` = base interest on `capital_prestado`, NOT capped to the remaining
+balance. Past-term behavior is specified in `credit-closure` ("Past-term Base
+Installment"); this requirement only carves it out of carry-over.
+(Previously: shortfall was carried unconditionally, with no `numero_cuotas` carve-out.)
+
 #### Scenario: Purely capital shortfall
 
 - GIVEN a prior cuota with `falta_capital = 50.00` and `falta_interes = 0.00`
@@ -52,6 +61,26 @@ MUST NOT be proportional and MUST NOT default to interest.
 - THEN cuota N's components equal base plus the full outstanding shortfall of
   cuota N-1 only
 - AND no shortfall is counted twice across the chain
+
+#### Scenario: Shortfall on the last regular installment is not carried past term
+
+- GIVEN cuota `12` of `12` (base `13600.00`) is paid partially with `8000.00`,
+  leaving `saldo_capital > 0`
+- WHEN cuota `13` is generated
+- THEN `capital_a_pagar = 10000.00`, `interes_a_pagar = 3600.00`, `monto_a_pagar = 13600.00`
+- AND no `falta_capital` / `falta_interes` from cuota 12 is added
+
+#### Scenario: Shortfall between past-term installments is not carried either
+
+- GIVEN cuota `13` of `12` (base `13600.00`) is paid partially, leaving `saldo_capital > 0`
+- WHEN cuota `14` is generated
+- THEN its components equal the same base values as cuota 13
+
+#### Scenario: Carry-over within term is unaffected
+
+- GIVEN cuota `11` of `12` is paid partially
+- WHEN cuota `12` is generated
+- THEN the per-component shortfall IS carried exactly as in the scenarios above
 
 ### Requirement: Component Sum Invariant
 
