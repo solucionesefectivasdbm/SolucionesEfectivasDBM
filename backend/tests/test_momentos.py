@@ -207,6 +207,62 @@ class TestGetPeriodoMomento:
         with pytest.raises(ValueError, match="Momento inválido"):
             get_periodo_momento(2026, 3, "m6")
 
+    # --- Febrero: m1 termina en el último día del mes (28 o 29) ---
+    def test_m1_febrero_no_bisiesto(self):
+        """Febrero 2027 no tiene día 29: m1 termina el 28 (antes: ValueError)."""
+        inicio, fin = get_periodo_momento(2027, 2, "m1")
+        assert inicio == date(2027, 2, 25)
+        assert fin == date(2027, 2, 28)
+
+    def test_m1_febrero_bisiesto(self):
+        inicio, fin = get_periodo_momento(2028, 2, "m1")
+        assert inicio == date(2028, 2, 25)
+        assert fin == date(2028, 2, 29)
+
+    # --- Febrero: m2 empieza el 1 de marzo (no hay día 30) ---
+    def test_m2_febrero_no_bisiesto_empieza_marzo_1(self):
+        """m2 de febrero no debe solaparse con m1 (25-28)."""
+        inicio, fin = get_periodo_momento(2027, 2, "m2")
+        assert inicio == date(2027, 3, 1)
+        assert fin == date(2027, 3, 4)
+
+    def test_m2_febrero_bisiesto_empieza_marzo_1(self):
+        inicio, fin = get_periodo_momento(2028, 2, "m2")
+        assert inicio == date(2028, 3, 1)
+        assert fin == date(2028, 3, 4)
+
+    def test_m2_mes_de_30_dias(self):
+        """Abril tiene 30 días: m2 empieza el 30 como siempre."""
+        inicio, fin = get_periodo_momento(2026, 4, "m2")
+        assert inicio == date(2026, 4, 30)
+        assert fin == date(2026, 5, 4)
+
+    def test_property_agrees_con_get_momento(self):
+        """
+        Para CADA día de 2026-01-01..2028-12-31 (incluye febrero bisiesto
+        2028): la fecha cae dentro del período que get_periodo_momento()
+        devuelve para su (anio, mes, momento) según get_mes_momento() y
+        get_momento(); y los rangos m1/m2 de cada mes no se solapan.
+        """
+        un_dia = timedelta(days=1)
+        fecha = date(2026, 1, 1)
+        fin = date(2028, 12, 31)
+        iteraciones = 0
+        while fecha <= fin:
+            anio, mes = get_mes_momento(fecha)
+            momento = get_momento(fecha)
+            inicio, termino = get_periodo_momento(anio, mes, momento)
+            assert inicio <= fecha <= termino, (fecha, momento, inicio, termino)
+            fecha += un_dia
+            iteraciones += 1
+        assert iteraciones == 1096
+
+        for anio in (2026, 2027, 2028):
+            for mes in range(1, 13):
+                _, fin_m1 = get_periodo_momento(anio, mes, "m1")
+                inicio_m2, _ = get_periodo_momento(anio, mes, "m2")
+                assert fin_m1 < inicio_m2, (anio, mes, fin_m1, inicio_m2)
+
 
 class TestFechaLimiteMora:
     """
