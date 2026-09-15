@@ -1229,10 +1229,72 @@ class TestValidarSplit:
                 capital_pagado=Decimal("100.00"),
                 interes_pagado=Decimal("4900.00"),
                 es_excedente=False,
+                tipo_credito=TipoCredito.cuota_fija,
             )
         mensaje = str(exc_info.value)
         assert "solo interés" in mensaje
         assert "saldado" in mensaje
+
+    def test_capital_contra_cuota_solo_interes_abono_capital_no_dice_saldado(self):
+        """
+        Task 3.1/3.2 (carryover-scope-fixes, PR-A): en `abono_capital` la
+        cuota de interés es la mitad estructural del ciclo alternado, NO
+        evidencia de que el capital esté saldado. El mensaje debe explicar
+        el ciclo, nunca afirmar "saldado".
+        """
+        pago = self._make_pago_split(
+            monto_a_pagar=Decimal("5000.00"),
+            capital_a_pagar=Decimal("0.00"),
+            interes_a_pagar=Decimal("5000.00"),
+        )
+        with pytest.raises(ValueError) as exc_info:
+            PagoService._validar_split(
+                pago,
+                capital_pagado=Decimal("100.00"),
+                interes_pagado=Decimal("4900.00"),
+                es_excedente=False,
+                tipo_credito=TipoCredito.abono_capital,
+            )
+        mensaje = str(exc_info.value)
+        assert "ya fue saldado" not in mensaje
+        assert "no está saldado" in mensaje
+        assert "ciclo" in mensaje
+        assert "abono" in mensaje
+
+    def test_capital_contra_cuota_solo_interes_tipo_credito_none_mensaje_generico(self):
+        """Sin tipo_credito (None): mensaje genérico de componente/tolerancia,
+        no la razón de negocio de ningún tipo de crédito específico."""
+        pago = self._make_pago_split(
+            monto_a_pagar=Decimal("5000.00"),
+            capital_a_pagar=Decimal("0.00"),
+            interes_a_pagar=Decimal("5000.00"),
+        )
+        with pytest.raises(ValueError) as exc_info:
+            PagoService._validar_split(
+                pago,
+                capital_pagado=Decimal("100.00"),
+                interes_pagado=Decimal("4900.00"),
+                es_excedente=False,
+            )
+        mensaje = str(exc_info.value)
+        assert "saldado" not in mensaje
+        assert "capital_pagado" in mensaje
+
+    def test_partial_free_split_aceptado_en_interes_abono_capital(self):
+        """El reparto libre en pago PARCIAL sigue aceptado en una cuota de
+        interés `abono_capital`, sin importar el tipo_credito."""
+        pago = self._make_pago_split(
+            monto_a_pagar=Decimal("70000.00"),
+            capital_a_pagar=Decimal("0.00"),
+            interes_a_pagar=Decimal("70000.00"),
+        )
+        PagoService._validar_split(
+            pago,
+            capital_pagado=Decimal("10000.00"),
+            interes_pagado=Decimal("20000.00"),
+            es_excedente=False,
+            tipo_credito=TipoCredito.abono_capital,
+        )
 
     def test_pago_exacto_solo_interes_sin_capital_no_lanza(self):
         """Pago exacto de una cuota de solo interés (capital_pagado=0) no debe

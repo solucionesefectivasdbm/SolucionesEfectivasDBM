@@ -4,6 +4,7 @@ from decimal import Decimal
 from typing import Optional
 from pydantic import BaseModel, field_validator
 
+from app.models.credito import TipoCredito
 from app.models.pago import TipoCuota, DestinoExcedente
 
 
@@ -34,6 +35,11 @@ class PagoResponse(BaseModel):
     # Campos virtuales: solo presentes en filas proyectadas (no existen en BD)
     es_proyectada: bool = False
     razon_bloqueo: Optional[str] = None
+    # Tipo de crédito del padre — permite al frontend distinguir la cuota de
+    # interés `cuota_fija` (capital saldado) de la `abono_capital` (ciclo
+    # alternado, capital NO saldado). Optional/None: ver design decision 1,
+    # `Pago` no tiene esta columna; solo se completa en filas de listado.
+    tipo_credito: Optional[TipoCredito] = None
 
     @field_validator("veces_aplazado", mode="before")
     @classmethod
