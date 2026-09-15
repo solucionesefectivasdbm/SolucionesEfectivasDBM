@@ -124,6 +124,7 @@ export interface Pago {
   numero_credito_cliente?: string | null
   es_proyectada?: boolean
   razon_bloqueo?: string | null
+  tipo_credito?: TipoCredito | null
 }
 
 export interface RegistrarPagoResponse {

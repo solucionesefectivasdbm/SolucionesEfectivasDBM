@@ -65,6 +65,7 @@ class PagoService:
         capital_pagado: Decimal,
         interes_pagado: Decimal,
         es_excedente: bool,
+        tipo_credito: "TipoCredito | None" = None,
     ) -> None:
         """
         Valida el split del usuario antes de aplicar cualquier reducción.
@@ -76,6 +77,14 @@ class PagoService:
                      e interes_pagado <= interes_a_pagar + TOL.
         - Parcial: total < monto_a_pagar — reparto libre, sin tope por componente.
         - Excedente (es_excedente=True): total > monto_a_pagar — no se rechaza.
+
+        `tipo_credito` (design decision 3, carryover-scope-fixes): escoge el
+        mensaje de negocio cuando se envía capital contra una cuota de solo
+        interés (`capital_a_pagar = 0`) en un pago exacto. `cuota_fija` ->
+        capital saldado (regla 13, sin cambios); `abono_capital` -> ciclo
+        alternado, capital NO saldado; `None` -> mensaje genérico (no debería
+        ocurrir en producción, los tres call sites siempre pasan el valor
+        real de `credito.tipo_credito`).
 
         Raises:
             ValueError: con mensaje descriptivo si el split es inválido.
@@ -103,14 +112,26 @@ class PagoService:
             # En exacto se valida que cada componente no supere lo esperado + TOL.
             if capital_pagado > pago.capital_a_pagar + TOL:
                 if pago.capital_a_pagar <= Decimal("0.00"):
-                    # Rule 13 (zero-balance-credit-closure): explica la razón de
-                    # negocio en vez de un error de componente/tolerancia — esta
-                    # cuota es de solo interés (regla 10) porque el capital ya
-                    # fue saldado, no hay capital que pagar en ella.
+                    # Rule 13 (zero-balance-credit-closure) / carryover-scope-fixes
+                    # decision 3: explica la razón de negocio en vez de un error
+                    # de componente/tolerancia. El texto depende del tipo de
+                    # crédito para que sea factualmente correcto.
+                    if tipo_credito == TipoCredito.cuota_fija:
+                        raise ValueError(
+                            "Esta cuota es de solo interés porque el capital del "
+                            "crédito ya fue saldado; no se puede registrar pago a "
+                            "capital en ella."
+                        )
+                    if tipo_credito == TipoCredito.abono_capital:
+                        raise ValueError(
+                            "Esta cuota es la de interés del ciclo; el capital de "
+                            "este crédito no está saldado, pero en un pago exacto "
+                            "debe registrarse en la cuota de abono. Para abonar "
+                            "capital aquí, registre un pago parcial."
+                        )
                     raise ValueError(
-                        "Esta cuota es de solo interés porque el capital del "
-                        "crédito ya fue saldado; no se puede registrar pago a "
-                        "capital en ella."
+                        f"En pago exacto, capital_pagado ({capital_pagado}) excede "
+                        f"capital_a_pagar ({pago.capital_a_pagar}) + tolerancia ({TOL})"
                     )
                 raise ValueError(
                     f"En pago exacto, capital_pagado ({capital_pagado}) excede "
@@ -187,6 +208,7 @@ class PagoService:
             capital_pagado=request.capital_pagado,
             interes_pagado=request.interes_pagado,
             es_excedente=False,
+            tipo_credito=credito.tipo_credito,
         )
 
         pago.capital_pagado = request.capital_pagado
@@ -229,6 +251,7 @@ class PagoService:
             capital_pagado=request.capital_pagado,
             interes_pagado=request.interes_pagado,
             es_excedente=False,
+            tipo_credito=credito.tipo_credito,
         )
 
         pago.capital_pagado = request.capital_pagado
@@ -301,6 +324,7 @@ class PagoService:
             capital_pagado=request.capital_pagado,
             interes_pagado=request.interes_pagado,
             es_excedente=True,
+            tipo_credito=credito.tipo_credito,
         )
 
         monto_pagado = request.capital_pagado + request.interes_pagado

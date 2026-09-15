@@ -87,6 +87,7 @@ def _pago_row_a_dict(row) -> dict:
         "numero_credito_cliente": row.numero_credito_cliente,
         "es_proyectada": False,
         "razon_bloqueo": None,
+        "tipo_credito": row.tipo_credito,
     }
 
 
@@ -166,6 +167,7 @@ async def listar_pagos_aplazados(
             Cliente.nombre.label("cliente_nombre"),
             Cliente.apellidos.label("cliente_apellidos"),
             Credito.numero_credito_cliente.label("numero_credito_cliente"),
+            Credito.tipo_credito.label("tipo_credito"),
         )
         .join(Credito, Pago.credito_id == Credito.id)
         .join(Cliente, Credito.cliente_id == Cliente.id)
@@ -255,6 +257,7 @@ async def listar_pagos(
             Cliente.nombre.label("cliente_nombre"),
             Cliente.apellidos.label("cliente_apellidos"),
             Credito.numero_credito_cliente.label("numero_credito_cliente"),
+            Credito.tipo_credito.label("tipo_credito"),
         )
         .join(Credito, Pago.credito_id == Credito.id)
         .join(Cliente, Credito.cliente_id == Cliente.id)
@@ -556,6 +559,7 @@ async def _calcular_virtuales(
                     "numero_credito_cliente": credito.numero_credito_cliente,
                     "es_proyectada": True,
                     "razon_bloqueo": f"Cuota #{bloqueador} pendiente",
+                    "tipo_credito": credito.tipo_credito,
                 })
 
             # Resync: si esta cuota ya existe persistida, usar su fecha_maxima

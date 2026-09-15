@@ -685,10 +685,15 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
             </div>
             <div>
               <label className="label">Capital pagado</label>
+              {/* Regla 13 (zero-balance-credit-closure) aplica solo a cuota_fija:
+                  en abono_capital la cuota de interés es la mitad estructural del
+                  ciclo alternado, no evidencia de que el capital esté saldado.
+                  tipo_credito null/undefined falla abierto (permite capital);
+                  el backend sigue siendo la autoridad de validación. */}
               <input type="number" className="input" value={capitalPagado}
-                disabled={pagoSeleccionado.tipo_cuota === 'interes'}
+                disabled={pagoSeleccionado.tipo_credito === 'cuota_fija' && pagoSeleccionado.tipo_cuota === 'interes'}
                 onChange={e => setCapitalPagado(e.target.value)} />
-              {pagoSeleccionado.tipo_cuota === 'interes' && (
+              {pagoSeleccionado.tipo_credito === 'cuota_fija' && pagoSeleccionado.tipo_cuota === 'interes' && (
                 <p className="text-xs text-gray-500 mt-1">
                   Esta cuota es de solo interés: el capital ya está saldado.
                 </p>

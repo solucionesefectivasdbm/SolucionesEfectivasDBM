@@ -123,6 +123,7 @@ def _fake_row(**overrides) -> SimpleNamespace:
         cliente_nombre="Juan",
         cliente_apellidos="Pérez",
         numero_credito_cliente="Juan Pérez-CR-001",
+        tipo_credito=TipoCredito.cuota_fija,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -149,6 +150,7 @@ class TestPagoRowADict:
         assert resp.numero_credito_cliente == "Juan Pérez-CR-001"
         assert resp.es_proyectada is False
         assert resp.razon_bloqueo is None
+        assert resp.tipo_credito == TipoCredito.cuota_fija
 
     def test_excedente_y_receptor_se_mapean(self):
         receptor = uuid.uuid4()
@@ -942,3 +944,73 @@ class TestProjectorParityArrastreAbonoCapital:
             Decimal(sucesor["capital_a_pagar"]) + Decimal(sucesor["interes_a_pagar"])
             == Decimal(sucesor["monto_a_pagar"])
         )
+
+
+class TestTipoCreditoEnPagos:
+    """
+    Task 1.1 (carryover-scope-fixes, PR-A): toda fila de pago —real,
+    aplazada o proyectada (virtual)— debe exponer `tipo_credito` igual al
+    `tipo_credito` del crédito padre, para que el frontend pueda distinguir
+    la cuota de interés `cuota_fija` (capital saldado) de la cuota de
+    interés `abono_capital` (ciclo alternado, capital NO saldado).
+    """
+
+    @pytest.mark.asyncio
+    async def test_fila_real_cuota_fija_expone_tipo_credito(
+        self, client_admin_db: AsyncClient, datos_virtual_sucesor_de_bloqueadora_con_arrastre
+    ):
+        d = datos_virtual_sucesor_de_bloqueadora_con_arrastre
+        credito_id = str(d["credito"].id)
+
+        r = await client_admin_db.get("/api/v1/pagos?anio=2026&mes=2")
+        assert r.status_code == 200, r.text
+        items = [i for i in r.json()["items"] if i["credito_id"] == credito_id]
+        assert len(items) == 1
+        assert items[0]["tipo_credito"] == "cuota_fija"
+
+    @pytest.mark.asyncio
+    async def test_fila_virtual_cuota_fija_expone_tipo_credito(
+        self, client_admin_db: AsyncClient, datos_virtual_sucesor_de_bloqueadora_con_arrastre
+    ):
+        d = datos_virtual_sucesor_de_bloqueadora_con_arrastre
+        credito_id = str(d["credito"].id)
+
+        r = await client_admin_db.get("/api/v1/pagos?anio=2026&mes=3")
+        assert r.status_code == 200, r.text
+        virtuales = [
+            i for i in r.json()["items"]
+            if i["credito_id"] == credito_id and i["es_proyectada"] is True
+        ]
+        assert len(virtuales) == 1
+        assert virtuales[0]["tipo_credito"] == "cuota_fija"
+
+    @pytest.mark.asyncio
+    async def test_fila_virtual_abono_capital_expone_tipo_credito(
+        self, client_admin_db: AsyncClient, datos_virtual_abono_capital_con_arrastre
+    ):
+        d = datos_virtual_abono_capital_con_arrastre
+        credito_id = str(d["credito"].id)
+
+        r = await client_admin_db.get("/api/v1/pagos?anio=2026&mes=3")
+        assert r.status_code == 200, r.text
+        virtuales = [
+            i for i in r.json()["items"]
+            if i["credito_id"] == credito_id and i["es_proyectada"] is True
+        ]
+        assert len(virtuales) == 1
+        assert virtuales[0]["tipo_credito"] == "abono_capital"
+
+    @pytest.mark.asyncio
+    async def test_fila_aplazada_expone_tipo_credito(
+        self, client_admin_db: AsyncClient, datos_virtual_sucesor_de_bloqueadora_con_arrastre
+    ):
+        d = datos_virtual_sucesor_de_bloqueadora_con_arrastre
+        credito_id = str(d["credito"].id)
+        cuota_bloqueadora = d["cuota2_bloqueadora"]
+        cuota_bloqueadora.veces_aplazado = 1
+
+        r = await client_admin_db.get("/api/v1/pagos/aplazados")
+        assert r.status_code == 200, r.text
+        items = [i for i in r.json()["items"] if i["credito_id"] == credito_id]
+        assert len(items) == 1
+        assert items[0]["tipo_credito"] == "cuota_fija"
