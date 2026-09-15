@@ -20,6 +20,7 @@ from app.schemas.common import PaginatedResponse
 from app.services import audit_service
 from app.services.credito_service import sincronizar_prefijos_por_nombre
 from app.utils.fechas import hoy_bogota
+from app.utils.momentos import fecha_limite_mora
 
 router = APIRouter(prefix="/clientes", tags=["Clientes"])
 
@@ -43,9 +44,11 @@ async def listar_clientes(
     query = select(Cliente).where(Cliente.deleted_at == None)  # noqa: E711
 
     # "Al día" se computa automáticamente: cliente está al día si NO tiene
-    # ningún pago vencido y sin pagar. El campo persistido en BD ya no se
-    # usa para filtrar — se sobrescribe en el response con el valor real.
+    # ningún pago en mora (momento cerrado, scheduled-overdue-evaluation). El
+    # campo persistido en BD ya no se usa para filtrar — se sobrescribe en el
+    # response con el valor real.
     hoy = hoy_bogota()
+    limite = fecha_limite_mora(hoy)
     atrasados_subq = (
         select(Credito.cliente_id)
         .join(Pago, Pago.credito_id == Credito.id)
@@ -53,7 +56,7 @@ async def listar_clientes(
             Credito.deleted_at == None,  # noqa: E711
             Pago.deleted_at == None,  # noqa: E711
             Pago.pagado == False,  # noqa: E712
-            Pago.fecha_maxima < hoy,
+            Pago.fecha_maxima < limite,
         )
         .distinct()
     )
@@ -107,7 +110,7 @@ async def listar_clientes(
                 Credito.deleted_at == None,  # noqa: E711
                 Pago.deleted_at == None,  # noqa: E711
                 Pago.pagado == False,  # noqa: E712
-                Pago.fecha_maxima < hoy,
+                Pago.fecha_maxima < limite,
             )
             .distinct()
         )
@@ -186,8 +189,9 @@ async def obtener_cliente(
     if not cliente:
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
 
-    # Computar al_dia
+    # Computar al_dia (mismo predicado que el listado: momento cerrado)
     hoy = hoy_bogota()
+    limite = fecha_limite_mora(hoy)
     tiene_atraso = (await db.execute(
         select(Pago.id)
         .join(Credito, Pago.credito_id == Credito.id)
@@ -196,7 +200,7 @@ async def obtener_cliente(
             Credito.deleted_at == None,  # noqa: E711
             Pago.deleted_at == None,  # noqa: E711
             Pago.pagado == False,  # noqa: E712
-            Pago.fecha_maxima < hoy,
+            Pago.fecha_maxima < limite,
         )
         .limit(1)
     )).scalar_one_or_none()

@@ -56,6 +56,24 @@ async def db_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
         await session.rollback()
 
 
+@pytest.fixture
+def fijar_hoy(monkeypatch):
+    """
+    Inyecta una fecha `hoy` determinista para los endpoints que evalúan mora
+    (scheduled-overdue-evaluation). Parchea el símbolo `hoy_bogota` tal como
+    lo consumen los routers (no la función original en app.utils.fechas), lo
+    que evita tocar producción o depender de freezegun.
+
+    Uso: `fijar_hoy(date(2026, 3, 30))` antes de la llamada al endpoint.
+    """
+    def _fijar(d):
+        monkeypatch.setattr("app.routers.pagos.hoy_bogota", lambda: d)
+        monkeypatch.setattr("app.routers.clientes.hoy_bogota", lambda: d)
+        monkeypatch.setattr("app.routers.creditos.hoy_bogota", lambda: d)
+
+    return _fijar
+
+
 @pytest_asyncio.fixture
 async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     """Cliente HTTP para tests de endpoints."""

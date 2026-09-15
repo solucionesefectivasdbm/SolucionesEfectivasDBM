@@ -186,20 +186,10 @@ class TestListarPagosExcluyeCreditosSaldados:
 
 
 class TestAlertasExcluyenCreditosSaldados:
-    @pytest.mark.asyncio
-    async def test_alerta_vencidos_excluye_credito_saldado(self, client_admin, db_session):
-        cliente = _mk_cliente()
-        credito = _mk_credito(cliente.id, saldo_capital=Decimal("0.00"), saldo_intereses=Decimal("0.00"))
-        db_session.add_all([cliente, credito])
-        await db_session.flush()
-        ayer = hoy_bogota() - timedelta(days=1)
-        db_session.add(_mk_pago_pendiente(credito.id, 12, ayer))
-        await db_session.flush()
-
-        r = await client_admin.get("/api/v1/pagos/alertas/vencidos")
-        assert r.status_code == 200, r.text
-        ids = [p["credito_id"] for p in r.json()["pagos"]]
-        assert str(credito.id) not in ids
+    # test_alerta_vencidos_excluye_credito_saldado re-pinned in
+    # test_mora_momento_cerrado.py (scheduled-overdue-evaluation): con
+    # fecha_maxima = hoy_bogota() - 1 día se volvía vacuo bajo la nueva
+    # definición de mora (casi siempre sigue en el mismo momento cerrado).
 
     @pytest.mark.asyncio
     async def test_alerta_proximos_vencer_excluye_credito_saldado(self, client_admin, db_session):

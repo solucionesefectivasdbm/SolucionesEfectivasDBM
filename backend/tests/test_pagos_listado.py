@@ -26,6 +26,10 @@ from app.models.pago import DestinoExcedente, Pago, TipoCuota
 from app.models.usuario import TipoUsuario, Usuario
 from app.routers.pagos import _pago_row_a_dict
 from app.schemas.pago import PagoResponse
+from app.utils.momentos import fecha_limite_mora, flags_mora
+
+_HOY = date(2026, 6, 1)
+_LIMITE = fecha_limite_mora(_HOY)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers para construir objetos de dominio en tests de sort
@@ -132,7 +136,7 @@ def _fake_row(**overrides) -> SimpleNamespace:
 class TestPagoRowADict:
     def test_dict_cubre_todos_los_campos_de_response(self):
         """El dict debe traer todos los campos que PagoResponse necesita."""
-        d = _pago_row_a_dict(_fake_row())
+        d = _pago_row_a_dict(_fake_row(), _HOY, _LIMITE)
         requeridos = set(PagoResponse.model_fields.keys())
         faltantes = requeridos - set(d.keys())
         assert not faltantes, f"Faltan campos en el dict: {faltantes}"
@@ -140,7 +144,7 @@ class TestPagoRowADict:
     def test_round_trip_preserva_valores(self):
         """El dict valida como PagoResponse sin alterar datos."""
         row = _fake_row()
-        resp = PagoResponse.model_validate(_pago_row_a_dict(row))
+        resp = PagoResponse.model_validate(_pago_row_a_dict(row, _HOY, _LIMITE))
         assert resp.id == row.id
         assert resp.credito_id == row.credito_id
         assert resp.numero_cuota == 3
@@ -159,10 +163,28 @@ class TestPagoRowADict:
             receptor_id=receptor,
             pagado=True,
         )
-        resp = PagoResponse.model_validate(_pago_row_a_dict(row))
+        resp = PagoResponse.model_validate(_pago_row_a_dict(row, _HOY, _LIMITE))
         assert resp.es_excedente_a == DestinoExcedente.capital
         assert resp.receptor_id == receptor
         assert resp.pagado is True
+
+    def test_flags_mora_usa_limite_precalculado(self):
+        """flags_mora recibe `limite` ya calculado (una vez por request)."""
+        hoy = date(2026, 3, 31)
+        limite = fecha_limite_mora(hoy)
+        assert limite == date(2026, 3, 30)
+        # m5 (19-24) y 25-29 ya cerraron -> en mora
+        assert flags_mora(date(2026, 3, 27), False, hoy, limite) == {"vencido": True, "en_mora": True}
+        # mismo momento (m1 abre el 30) -> vencido pero no en mora
+        assert flags_mora(date(2026, 3, 30), False, hoy, limite) == {"vencido": True, "en_mora": False}
+        assert flags_mora(date(2026, 3, 27), True, hoy, limite) == {"vencido": False, "en_mora": False}
+
+    def test_row_pendiente_en_mora_con_limite(self):
+        hoy = date(2026, 3, 30)
+        row = _fake_row(fecha_maxima=date(2026, 3, 27), pagado=False)
+        resp = PagoResponse.model_validate(_pago_row_a_dict(row, hoy, fecha_limite_mora(hoy)))
+        assert resp.vencido is True
+        assert resp.en_mora is True
 
 
 @pytest_asyncio.fixture

@@ -47,16 +47,19 @@ from app.services import audit_service
 from app.services.credito_service import credito_operativamente_abierto
 from app.services.pago_service import PagoService
 from app.utils.fechas import siguiente_fecha_maxima
-from app.utils.momentos import get_momento, get_periodo_momento
+from app.utils.momentos import fecha_limite_mora, flags_mora, get_momento, get_periodo_momento
 
 router = APIRouter(prefix="/pagos", tags=["Pagos"])
 logger = logging.getLogger(__name__)
 
 
-def _pago_row_a_dict(row) -> dict:
+def _pago_row_a_dict(row, hoy: date, limite: date) -> dict:
     """
     Convierte una fila del listado (columnas de Pago + nombre de cliente +
     número de crédito) en el dict que consume PagoResponse.
+
+    `limite` es fecha_limite_mora(hoy), calculado una vez por request
+    (ver utils.momentos.flags_mora).
 
     Evita hidratar el ORM completo de Pago y serializar dos veces
     (model_validate + model_dump por fila): se arma el dict directo desde las
@@ -88,6 +91,7 @@ def _pago_row_a_dict(row) -> dict:
         "es_proyectada": False,
         "razon_bloqueo": None,
         "tipo_credito": row.tipo_credito,
+        **flags_mora(row.fecha_maxima, row.pagado, hoy, limite),
     }
 
 
@@ -156,6 +160,9 @@ async def listar_pagos_aplazados(
     if sort_dir not in ("asc", "desc"):
         raise HTTPException(status_code=400, detail="sort_dir inválido. Use asc o desc")
 
+    hoy = hoy_bogota()
+    limite = fecha_limite_mora(hoy)
+
     query = (
         select(
             Pago.id, Pago.credito_id, Pago.numero_cuota, Pago.tipo_cuota,
@@ -199,7 +206,7 @@ async def listar_pagos_aplazados(
     query = query.offset((page - 1) * page_size).limit(page_size)
 
     rows = (await db.execute(query)).all()
-    items = [PagoResponse.model_validate(_pago_row_a_dict(row)) for row in rows]
+    items = [PagoResponse.model_validate(_pago_row_a_dict(row, hoy, limite)) for row in rows]
 
     return PaginatedResponse(
         items=items, total=total, page=page, page_size=page_size,
@@ -235,6 +242,9 @@ async def listar_pagos(
         raise HTTPException(status_code=400, detail="Momento inválido. Use m1..m5")
     if sort_dir not in ("asc", "desc"):
         raise HTTPException(status_code=400, detail="sort_dir inválido. Use asc o desc")
+
+    hoy = hoy_bogota()
+    limite = fecha_limite_mora(hoy)
 
     # Calcular rango de fechas del período
     if momento:
@@ -305,7 +315,7 @@ async def listar_pagos(
     )
     rows = (await db.execute(query)).all()
 
-    reales: list[dict] = [_pago_row_a_dict(row) for row in rows]
+    reales: list[dict] = [_pago_row_a_dict(row, hoy, limite) for row in rows]
 
     # ── Filas virtuales (cuotas proyectadas que deberían existir pero no se
     #    han generado por estar bloqueadas detrás de una cuota pendiente) ──
@@ -560,6 +570,8 @@ async def _calcular_virtuales(
                     "es_proyectada": True,
                     "razon_bloqueo": f"Cuota #{bloqueador} pendiente",
                     "tipo_credito": credito.tipo_credito,
+                    "vencido": False,
+                    "en_mora": False,
                 })
 
             # Resync: si esta cuota ya existe persistida, usar su fecha_maxima
@@ -941,8 +953,15 @@ async def alertas_vencidos(
     current_user: Usuario = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Pagos vencidos (fecha_maxima < hoy y pagado=False)."""
+    """
+    Pagos en mora: no pagados cuyo momento (m1..m5) que contiene su
+    `fecha_maxima` ya cerró en `hoy` (scheduled-overdue-evaluation, ver
+    utils.momentos.en_mora). Una cuota vencida dentro de su propio momento
+    (todavía abierto) NO cuenta aquí — solo aparece con `vencido=True` en el
+    listado general.
+    """
     hoy = hoy_bogota()
+    limite = fecha_limite_mora(hoy)
 
     query = (
         select(Pago)
@@ -951,7 +970,7 @@ async def alertas_vencidos(
         .where(
             Pago.pagado == False,  # noqa: E712
             Pago.deleted_at == None,  # noqa: E711
-            Pago.fecha_maxima < hoy,
+            Pago.fecha_maxima < limite,
             credito_operativamente_abierto(),
         )
     )
@@ -969,7 +988,12 @@ async def alertas_vencidos(
     return {
         "total_pagos_vencidos": len(pagos),
         "total_monto_mora": float(total_mora),
-        "pagos": [PagoResponse.model_validate(p) for p in pagos],
+        "pagos": [
+            PagoResponse.model_validate(p).model_copy(
+                update=flags_mora(p.fecha_maxima, p.pagado, hoy, limite)
+            )
+            for p in pagos
+        ],
     }
 
 

@@ -7,11 +7,17 @@ al m2 del mes ANTERIOR.
 
 Cobertura completa de todos los rangos y casos borde.
 """
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
-from app.utils.momentos import get_momento, get_mes_momento, get_periodo_momento
+from app.utils.momentos import (
+    get_momento,
+    get_mes_momento,
+    get_periodo_momento,
+    fecha_limite_mora,
+    en_mora,
+)
 
 
 class TestGetMomento:
@@ -200,3 +206,123 @@ class TestGetPeriodoMomento:
     def test_momento_invalido(self):
         with pytest.raises(ValueError, match="Momento inválido"):
             get_periodo_momento(2026, 3, "m6")
+
+
+class TestFechaLimiteMora:
+    """
+    fecha_limite_mora(hoy) — primer día del momento que contiene `hoy`.
+    scheduled-overdue-evaluation: fin/fin+1 por momento (Mar 2026) + casos
+    de cruce de mes/año y febrero.
+    """
+
+    # --- m5 (19-24): fin=24, fin+1=25 (pasa a m1) ---
+    def test_m5_fin(self):
+        assert fecha_limite_mora(date(2026, 3, 24)) == date(2026, 3, 19)
+
+    def test_m5_fin_mas_1(self):
+        assert fecha_limite_mora(date(2026, 3, 25)) == date(2026, 3, 25)
+
+    # --- m1 (25-29): fin=29, fin+1=30 (pasa a m2) ---
+    def test_m1_fin(self):
+        assert fecha_limite_mora(date(2026, 3, 29)) == date(2026, 3, 25)
+
+    def test_m1_fin_mas_1(self):
+        assert fecha_limite_mora(date(2026, 3, 30)) == date(2026, 3, 30)
+
+    # --- m2 (30..4 del mes siguiente): fin=Apr 4, fin+1=Apr 5 (pasa a m3) ---
+    def test_m2_fin(self):
+        assert fecha_limite_mora(date(2026, 4, 4)) == date(2026, 3, 30)
+
+    def test_m2_fin_mas_1(self):
+        assert fecha_limite_mora(date(2026, 4, 5)) == date(2026, 4, 5)
+
+    # --- m3 (5-13): fin=13, fin+1=14 (pasa a m4) ---
+    def test_m3_fin(self):
+        assert fecha_limite_mora(date(2026, 3, 13)) == date(2026, 3, 5)
+
+    def test_m3_fin_mas_1(self):
+        assert fecha_limite_mora(date(2026, 3, 14)) == date(2026, 3, 14)
+
+    # --- m4 (14-18): fin=18, fin+1=19 (pasa a m5) ---
+    def test_m4_fin(self):
+        assert fecha_limite_mora(date(2026, 3, 18)) == date(2026, 3, 14)
+
+    def test_m4_fin_mas_1(self):
+        assert fecha_limite_mora(date(2026, 3, 19)) == date(2026, 3, 19)
+
+    # --- Cruce diciembre → enero ---
+    def test_enero_1_a_4_limite_diciembre_30(self):
+        assert fecha_limite_mora(date(2026, 1, 1)) == date(2025, 12, 30)
+        assert fecha_limite_mora(date(2026, 1, 4)) == date(2025, 12, 30)
+
+    # --- Marzo 1-4: febrero tiene < 30 días (28 o 29) → límite = día 1 de marzo ---
+    def test_marzo_1_a_4_no_bisiesto_limite_marzo_1(self):
+        assert fecha_limite_mora(date(2026, 3, 1)) == date(2026, 3, 1)
+        assert fecha_limite_mora(date(2026, 3, 4)) == date(2026, 3, 1)
+
+    def test_marzo_1_bisiesto_limite_marzo_1(self):
+        assert fecha_limite_mora(date(2028, 3, 1)) == date(2028, 3, 1)
+
+    # --- Febrero (m1 dentro del propio mes) ---
+    def test_febrero_28_no_bisiesto(self):
+        assert fecha_limite_mora(date(2026, 2, 28)) == date(2026, 2, 25)
+
+    def test_febrero_29_bisiesto(self):
+        assert fecha_limite_mora(date(2028, 2, 29)) == date(2028, 2, 25)
+
+
+class TestEnMora:
+    """en_mora(fecha_maxima, hoy) = fecha_maxima < fecha_limite_mora(hoy)."""
+
+    def test_fm_27_hoy_28_no_en_mora(self):
+        assert en_mora(date(2026, 3, 27), date(2026, 3, 28)) is False
+
+    def test_fm_27_hoy_29_no_en_mora(self):
+        assert en_mora(date(2026, 3, 27), date(2026, 3, 29)) is False
+
+    def test_fm_27_hoy_30_en_mora(self):
+        assert en_mora(date(2026, 3, 27), date(2026, 3, 30)) is True
+
+    def test_fm_abril_2_hoy_abril_4_no_en_mora(self):
+        assert en_mora(date(2026, 4, 2), date(2026, 4, 4)) is False
+
+    def test_fm_abril_2_hoy_abril_5_en_mora(self):
+        assert en_mora(date(2026, 4, 2), date(2026, 4, 5)) is True
+
+    def test_fm_febrero_28_hoy_marzo_1_en_mora(self):
+        assert en_mora(date(2026, 2, 28), date(2026, 3, 1)) is True
+
+    def test_fm_diciembre_31_hoy_enero_4_no_en_mora(self):
+        assert en_mora(date(2026, 12, 31), date(2027, 1, 4)) is False
+
+    def test_fm_diciembre_31_hoy_enero_5_en_mora(self):
+        assert en_mora(date(2026, 12, 31), date(2027, 1, 5)) is True
+
+    def test_property_agrees_con_get_momento(self):
+        """
+        Para CADA día de 2026-01-01..2028-12-31 (incluye febrero bisiesto
+        2028), fecha_limite_mora(hoy):
+        (a) cae dentro del mismo momento (m1..m5) y mismo mes-momento que
+            `hoy`, según get_momento() y get_mes_momento();
+        (b) es el PRIMER día de ese momento: el día anterior pertenece a otro
+            momento o a otro mes-momento.
+        """
+        un_dia = timedelta(days=1)
+        hoy = date(2026, 1, 1)
+        fin = date(2028, 12, 31)
+        iteraciones = 0
+        while hoy <= fin:
+            limite = fecha_limite_mora(hoy)
+            assert limite <= hoy, hoy
+            # (a) mismo momento y mismo mes-momento
+            assert get_momento(limite) == get_momento(hoy), hoy
+            assert get_mes_momento(limite) == get_mes_momento(hoy), hoy
+            # (b) primer día del momento
+            anterior = limite - un_dia
+            assert (
+                get_momento(anterior) != get_momento(limite)
+                or get_mes_momento(anterior) != get_mes_momento(limite)
+            ), f"{limite} no es el primer día de su momento (hoy={hoy})"
+            hoy += un_dia
+            iteraciones += 1
+        assert iteraciones == 1096

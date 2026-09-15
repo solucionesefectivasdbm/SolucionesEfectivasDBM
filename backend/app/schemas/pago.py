@@ -40,6 +40,12 @@ class PagoResponse(BaseModel):
     # alternado, capital NO saldado). Optional/None: ver design decision 1,
     # `Pago` no tiene esta columna; solo se completa en filas de listado.
     tipo_credito: Optional[TipoCredito] = None
+    # Overdue evaluation (scheduled-overdue-evaluation): computados por el
+    # router en el momento de construir la fila (ver `app.utils.momentos.flags_mora`). Default
+    # False cubre pagados, proyectados, y cualquier otro sitio de
+    # model_validate(ORM) que no recalcula estos flags.
+    vencido: bool = False
+    en_mora: bool = False
 
     @field_validator("veces_aplazado", mode="before")
     @classmethod
