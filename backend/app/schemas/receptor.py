@@ -19,6 +19,24 @@ class CuentaBancariaResponse(CuentaBancariaBase):
     model_config = {"from_attributes": True}
     id: uuid.UUID
     receptor_id: uuid.UUID
+    es_predeterminada: bool
+
+
+class ReceptorMin(BaseModel):
+    model_config = {"from_attributes": True}
+    id: uuid.UUID
+    nombre: str
+
+
+class CuentaBancariaResumen(BaseModel):
+    model_config = {"from_attributes": True}
+    id: uuid.UUID
+    receptor_id: uuid.UUID
+    entidad_bancaria: str
+    tipo_cuenta: TipoCuenta
+    numero_cuenta: str
+    es_predeterminada: bool
+    receptor: ReceptorMin
 
 
 class ReceptorBase(BaseModel):

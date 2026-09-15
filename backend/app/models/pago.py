@@ -67,6 +67,9 @@ class Pago(AuditMixin, Base):
     receptor_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("receptores.id"), nullable=True
     )
+    cuenta_bancaria_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("cuentas_bancarias.id"), nullable=True, index=True
+    )
     pagado: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     validado_recaudador: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False

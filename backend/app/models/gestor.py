@@ -41,6 +41,11 @@ class Gestor(AuditMixin, Base):
         ForeignKey("receptores.id"),
         nullable=True,
     )
+    cuenta_bancaria_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("cuentas_bancarias.id"),
+        nullable=True,
+    )
 
     # Relaciones
     usuario: Mapped["Usuario"] = relationship(  # type: ignore[name-defined]  # noqa: F821
@@ -48,6 +53,9 @@ class Gestor(AuditMixin, Base):
     )
     receptor: Mapped[Optional["Receptor"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
         "Receptor", back_populates="gestores"
+    )
+    cuenta_bancaria: Mapped[Optional["CuentaBancaria"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
+        "CuentaBancaria"
     )
     clientes: Mapped[list["Cliente"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
         "Cliente", back_populates="gestor"

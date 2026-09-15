@@ -6,6 +6,7 @@ from app.utils.fechas import ahora_bogota
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -21,7 +22,7 @@ from app.schemas.receptor import (
     ReceptorResponse,
     ReceptorUpdate,
 )
-from app.services import audit_service
+from app.services import audit_service, cuenta_bancaria_service
 
 router = APIRouter(prefix="/receptores", tags=["Receptores"])
 
@@ -163,9 +164,20 @@ async def agregar_cuenta(
     if not receptor:
         raise HTTPException(status_code=404, detail="Receptor no encontrado")
 
-    cuenta = CuentaBancaria(receptor_id=receptor_id, **body.model_dump())
+    es_predeterminada = await cuenta_bancaria_service.sin_predeterminada(db, receptor_id)
+    cuenta = CuentaBancaria(
+        receptor_id=receptor_id, es_predeterminada=es_predeterminada, **body.model_dump()
+    )
     db.add(cuenta)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        # Carrera: otra transacción ya dejó una predeterminada (índice único parcial).
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El receptor ya tiene una cuenta predeterminada",
+        )
     return CuentaBancariaResponse.model_validate(cuenta)
 
 
@@ -188,4 +200,44 @@ async def actualizar_cuenta(
 
     for field, value in body.model_dump().items():
         setattr(cuenta, field, value)
+    return CuentaBancariaResponse.model_validate(cuenta)
+
+
+@router.put("/{receptor_id}/cuentas/{cuenta_id}/predeterminada", response_model=CuentaBancariaResponse)
+async def marcar_cuenta_predeterminada(
+    receptor_id: uuid.UUID,
+    cuenta_id: uuid.UUID,
+    request: Request,
+    current_user: Usuario = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    receptor = (await db.execute(
+        select(Receptor).where(Receptor.id == receptor_id, Receptor.deleted_at == None)  # noqa: E711
+    )).scalar_one_or_none()
+    if not receptor:
+        raise HTTPException(status_code=404, detail="Receptor no encontrado")
+
+    cuenta_anterior = (await db.execute(
+        select(CuentaBancaria).where(
+            CuentaBancaria.receptor_id == receptor_id,
+            CuentaBancaria.es_predeterminada == True,  # noqa: E712
+        )
+    )).scalar_one_or_none()
+    cuenta_anterior_id = cuenta_anterior.id if cuenta_anterior else None
+
+    try:
+        cuenta = await cuenta_bancaria_service.marcar_predeterminada(db, receptor_id, cuenta_id)
+    except IntegrityError:
+        # Carrera con otro cambio de predeterminada: el índice único parcial rechazó el UPDATE.
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Conflicto al cambiar la cuenta predeterminada, reintente",
+        )
+
+    await audit_service.registrar_actualizacion_campos(
+        db=db, entidad="receptores", entidad_id=receptor_id,
+        usuario_id=current_user.id, ip_origen=get_client_ip(request),
+        cambios={"es_predeterminada": (str(cuenta_anterior_id), str(cuenta.id))},
+    )
     return CuentaBancariaResponse.model_validate(cuenta)
