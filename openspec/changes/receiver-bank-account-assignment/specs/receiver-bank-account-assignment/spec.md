@@ -223,13 +223,23 @@ MUST receive 403 with nothing persisted.
 
 ### Requirement: Account Visible Wherever the Receptor Was
 
-Weekly, daily and deferred payment tables MUST show the account (receptor,
-entity, number) where the receptor was shown. The "Modificar cuenta" modal
-MUST offer a receptor select that preselects its default account and an
-account select limited to that receptor. Gestor form/list MUST use an account
-select/badge. Receptores page MUST mark the default and offer "set default".
-Reportes MUST render per-account rows nested under each receptor. Backend
-4xx `detail` MUST be shown verbatim.
+Weekly, daily and deferred payment tables MUST show the account where the
+receptor was shown, as `entidad · numero` with the full label (including the
+receptor name) in a tooltip. The "Modificar cuenta" modal and the Gestor form
+MUST use a single select grouped by receptor (`SelectCuentaBancaria`), with
+the CURRENTLY assigned account preselected — not the receptor's default.
+Receptores page MUST mark the default and offer "set default". Reportes MUST
+render per-account rows nested under each receptor. Backend 4xx `detail`
+MUST be shown verbatim.
+
+Because `GET /receptores` caps results at 50 (`page_size`, ordered by
+`nombre`), every UI surface that lets a user choose a receptor (the Pagos
+cascading filter, and the grouped account select in the "Modificar cuenta"
+modal and the Gestor form) MUST expose a search box that refetches receptors
+from the backend using `busqueda` (ilike on `nombre`), so any receptor
+remains reachable beyond the first 50. The receptor owning the currently
+selected value MUST stay visible/selectable in the list even when a search
+result set would otherwise exclude it.
 
 #### Scenario: Cascading filter in UI `[manual]`
 
@@ -237,10 +247,20 @@ Reportes MUST render per-account rows nested under each receptor. Backend
 - WHEN a receptor is chosen, then one of its accounts
 - THEN the table narrows at each step and the account column matches
 
-#### Scenario: Default preselected `[manual]`
+#### Scenario: Current account preselected `[manual]`
 
-- WHEN a receptor is chosen in the "Modificar cuenta" modal
-- THEN its default account is preselected and can be changed
+- WHEN the "Modificar cuenta" modal or the Gestor form opens with an assigned
+  account
+- THEN the grouped select preselects that CURRENT account (not the
+  receptor's default) and it can be changed
+
+#### Scenario: Receptor search beyond the first page `[manual]`
+
+- GIVEN a receptor selector (Pagos cascading filter, "Modificar cuenta"
+  modal, or Gestor form)
+- WHEN the user types in the search box
+- THEN the backend is queried with `busqueda` and the options refresh,
+  without losing the currently selected account/receptor from the list
 
 ## Non-Goals
 

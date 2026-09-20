@@ -152,6 +152,23 @@ export default function ReceptoresPage() {
     setModalCuenta(true)
   }
 
+  const handleMarcarPredeterminada = async (cuenta: CuentaBancaria) => {
+    if (!seleccionado || submitting) return
+    setSubmitting(true)
+    try {
+      await receptoresApi.marcarPredeterminada(seleccionado.id, cuenta.id)
+      toast.success('Cuenta predeterminada actualizada')
+      const res = await receptoresApi.obtener(seleccionado.id)
+      setSeleccionado(res.data)
+      cargar()
+    } catch (e: any) {
+      const detail = e.response?.data?.detail
+      const msg = Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error'
+      toast.error(msg)
+    }
+    finally { setSubmitting(false) }
+  }
+
   const itemsCuenta = (): ItemConfirmacion[] => {
     if (!datosCuentaPendientes) return []
     return [
@@ -243,13 +260,24 @@ export default function ReceptoresPage() {
             : seleccionado?.cuentas_bancarias?.map(c => (
               <div key={c.id} className="flex items-center justify-between bg-gray-50 rounded-lg p-3">
                 <div>
-                  <p className="text-sm font-semibold">{c.entidad_bancaria}</p>
+                  <p className="text-sm font-semibold flex items-center gap-2">
+                    {c.entidad_bancaria}
+                    {c.es_predeterminada && <span className="badge-success">Predeterminada</span>}
+                  </p>
                   <p className="text-xs text-gray-500">{c.tipo_cuenta} — {c.numero_cuenta}</p>
                 </div>
-                <button onClick={() => { setEditandoCuenta(c); resetC(c); setModalCuenta(true) }}
-                  className="p-1.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700">
-                  <Pencil size={13} />
-                </button>
+                <div className="flex items-center gap-1">
+                  {!c.es_predeterminada && (
+                    <button onClick={() => handleMarcarPredeterminada(c)} disabled={submitting}
+                      className="btn-secondary text-xs px-2 py-1">
+                      Hacer predeterminada
+                    </button>
+                  )}
+                  <button onClick={() => { setEditandoCuenta(c); resetC(c); setModalCuenta(true) }}
+                    className="p-1.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700">
+                    <Pencil size={13} />
+                  </button>
+                </div>
               </div>
             ))
           }

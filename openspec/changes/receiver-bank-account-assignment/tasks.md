@@ -199,28 +199,29 @@ Delivery strategy: `force-chained`, `stacked-to-main` — each branch is cut fro
 
 ### Phase 15: Frontend Types, API, Shared Selector
 
-- [ ] 15.1 Modify `frontend/src/types/index.ts`: `CuentaBancaria.es_predeterminada`; `CuentaBancariaResumen`; `Gestor.cuenta_bancaria_id`/`cuenta_bancaria`; `Pago.cuenta_bancaria_id`/`cuenta_bancaria?`; `ReporteDetalleReceptor.por_cuenta`
-- [ ] 15.2 Modify `frontend/src/api/index.ts`: `receptoresApi.marcarPredeterminada(receptorId, cuentaId)`; `pagosApi.modificarCuentaBancaria(pagoId, cuenta_bancaria_id)`; `pagosApi.listar` params `+cuenta_bancaria_id`
-- [ ] 15.3 Modify `frontend/src/utils/formatters.ts`: `formatCuentaBancaria(c, receptorNombre?)` → `"Receptor · Entidad · Tipo · numero"` (receptor omitted inside optgroups)
-- [ ] 15.4 Create `frontend/src/components/ui/SelectCuentaBancaria.tsx`: one `<select>` with `<optgroup label={receptor.nombre}>` per receptor, options labelled by `formatCuentaBancaria` (design decision 11)
-- [ ] 15.5 Verify: `cd frontend && npx tsc --noEmit` — 0 errors
+- [x] 15.1 Modify `frontend/src/types/index.ts`: `CuentaBancaria.es_predeterminada`; `CuentaBancariaResumen`; `Gestor.cuenta_bancaria_id`/`cuenta_bancaria`; `Pago.cuenta_bancaria_id`/`cuenta_bancaria?`; `ReporteDetalleReceptor.por_cuenta`
+- [x] 15.2 Modify `frontend/src/api/index.ts`: `receptoresApi.marcarPredeterminada(receptorId, cuentaId)`; `pagosApi.modificarCuentaBancaria(pagoId, cuenta_bancaria_id)`; `pagosApi.listar` params `+cuenta_bancaria_id`
+- [x] 15.3 Modify `frontend/src/utils/formatters.ts`: `formatCuentaBancaria(c, receptorNombre?)` → `"Receptor · Entidad · Tipo · numero"` (receptor omitted inside optgroups)
+- [x] 15.4 Create `frontend/src/components/ui/SelectCuentaBancaria.tsx`: one `<select>` with `<optgroup label={receptor.nombre}>` per receptor, options labelled by `formatCuentaBancaria` (design decision 11)
+- [x] 15.5 Verify: `cd frontend && npx tsc --noEmit` — 0 errors
 
 ### Phase 16: Frontend — Pages
 
-- [ ] 16.1 Modify `frontend/src/pages/Pagos/PagosPage.tsx`: filter card gains Receptor → Cuenta selects (gated `perms.canValidarPago`, account list = selected receptor's accounts, "Todas" default, resets account on receptor change); new table column "Cuenta" after Cliente (`Entidad · numero`, tooltip full label, "—" for virtual/unassigned); "Modificar cuenta" modal replaces the receptor-only modal, uses `SelectCuentaBancaria` preselecting the current account; backend 4xx `detail` shown verbatim
-- [ ] 16.2 Modify `frontend/src/pages/Gestores/GestoresPage.tsx` (or equivalent): form field `cuenta_bancaria_id` via `SelectCuentaBancaria`; list badge `receptor.nombre · entidad`
-- [ ] 16.3 Modify `frontend/src/pages/Receptores/ReceptoresPage.tsx`: "Predeterminada" badge on the default account's card; "Hacer predeterminada" button on the others, calling `marcarPredeterminada`
-- [ ] 16.4 Modify `frontend/src/pages/Reportes/ReportesPage.tsx`: render `por_cuenta` sub-rows nested under each receptor (`↳ etiqueta`, `text-xs text-gray-500`, indent), always rendered
-- [ ] 16.5 Verify: `cd frontend && npx tsc --noEmit` — 0 errors
+- [x] 16.1 Modify `frontend/src/pages/Pagos/PagosPage.tsx`: filter card gains Receptor → Cuenta selects (gated `perms.canValidarPago`, account list = selected receptor's accounts, "Todas" default, resets account on receptor change); new table column "Cuenta" after Cliente (`Entidad · numero`, tooltip full label, "—" for virtual/unassigned); "Modificar cuenta" modal replaces the receptor-only modal, uses `SelectCuentaBancaria` preselecting the current account; backend 4xx `detail` shown verbatim — filter selects gated on `!esAplazados` too (`pagosApi.listarAplazados` does not accept these params)
+- [x] 16.2 Modify `frontend/src/pages/Gestores/GestoresPage.tsx` (or equivalent): form field `cuenta_bancaria_id` via `SelectCuentaBancaria`; list badge `receptor.nombre · entidad`
+- [x] 16.3 Modify `frontend/src/pages/Receptores/ReceptoresPage.tsx`: "Predeterminada" badge on the default account's card; "Hacer predeterminada" button on the others, calling `marcarPredeterminada`
+- [x] 16.4 Modify `frontend/src/pages/Reportes/ReportesPage.tsx`: render `por_cuenta` sub-rows nested under each receptor (`↳ etiqueta`, `text-xs text-gray-500`, indent), always rendered
+- [x] 16.5 Verify: `cd frontend && npx tsc --noEmit` — 0 errors
 
 ### Phase 17: Manual Verification Checklist (frontend — no test runner)
 
 - [ ] 17.1 Cascading filter: choosing a receptor then one of its accounts narrows the Pagos table at each step and the account column matches (Req: Account Visible Wherever the Receptor Was — scenario "Cascading filter in UI")
-- [ ] 17.2 "Modificar cuenta" modal: choosing a receptor preselects its default account, and the account can still be changed (Req: Account Visible Wherever the Receptor Was — scenario "Default preselected")
-- [ ] 17.3 Weekly, daily, and deferred payment tables show the account (receptor, entity, number) where the receptor used to be shown
+- [ ] 17.2 "Modificar cuenta" modal and Gestor form: the grouped `SelectCuentaBancaria` preselects the CURRENTLY assigned account (not the receptor's default), and it can still be changed (Req: Account Visible Wherever the Receptor Was — scenario "Current account preselected")
+- [ ] 17.3 Weekly, daily, and deferred payment tables show the account as `Entidad · numero` where the receptor used to be shown, with the full label (including receptor name) in the cell tooltip
 - [ ] 17.4 Gestor form/list: account select works, badge renders `receptor.nombre · entidad`
 - [ ] 17.5 Receptores page: default badge and "set default" action work and reflect the change immediately
 - [ ] 17.6 Reportes page: per-account nested rows render under each receptor and their sum matches the receptor total
+- [ ] 17.7 Receptor search boxes (Pagos cascading filter, "Modificar cuenta" modal, Gestor form): typing refetches receptors from the backend with `busqueda` and any receptor beyond the first 50 becomes reachable, without losing the currently selected receptor/account from the list (Req: Account Visible Wherever the Receptor Was — scenario "Receptor search beyond the first page")
 
 ---
 
@@ -259,4 +260,4 @@ Delivery strategy: `force-chained`, `stacked-to-main` — each branch is cut fro
 | Report Per-Account Sub-Breakdown | 2/2 | 12.6, 12.7 |
 | Backfill Endpoint | 2/2 | 6.9, 6.5 |
 | Role Gates | 1/1 | 9.13 |
-| Account Visible Wherever the Receptor Was | 2/2 `[manual]` | 17.1, 17.2 |
+| Account Visible Wherever the Receptor Was | 3/3 `[manual]` | 17.1, 17.2, 17.7 |

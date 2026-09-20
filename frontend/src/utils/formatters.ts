@@ -34,6 +34,19 @@ export const formatPorcentaje = (valor: number): string => {
   return `${(valor * 100).toFixed(2)}%`
 }
 
+/**
+ * Formatea una cuenta bancaria para selects/tablas.
+ * Con `receptorNombre` -> "Receptor · Entidad · Tipo · numero" (uso libre, p.ej. tabla de pagos).
+ * Sin `receptorNombre` -> "Entidad · Tipo · numero" (uso dentro de un <optgroup> ya agrupado por receptor).
+ */
+export const formatCuentaBancaria = (
+  cuenta: { entidad_bancaria: string; tipo_cuenta: string; numero_cuenta: string },
+  receptorNombre?: string,
+): string => {
+  const partes = [cuenta.entidad_bancaria, cuenta.tipo_cuenta, cuenta.numero_cuenta]
+  return receptorNombre ? [receptorNombre, ...partes].join(' · ') : partes.join(' · ')
+}
+
 export const MESES = [
   'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
   'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',

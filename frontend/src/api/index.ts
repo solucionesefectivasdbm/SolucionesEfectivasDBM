@@ -48,6 +48,8 @@ export const receptoresApi = {
     api.post<CuentaBancaria>(`/receptores/${receptorId}/cuentas`, data),
   actualizarCuenta: (receptorId: string, cuentaId: string, data: object) =>
     api.patch<CuentaBancaria>(`/receptores/${receptorId}/cuentas/${cuentaId}`, data),
+  marcarPredeterminada: (receptorId: string, cuentaId: string) =>
+    api.put<CuentaBancaria>(`/receptores/${receptorId}/cuentas/${cuentaId}/predeterminada`),
 }
 
 // ─── Clientes ─────────────────────────────────────────────────────────────────
@@ -82,7 +84,7 @@ export const pagosApi = {
   listar: (params: {
     anio: number; mes: number; momento?: string;
     sort_dir?: 'asc' | 'desc';
-    gestor_id?: string; cliente_id?: string; receptor_id?: string;
+    gestor_id?: string; cliente_id?: string; receptor_id?: string; cuenta_bancaria_id?: string;
     solo_periodicidad?: string; excluir_periodicidad?: string;
     excluir_periodicidades?: string[];
     busqueda?: string; page?: number
@@ -121,8 +123,8 @@ export const pagosApi = {
     gestor_id?: string; cliente_id?: string; busqueda?: string; page?: number
   }) => api.get<PaginatedResponse<Pago>>('/pagos/aplazados', { params }),
 
-  modificarReceptor: (pagoId: string, receptor_id: string) =>
-    api.patch<Pago>(`/pagos/${pagoId}/receptor`, { receptor_id }),
+  modificarCuentaBancaria: (pagoId: string, cuenta_bancaria_id: string) =>
+    api.patch<Pago>(`/pagos/${pagoId}/cuenta-bancaria`, { cuenta_bancaria_id }),
 
   noProgramado: (creditoId: string, data: object) =>
     api.post<Pago>(`/pagos/no-programado/${creditoId}`, data),
