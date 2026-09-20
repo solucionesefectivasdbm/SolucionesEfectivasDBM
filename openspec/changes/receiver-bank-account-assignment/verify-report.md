@@ -98,3 +98,71 @@ SUGGESTION: None.
 ### Final Verdict
 
 PASS WITH WARNINGS - PR1a implementation is complete, all 5 Default Bank Account scenarios are covered by passing, non-trivial tests, design decisions 1, 2, 4 (and the related default/audit/role-gate behaviors) are respected exactly, the migration imports cleanly and both upgrade/downgrade offline SQL generation succeed, and receptor_id is untouched outside scope. The only issue is a documentation-level spec/design method-name mismatch (PATCH vs PUT), not a functional defect.
+
+---
+
+### PR1b - feat/cuenta-bancaria-backfill (Phases 6-8)
+
+Verdict: PASS WITH WARNINGS
+
+Scope: PR1b only (Phases 6-8, tasks 6.1-8.1). Diff inspected via git diff --cached (staged, not committed): backend/app/routers/receptores.py (+183/-2), backend/tests/test_backfill_cuentas_bancarias.py (+365, new file), openspec/changes/receiver-bank-account-assignment/tasks.md (+32/-18). PR2a/PR2b/PR3/PR4 not started (confirmed unchecked in tasks.md).
+
+Test Execution Evidence (independently run twice to check for in-memory-DB state leakage, identical results both times):
+- Full suite run 1: cd backend and venv/Scripts/python.exe -m pytest -q -> 471 passed, 11 warnings in 3.88s.
+- Full suite run 2 (repeat): 471 passed, 11 warnings in 3.27s. No flakiness, no leakage between runs.
+- Matches claimed 460 (PR1a-final baseline including Judgment Day round-1 additions) plus 11 new PR1b tests = 471. PASS.
+- Focused: pytest tests/test_backfill_cuentas_bancarias.py -v -> 11 passed, 1 warning in 0.34s. All 11 named: test_receptor_sin_cuentas_obtiene_generica_predeterminada, test_receptor_con_cuentas_sin_default_elige_min_id, test_llena_gestor_y_pago_desde_receptor_id, test_llena_solo_huecos_no_sobrescribe, test_pago_no_pagado_sin_receptor_hereda_de_gestor, test_pagos_pagados_y_borrados_se_llenan_igual, test_dry_run_no_escribe_pero_cuenta_igual, test_segunda_corrida_es_idempotente, test_no_admin_no_puede_ejecutar_backfill[registrador|gestor|recaudador].
+
+Task Completion (tasks.md 6.1-8.1): All checked as complete. Each has matching code: 7.1 table()/column() constructs (_t_receptores, _t_cuentas, _t_gestores, _t_pagos, _t_creditos, _t_clientes) present in receptores.py; 7.2 POST /receptores/admin/backfill-cuentas-bancarias implements steps 1-4b; 7.3 response shape matches exactly the dict documented in the code and design.md Interfaces section. PASS.
+
+Spec Scenario Compliance (Backfill Endpoint requirement, 2/2 scenarios):
+- Idempotent re-run -> test_segunda_corrida_es_idempotente: real assertion, second POST call returns all-zero counts and zeroed pendientes. PASS.
+- Fills only gaps -> test_llena_solo_huecos_no_sobrescribe: gestor pre-set to account B, pago receptor_id defaults to A; asserts gestor keeps B and pago gets A. Non-tautological, checks real DB state via db_session.refresh. PASS.
+- Role Gates scenario (backfill admin-only) -> test_no_admin_no_puede_ejecutar_backfill: 403 plus a follow-up SELECT proving zero accounts were created. PASS.
+- All 11 tests read in full: no tautologies, no assertion-free tests, no ghost loops, each asserts real DB state post-refresh or response-body counts. 0 CRITICAL, 0 WARNING on assertion quality.
+
+SQL-only implementation audit (item 3): PASS.
+- Uses SQLAlchemy Core table()/column() exclusively for gestores/pagos/receptores/cuentas_bancarias reads and writes inside the endpoint, no ORM model classes referenced for any SELECT/INSERT/UPDATE inside the endpoint body. This is a design requirement (decision 8: survive PR2a/PR4 column and relationship removal until the endpoint itself is deleted in PR4) and is met.
+- All id and FK columns declared with SA_UUID(as_uuid=True) (aliased from sqlalchemy.UUID), confirmed on every relevant column() declaration across all six table constructs. Matches task 7.1, required for SQLite/aiosqlite parameter binding of Python uuid.UUID values.
+- tipo_cuenta bound via Enum(TipoCuenta, name=tipo_cuenta_enum), identical construction to app/models/receptor.py lines 57-58 ORM column. The generic-account insert uses TipoCuenta.ahorros (the enum member), never a plain string literal. PASS, matches design decision 8 rationale (avoiding a wrong string literal).
+
+Backfill semantics audit (item 4): PASS on all sub-checks.
+- Generic accounts only for deleted_at IS NULL receptores: step 2 query filters deleted_at.is_(None) before the NOT EXISTS check. Confirmed in code.
+- MIN(id) election only when no default exists: step 1 subquery groups by receptor_id having SUM of es_predeterminada cast to integer equal to zero, so receptors with an existing default never enter the candidate set.
+- Never overwrites non-null cuenta_bancaria_id: every gestor and pago UPDATE predicate starts with cuenta_bancaria_id.is_(None). Confirmed by test_llena_solo_huecos_no_sobrescribe.
+- Step 4b restricted to unpaid, non-deleted pagos with null receptor_id: predicate is pagado equals False, deleted_at is None, cuenta_bancaria_id is None, receptor_id is None, matching the spec step-4b wording exactly. Confirmed by test_pago_no_pagado_sin_receptor_hereda_de_gestor.
+- dry_run defaults to true and performs no writes when true: every write statement and the trailing flush are gated behind not dry_run. All count values are computed via a SELECT COUNT against the same predicate used for the conditional write, so dry_run and apply report identical numbers on first run, confirmed at runtime by test_dry_run_no_escribe_pero_cuenta_igual.
+
+Admin gate and route ordering (item 5): PASS.
+- require_role(admin) dependency on the endpoint confirmed, enforced at runtime by the three-way parametrized 403 test.
+- Route declared at line 119, strictly before the first parametric route at line 264 and every other parametric route through line 406. Confirmed via a full route-decorator scan of the file. No literal-versus-parametric collision risk exists in this case either way, since no other route matches the two-segment shape with a literal second segment other than cuentas, but the code follows the safer stated convention anyway.
+
+Session-commit semantics (item 6): PASS.
+- Endpoint uses await db.flush(), never db.commit(), single flush call gated by not dry_run.
+- backend/app/database.py get_db (lines 40-53) wraps the yielded session and calls session.commit() after a successful yield, confirming the documented production behavior that FastAPI commits automatically after a successful request. The endpoint flush is deliberately incomplete on its own and relies on get_db post-yield commit in prod. In tests, the overridden get_db yields the test db_session directly with no wrapping commit, so flush is what makes writes visible without leaking a permanent commit into the session-scoped in-memory SQLite engine. This tradeoff is documented in apply-progress observation 1032 and independently confirmed correct here by re-running the full suite twice with identical pass counts.
+
+Audit log (item 7): Backfill endpoint writes NO audit entry. Neither the spec Backfill Endpoint requirement nor the design File Changes or Interfaces sections mention an audit obligation for this endpoint, in contrast with the Default Bank Account and Individual Payment Account Change requirements which explicitly require audit_service calls. This is a genuine omission by design, not a gap introduced by the implementation, no CRITICAL or WARNING raised.
+
+Response schema shape (item 8): The endpoint returns a plain dict, no Pydantic response_model on the route decorator, no dedicated response schema class. The returned shape matches, key for key, the shape documented in design.md Interfaces section and tasks.md 7.3. This is consistent with the design own Interfaces section, which also describes the response as a bare dict rather than a named schema, and is proportionate for a temporary admin endpoint slated for deletion in PR4. SUGGESTION, not WARNING: a typed BackfillResponse Pydantic model would give OpenAPI-doc and static-typing benefits for the endpoint lifetime, but neither spec nor design requires it and the endpoint is explicitly temporary.
+
+Diff-size note: git diff --cached --stat shows 3 files changed, 562 insertions, 18 deletions. Authored code and tests, excluding the openspec tasks.md diff, is approximately 546 lines, exceeding both the PR1b forecast of about 240 and the general 400-line review budget. This was already flagged by sdd-apply in apply-progress observation 1032 as a known, accepted overage: one atomic deliverable, one temporary admin endpoint plus its required nine-scenario test coverage, no safe split available, no size exception requested. Verify confirms the same numbers independently and does not add a new WARNING for it, deferring to the prior acknowledgment, but flags it again here for visibility at the sdd-verify gate.
+
+Issues found:
+- SUGGESTION: no typed Pydantic response model for the backfill endpoint (see item 8 above), not required by spec or design and the endpoint is temporary.
+- WARNING (carried over from PR1a, still unresolved): spec.md line 22 still says PATCH for the default-account endpoint where design.md, tasks.md, and the implementation correctly use PUT. Not part of PR1b scope but still outstanding in the spec artifact.
+
+Final Verdict: PASS WITH WARNINGS. 0 CRITICAL. 1 WARNING (carried-over spec wording PATCH versus PUT, pre-existing from PR1a, unrelated to PR1b own code). 1 SUGGESTION (untyped dict response for the temporary backfill endpoint). All 8 requested audit items (tasks-to-code, scenario-to-test, SQL-only and UUID and enum typing, backfill semantics, admin gate plus route ordering, flush versus commit split, audit-log expectation, response shape) PASS or are explicitly non-issues by design or spec silence.
+
+#### Addendum 2026-09-20 - Judgment Day round 2 (post-fix) - commit 1ac43c0
+
+The section above reflects the round-1 staged diff. After the round-1 Judgment Day fix, the following supersede it:
+
+- Default election no longer uses MIN(id): `_cuentas_sin_default_elegidas()` ranks with `row_number() OVER (PARTITION BY receptor_id ORDER BY id) = 1` (PostgreSQL has no min/max aggregate for uuid). Guarded by `test_paso1_no_usa_min_sobre_uuid_en_postgresql` (compiles with `postgresql.dialect()`).
+- Steps 3/4a/4b share one predicate object between COUNT and UPDATE that includes `<default scalar subquery> IS NOT NULL`; rows whose default cannot be resolved are neither counted nor written and only surface under `pendientes`. Idempotency (second run all counters 0) is asserted by three tests.
+- Step 4b chain (pagos -> creditos -> clientes -> gestores) filters `deleted_at IS NULL` on creditos/clientes/gestores.
+- `pendientes` keys are now `gestores_sin_cuenta`, `pagos_sin_cuenta_rellenables`, `pagos_sin_cuenta_no_rellenables`.
+- spec.md Backfill Endpoint requirement aligned to the real route `POST /receptores/admin/backfill-cuentas-bancarias` and to the lowest-id election.
+- Test evidence: focused file 18 passed; full suite 478 passed, 11 warnings (471 + 7 new).
+- Both judges: 6/6 ledger rows RESOLVED, VERDICT APPROVE. New info-level observations (single judge each, non-blocking): dry_run reports 0 for steps 3/4a/4b on a fresh database because those steps depend on steps 1/2/3 having been applied (documented in the endpoint docstring); the correlated scalar subquery is evaluated twice per row (WHERE + SET), acceptable for a one-shot admin endpoint.
+
+Final Verdict (PR1b, post-fix): PASS. 0 CRITICAL, 0 WARNING introduced by PR1b. The carried-over spec wording WARNING (PATCH vs PUT, line 22) remains outstanding from PR1a.
