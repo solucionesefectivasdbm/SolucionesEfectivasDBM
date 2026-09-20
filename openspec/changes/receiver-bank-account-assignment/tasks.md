@@ -88,28 +88,28 @@ Delivery strategy: `force-chained`, `stacked-to-main` — each branch is cut fro
 
 ### Phase 6: RED — Failing Tests for Backfill (`backend/tests/test_backfill_cuentas_bancarias.py`, new file, deleted in PR4)
 
-- [ ] 6.1 RED: receptor with zero accounts gets a generic default account (`entidad_bancaria='Por definir'`, `tipo_cuenta=TipoCuenta.ahorros`, `numero_cuenta='0'`, `es_predeterminada=true`)
-- [ ] 6.2 RED: receptor with accounts but none flagged default elects one via `MIN(id)` (Req: Backfill Endpoint — election rule confirmed by the owner in `design.md` Open Questions)
-- [ ] 6.3 RED: gestor with `cuenta_bancaria_id IS NULL` gets it set from its `receptor_id`'s default account
-- [ ] 6.4 RED: pago with `cuenta_bancaria_id IS NULL` gets it set from its `receptor_id`'s default account (step 4a)
-- [ ] 6.5 RED: gestor already on account B and a pago with null account whose `receptor_id` defaults to A — gestor keeps B, pago gets A (Req: Backfill Endpoint — scenario "Fills only gaps")
-- [ ] 6.6 RED: unpaid pago still `cuenta_bancaria_id IS NULL` after step 4a (its own `receptor_id` was also null) inherits from `credito → cliente → gestor.cuenta_bancaria_id` (step 4b)
-- [ ] 6.7 RED: paid and soft-deleted pagos are filled the same as active ones (history keeps its account, per design Interfaces note)
-- [ ] 6.8 RED: `dry_run=true` (default) executes the same predicates as `SELECT COUNT` and writes nothing; counts match what an apply run would produce
-- [ ] 6.9 RED: after a completed apply run, running again (apply or dry run) returns all counts `0` and changes no rows (Req: Backfill Endpoint — scenario "Idempotent re-run")
-- [ ] 6.10 RED: non-admin caller → 403, no writes (Req: Role Gates — backfill is admin-only)
-- [ ] 6.11 Verify RED: `cd backend && venv/Scripts/python.exe -m pytest tests/test_backfill_cuentas_bancarias.py -q` — all of 6.1-6.10 fail (endpoint not yet implemented)
+- [x] 6.1 RED: receptor with zero accounts gets a generic default account (`entidad_bancaria='Por definir'`, `tipo_cuenta=TipoCuenta.ahorros`, `numero_cuenta='0'`, `es_predeterminada=true`)
+- [x] 6.2 RED: receptor with accounts but none flagged default elects one via `MIN(id)` (Req: Backfill Endpoint — election rule confirmed by the owner in `design.md` Open Questions)
+- [x] 6.3 RED: gestor with `cuenta_bancaria_id IS NULL` gets it set from its `receptor_id`'s default account
+- [x] 6.4 RED: pago with `cuenta_bancaria_id IS NULL` gets it set from its `receptor_id`'s default account (step 4a)
+- [x] 6.5 RED: gestor already on account B and a pago with null account whose `receptor_id` defaults to A — gestor keeps B, pago gets A (Req: Backfill Endpoint — scenario "Fills only gaps")
+- [x] 6.6 RED: unpaid pago still `cuenta_bancaria_id IS NULL` after step 4a (its own `receptor_id` was also null) inherits from `credito → cliente → gestor.cuenta_bancaria_id` (step 4b)
+- [x] 6.7 RED: paid and soft-deleted pagos are filled the same as active ones (history keeps its account, per design Interfaces note)
+- [x] 6.8 RED: `dry_run=true` (default) executes the same predicates as `SELECT COUNT` and writes nothing; counts match what an apply run would produce
+- [x] 6.9 RED: after a completed apply run, running again (apply or dry run) returns all counts `0` and changes no rows (Req: Backfill Endpoint — scenario "Idempotent re-run")
+- [x] 6.10 RED: non-admin caller → 403, no writes (Req: Role Gates — backfill is admin-only)
+- [x] 6.11 Verify RED: `cd backend && venv/Scripts/python.exe -m pytest tests/test_backfill_cuentas_bancarias.py -q` — all of 6.1-6.10 fail (endpoint not yet implemented) — 11 failed (404, route did not exist)
 
 ### Phase 7: GREEN — Implement Backfill (`backend/app/routers/receptores.py`)
 
-- [ ] 7.1 Declare `sa.table()`/`sa.column()` lightweight constructs (`_t_gestores`, `_t_pagos`, `_t_cuentas`, `_t_receptores`), `tipo_cuenta` typed `sa.Enum(TipoCuenta, name="tipo_cuenta_enum")` (design decision 8, avoids the wrong `'Ahorros'` literal)
-- [ ] 7.2 Add `POST /receptores/admin/backfill-cuentas-bancarias?dry_run=true` (`# TEMPORAL` banner, `require_role("admin")`, declared before parametric routes so it does not collide with `/{receptor_id}`), implementing steps 1→4b via correlated scalar subqueries, each statement guarded by `cuenta_bancaria_id IS NULL` / `NOT EXISTS default` so re-runs are no-ops
-- [ ] 7.3 Return `{dry_run, predeterminadas_elegidas, cuentas_genericas_creadas, gestores_actualizados, pagos_por_receptor, pagos_por_gestor, pendientes: {gestores_sin_cuenta, pagos_sin_cuenta}}`
-- [ ] 7.4 Verify GREEN: `cd backend && venv/Scripts/python.exe -m pytest tests/test_backfill_cuentas_bancarias.py -q` — all tests from Phase 6 pass
+- [x] 7.1 Declare `sa.table()`/`sa.column()` lightweight constructs (`_t_gestores`, `_t_pagos`, `_t_cuentas`, `_t_receptores`), `tipo_cuenta` typed `sa.Enum(TipoCuenta, name="tipo_cuenta_enum")` (design decision 8, avoids the wrong `'Ahorros'` literal) — also `_t_creditos`/`_t_clientes` added (not in the original decision-8 list) for step 4b's credito->cliente->gestor join; `id`/FK columns typed `sa.UUID(as_uuid=True)` (needed for SQLite parameter binding, matches the ORM's own UUID type)
+- [x] 7.2 Add `POST /receptores/admin/backfill-cuentas-bancarias?dry_run=true` (`# TEMPORAL` banner, `require_role("admin")`, declared before parametric routes so it does not collide with `/{receptor_id}`), implementing steps 1→4b via correlated scalar subqueries, each statement guarded by `cuenta_bancaria_id IS NULL` / `NOT EXISTS default` so re-runs are no-ops
+- [x] 7.3 Return `{dry_run, predeterminadas_elegidas, cuentas_genericas_creadas, gestores_actualizados, pagos_por_receptor, pagos_por_gestor, pendientes: {gestores_sin_cuenta, pagos_sin_cuenta}}`
+- [x] 7.4 Verify GREEN: `cd backend && venv/Scripts/python.exe -m pytest tests/test_backfill_cuentas_bancarias.py -q` — all tests from Phase 6 pass — 11 passed
 
 ### Phase 8: Full Backend Regression (PR1b)
 
-- [ ] 8.1 Verify: `cd backend && venv/Scripts/python.exe -m pytest -q` — 0 failures
+- [x] 8.1 Verify: `cd backend && venv/Scripts/python.exe -m pytest -q` — 0 failures — 471 passed (460 baseline + 11 new)
 
 ### Operational: Prod Sequencing After PR1a + PR1b
 

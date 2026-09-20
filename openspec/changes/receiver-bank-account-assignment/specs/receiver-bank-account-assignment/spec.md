@@ -179,12 +179,19 @@ excluded from both levels, as today.
 
 ### Requirement: Backfill Endpoint
 
-A temporary admin-only `POST /admin/migracion/cuentas-bancarias` MUST: (1)
-create a default account `entidad_bancaria = "Por definir"`, `Ahorros`,
-`numero_cuenta = "0"` for each receptor with no account; (2) mark the only
-account as default for receptors with accounts but no default; (3) set
-`cuenta_bancaria_id` from each gestor/pago row's `receptor_id` default where
-`cuenta_bancaria_id` is null. It MUST be idempotent, MUST NOT overwrite
+A temporary admin-only `POST /receptores/admin/backfill-cuentas-bancarias`
+(query `dry_run`, default `true`) MUST: (1) create a default account
+`entidad_bancaria = "Por definir"`, `Ahorros`, `numero_cuenta = "0"` for each
+active receptor with no account; (2) mark the account with the lowest `id`
+(deterministic, portable ranking rather than `MIN(uuid)`) as default for
+receptors with accounts but no default; (3) set `cuenta_bancaria_id` from each
+gestor/pago row's `receptor_id` default where `cuenta_bancaria_id` is null;
+(4) for unpaid, non-deleted pagos still without account and without
+`receptor_id`, inherit the account of the non-deleted credito -> cliente ->
+gestor chain. Rows whose default cannot be resolved MUST NOT be counted or
+written; they MUST be reported only under `pendientes`
+(`gestores_sin_cuenta`, `pagos_sin_cuenta_rellenables`,
+`pagos_sin_cuenta_no_rellenables`). It MUST be idempotent, MUST NOT overwrite
 non-null values, MUST return counts per step, and MUST operate on SQL columns
 so it stays runnable after the ORM drops `receptor_id`. Generic accounts MUST
 be visible as-is until edited. The endpoint MUST be deleted in the cleanup PR.
