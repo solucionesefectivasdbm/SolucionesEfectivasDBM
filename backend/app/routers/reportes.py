@@ -10,8 +10,9 @@ from app.models.cliente import Cliente
 from app.models.credito import Credito
 from app.models.gestor import Gestor
 from app.models.pago import Pago
-from app.models.receptor import Receptor
+from app.models.receptor import CuentaBancaria, Receptor
 from app.models.usuario import Usuario
+from app.services.cuenta_bancaria_service import etiqueta_cuenta
 from app.utils.momentos import get_periodo_momento
 
 
@@ -20,6 +21,20 @@ from app.utils.momentos import get_periodo_momento
 class ReporteDetalleGestorExtendido(BaseModel):
     gestor_id: str
     gestor_nombre: str
+    total_recaudado: float
+    total_intereses_recaudados: float
+    total_capital_recaudado: float
+    total_pendiente: float
+    total_intereses_pendientes: float
+    total_capital_pendiente: float
+
+
+class ReporteDetalleCuentaExtendido(BaseModel):
+    """Sub-desglose por cuenta bancaria dentro de un receptor (PR2b, Req:
+    Report Per-Account Sub-Breakdown)."""
+    cuenta_bancaria_id: str
+    etiqueta: str
+    es_predeterminada: bool
     total_recaudado: float
     total_intereses_recaudados: float
     total_capital_recaudado: float
@@ -37,6 +52,7 @@ class ReporteDetalleReceptorExtendido(BaseModel):
     total_pendiente: float
     total_intereses_pendientes: float
     total_capital_pendiente: float
+    por_cuenta: list[ReporteDetalleCuentaExtendido] = []
 
 
 class ReporteResponseExtendido(BaseModel):
@@ -113,25 +129,73 @@ async def generar_reporte(
                 por_gestor_map[key]["capital_pend"] += float(pago.capital_a_pagar - pago.capital_pagado)
                 por_gestor_map[key]["intereses_pend"] += float(pago.interes_a_pagar - pago.interes_pagado)
 
+    # Receptor.derivado.vía.cuenta_bancaria (decision 9/10): `Pago.receptor_id`
+    # está deprecado desde PR2a y nunca se lee. Se agrega primero por
+    # `cuenta_bancaria_id` y luego se agrupa por el receptor de cada cuenta —
+    # una sola query precarga cuenta+receptor de todas las cuentas en juego.
+    cuenta_ids = {p.cuenta_bancaria_id for p in todos if p.cuenta_bancaria_id}
+    cuentas_map: dict = {}
+    if cuenta_ids:
+        filas_cuentas = (await db.execute(
+            select(CuentaBancaria, Receptor)
+            .join(Receptor, CuentaBancaria.receptor_id == Receptor.id)
+            .where(CuentaBancaria.id.in_(cuenta_ids))
+        )).all()
+        cuentas_map = {cuenta.id: (cuenta, receptor) for cuenta, receptor in filas_cuentas}
+
+    # Los totales del receptor se acumulan pago a pago (misma fórmula y orden
+    # que antes de PR2b: byte-idénticos en float); los subtotales por cuenta
+    # se acumulan aparte en el mismo recorrido.
     por_receptor_map: dict = {}
+    por_cuenta_map: dict = {}
     for pago in todos:
-        if pago.receptor_id:
-            receptor = (await db.execute(select(Receptor).where(Receptor.id == pago.receptor_id))).scalar_one_or_none()
-            if receptor:
-                key = str(receptor.id)
-                if key not in por_receptor_map:
-                    por_receptor_map[key] = {
-                        "receptor_id": str(receptor.id),
-                        "receptor_nombre": receptor.nombre,
-                        "capital_rec": 0.0, "intereses_rec": 0.0,
-                        "capital_pend": 0.0, "intereses_pend": 0.0,
-                    }
-                if pago.pagado:
-                    por_receptor_map[key]["capital_rec"] += float(pago.capital_pagado)
-                    por_receptor_map[key]["intereses_rec"] += float(pago.interes_pagado)
-                else:
-                    por_receptor_map[key]["capital_pend"] += float(pago.capital_a_pagar - pago.capital_pagado)
-                    por_receptor_map[key]["intereses_pend"] += float(pago.interes_a_pagar - pago.interes_pagado)
+        if not pago.cuenta_bancaria_id:
+            continue
+        cuenta_receptor = cuentas_map.get(pago.cuenta_bancaria_id)
+        if not cuenta_receptor:
+            continue
+        cuenta, receptor = cuenta_receptor
+        rkey = str(receptor.id)
+        if rkey not in por_receptor_map:
+            por_receptor_map[rkey] = {
+                "receptor_id": rkey,
+                "receptor_nombre": receptor.nombre,
+                "capital_rec": 0.0, "intereses_rec": 0.0,
+                "capital_pend": 0.0, "intereses_pend": 0.0,
+                "cuentas": [],
+            }
+        key = str(cuenta.id)
+        if key not in por_cuenta_map:
+            por_cuenta_map[key] = {
+                "cuenta_bancaria_id": key,
+                "etiqueta": etiqueta_cuenta(cuenta),
+                "es_predeterminada": cuenta.es_predeterminada,
+                "capital_rec": 0.0, "intereses_rec": 0.0,
+                "capital_pend": 0.0, "intereses_pend": 0.0,
+            }
+            por_receptor_map[rkey]["cuentas"].append(por_cuenta_map[key])
+        if pago.pagado:
+            capital = float(pago.capital_pagado)
+            intereses = float(pago.interes_pagado)
+            por_receptor_map[rkey]["capital_rec"] += capital
+            por_receptor_map[rkey]["intereses_rec"] += intereses
+            por_cuenta_map[key]["capital_rec"] += capital
+            por_cuenta_map[key]["intereses_rec"] += intereses
+        else:
+            capital = float(pago.capital_a_pagar - pago.capital_pagado)
+            intereses = float(pago.interes_a_pagar - pago.interes_pagado)
+            por_receptor_map[rkey]["capital_pend"] += capital
+            por_receptor_map[rkey]["intereses_pend"] += intereses
+            por_cuenta_map[key]["capital_pend"] += capital
+            por_cuenta_map[key]["intereses_pend"] += intereses
+
+    # Orden determinista (el SELECT no lleva ORDER BY): receptores por nombre
+    # y luego id; cuentas por etiqueta y luego id. `por_gestor` no cambia.
+    receptores_ordenados = sorted(
+        por_receptor_map.values(), key=lambda v: (v["receptor_nombre"], v["receptor_id"]),
+    )
+    for v in receptores_ordenados:
+        v["cuentas"].sort(key=lambda c: (c["etiqueta"], c["cuenta_bancaria_id"]))
 
     por_gestor = [
         ReporteDetalleGestorExtendido(
@@ -157,8 +221,22 @@ async def generar_reporte(
             total_pendiente=v["capital_pend"] + v["intereses_pend"],
             total_intereses_pendientes=v["intereses_pend"],
             total_capital_pendiente=v["capital_pend"],
+            por_cuenta=[
+                ReporteDetalleCuentaExtendido(
+                    cuenta_bancaria_id=c["cuenta_bancaria_id"],
+                    etiqueta=c["etiqueta"],
+                    es_predeterminada=c["es_predeterminada"],
+                    total_recaudado=c["capital_rec"] + c["intereses_rec"],
+                    total_intereses_recaudados=c["intereses_rec"],
+                    total_capital_recaudado=c["capital_rec"],
+                    total_pendiente=c["capital_pend"] + c["intereses_pend"],
+                    total_intereses_pendientes=c["intereses_pend"],
+                    total_capital_pendiente=c["capital_pend"],
+                )
+                for c in v["cuentas"]
+            ],
         )
-        for v in por_receptor_map.values()
+        for v in receptores_ordenados
     ]
 
     return ReporteResponseExtendido(

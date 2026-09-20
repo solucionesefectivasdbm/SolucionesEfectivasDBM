@@ -164,25 +164,25 @@ Delivery strategy: `force-chained`, `stacked-to-main` — each branch is cut fro
 
 ### Phase 12: RED — Cascading Filters & Report Nesting
 
-- [ ] 12.1 RED (`backend/tests/test_pagos_cuenta_bancaria.py`, filter subset): `GET /pagos?receptor_id=R1` with payments on accounts A and B of R1 and C of R2 → only A and B payments returned (Req: Cascading Filters on Payment Listing — scenario "Receptor-only aggregates accounts")
-- [ ] 12.2 RED: `GET /pagos?receptor_id=R1&cuenta_bancaria_id=B` on the same data → only B payments returned (Req: Cascading Filters on Payment Listing — scenario "Account narrows")
-- [ ] 12.3 RED: `GET /pagos?receptor_id=R1&cuenta_bancaria_id=C` (C belongs to R2, not R1) → 422 (Req: Cascading Filters on Payment Listing — scenario "Mismatched pair rejected"; see Spec/Design Reconciliation above — this is the explicit validation step the design narrative omits)
-- [ ] 12.4 RED: with any of `receptor_id`/`cuenta_bancaria_id` active on a credit whose future cuotas are not yet persisted, no projected/virtual rows appear (Req: Cascading Filters on Payment Listing — scenario "Virtual rows suppressed"); without either filter, virtual rows still appear as today
-- [ ] 12.5 RED: each real row in `GET /pagos` exposes `cuenta_bancaria_id`, the nested `cuenta_bancaria`, and its derived receptor; each virtual row exposes `cuenta_bancaria: null`
-- [ ] 12.6 RED (`backend/tests/test_reportes_por_cuenta.py`, new file): paid payments of 100 on account A and 50 on account B of R1 — `GET /reportes` for that period shows R1 with `total_recaudado = 150` and `por_cuenta` rows A = 100, B = 50 (Req: Report Per-Account Sub-Breakdown — scenario "Subtotals sum to receptor")
-- [ ] 12.7 RED: the existing report fixture — receptor-level totals are byte-identical to the pre-change expectations (Req: Report Per-Account Sub-Breakdown — scenario "Totals equal pre-change values")
-- [ ] 12.8 RED: payments with `cuenta_bancaria_id = null` are excluded from both the receptor total and every `por_cuenta` row
-- [ ] 12.9 Verify RED: `cd backend && venv/Scripts/python.exe -m pytest tests/test_pagos_cuenta_bancaria.py tests/test_reportes_por_cuenta.py -q` — all of 12.1-12.8 fail
+- [x] 12.1 RED (`backend/tests/test_pagos_cuenta_bancaria.py`, filter subset): `GET /pagos?receptor_id=R1` with payments on accounts A and B of R1 and C of R2 → only A and B payments returned (Req: Cascading Filters on Payment Listing — scenario "Receptor-only aggregates accounts")
+- [x] 12.2 RED: `GET /pagos?receptor_id=R1&cuenta_bancaria_id=B` on the same data → only B payments returned (Req: Cascading Filters on Payment Listing — scenario "Account narrows")
+- [x] 12.3 RED: `GET /pagos?receptor_id=R1&cuenta_bancaria_id=C` (C belongs to R2, not R1) → 422 (Req: Cascading Filters on Payment Listing — scenario "Mismatched pair rejected"; see Spec/Design Reconciliation above — this is the explicit validation step the design narrative omits)
+- [x] 12.4 RED: with any of `receptor_id`/`cuenta_bancaria_id` active on a credit whose future cuotas are not yet persisted, no projected/virtual rows appear (Req: Cascading Filters on Payment Listing — scenario "Virtual rows suppressed"); without either filter, virtual rows still appear as today
+- [x] 12.5 RED: each real row in `GET /pagos` exposes `cuenta_bancaria_id`, the nested `cuenta_bancaria`, and its derived receptor; each virtual row exposes `cuenta_bancaria: null`
+- [x] 12.6 RED (`backend/tests/test_reportes_por_cuenta.py`, new file): paid payments of 100 on account A and 50 on account B of R1 — `GET /reportes` for that period shows R1 with `total_recaudado = 150` and `por_cuenta` rows A = 100, B = 50 (Req: Report Per-Account Sub-Breakdown — scenario "Subtotals sum to receptor")
+- [x] 12.7 RED: the existing report fixture — receptor-level totals are byte-identical to the pre-change expectations (Req: Report Per-Account Sub-Breakdown — scenario "Totals equal pre-change values")
+- [x] 12.8 RED: payments with `cuenta_bancaria_id = null` are excluded from both the receptor total and every `por_cuenta` row
+- [x] 12.9 Verify RED: `cd backend && venv/Scripts/python.exe -m pytest tests/test_pagos_cuenta_bancaria.py tests/test_reportes_por_cuenta.py -q` — all of 12.1-12.8 fail — 8 failed, 8 passed (5 pagos filter tests + 3 reportes tests failed as expected)
 
 ### Phase 13: GREEN — Implement Filters & Report Nesting
 
-- [ ] 13.1 Modify `backend/app/routers/pagos.py`: expand `receptor_id` filter to `Pago.cuenta_bancaria_id IN (SELECT id FROM cuentas_bancarias WHERE receptor_id = :r)`; add `cuenta_bancaria_id: uuid | None` exact-match param; when both are present, pre-query check that the account's `receptor_id` matches `receptor_id`, else `HTTPException(422)` before building the ANDed filter (see Spec/Design Reconciliation); select columns + `outerjoin(CuentaBancaria).outerjoin(Receptor)` in `listar_pagos` and `listar_pagos_aplazados`; `_pago_row_a_dict` builds `cuenta_bancaria`; virtual dict keeps `cuenta_bancaria_id: None`; `_calcular_virtuales(..., cuenta_bancaria_id_filtro)` early-returns when either filter is active
-- [ ] 13.2 Modify `backend/app/routers/reportes.py`: add `ReporteDetalleCuentaExtendido`, aggregate by `cuenta_bancaria_id`, roll up per receptor into `por_receptor[].por_cuenta[]`; account/receptor metadata preloaded in one query; receptor totals keep the existing formula
-- [ ] 13.3 Verify GREEN: `cd backend && venv/Scripts/python.exe -m pytest tests/test_pagos_cuenta_bancaria.py tests/test_reportes_por_cuenta.py -q` — all tests from Phase 12 pass
+- [x] 13.1 Modify `backend/app/routers/pagos.py`: expand `receptor_id` filter to `Pago.cuenta_bancaria_id IN (SELECT id FROM cuentas_bancarias WHERE receptor_id = :r)`; add `cuenta_bancaria_id: uuid | None` exact-match param; when both are present, pre-query check that the account's `receptor_id` matches `receptor_id`, else `HTTPException(422)` before building the ANDed filter (see Spec/Design Reconciliation); select columns + `outerjoin(CuentaBancaria).outerjoin(Receptor)` in `listar_pagos` and `listar_pagos_aplazados`; `_pago_row_a_dict` builds `cuenta_bancaria`; virtual dict keeps `cuenta_bancaria_id: None`; `_calcular_virtuales(..., cuenta_bancaria_id_filtro)` early-returns when either filter is active — additionally fixed `tests/test_pagos_listado.py::_fake_row` (missing `cb_*` attrs broke the pre-existing `TestPagoRowADict` unit tests against the new joined-column contract) and strengthened its two affected tests with real nested-account assertions instead of leaving them as smoke tests
+- [x] 13.2 Modify `backend/app/routers/reportes.py`: add `ReporteDetalleCuentaExtendido`, aggregate by `cuenta_bancaria_id`, roll up per receptor into `por_receptor[].por_cuenta[]`; account/receptor metadata preloaded in one query; receptor totals keep the existing formula (replaces the old `pago.receptor_id`-based loop, deprecated since PR2a)
+- [x] 13.3 Verify GREEN: `cd backend && venv/Scripts/python.exe -m pytest tests/test_pagos_cuenta_bancaria.py tests/test_reportes_por_cuenta.py -q` — all tests from Phase 12 pass — 16 passed
 
 ### Phase 14: Full Backend Regression (PR2b)
 
-- [ ] 14.1 Verify: `cd backend && venv/Scripts/python.exe -m pytest -q` — 0 failures
+- [x] 14.1 Verify: `cd backend && venv/Scripts/python.exe -m pytest -q` — 0 failures — 504 passed
 
 ### Operational: Prod Sequencing After PR2a + PR2b
 

@@ -23,6 +23,7 @@ from app.main import app
 from app.models.cliente import Cliente
 from app.models.credito import Credito, TipoCredito, Periodicidad
 from app.models.pago import DestinoExcedente, Pago, TipoCuota
+from app.models.receptor import TipoCuenta
 from app.models.usuario import TipoUsuario, Usuario
 from app.routers.pagos import _pago_row_a_dict
 from app.schemas.pago import PagoResponse
@@ -128,6 +129,12 @@ def _fake_row(**overrides) -> SimpleNamespace:
         cliente_apellidos="Pérez",
         numero_credito_cliente="Juan Pérez-CR-001",
         tipo_credito=TipoCredito.cuota_fija,
+        cb_entidad_bancaria=None,
+        cb_tipo_cuenta=None,
+        cb_numero_cuenta=None,
+        cb_es_predeterminada=None,
+        cb_receptor_id=None,
+        cb_receptor_nombre=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -158,15 +165,31 @@ class TestPagoRowADict:
 
     def test_excedente_y_cuenta_bancaria_se_mapean(self):
         cuenta = uuid.uuid4()
+        receptor_id = uuid.uuid4()
         row = _fake_row(
             es_excedente_a=DestinoExcedente.capital,
             cuenta_bancaria_id=cuenta,
             pagado=True,
+            cb_entidad_bancaria="Bancolombia",
+            cb_tipo_cuenta=TipoCuenta.ahorros,
+            cb_numero_cuenta="123",
+            cb_es_predeterminada=True,
+            cb_receptor_id=receptor_id,
+            cb_receptor_nombre="Receptor Test",
         )
         resp = PagoResponse.model_validate(_pago_row_a_dict(row, _HOY, _LIMITE))
         assert resp.es_excedente_a == DestinoExcedente.capital
         assert resp.cuenta_bancaria_id == cuenta
         assert resp.pagado is True
+        assert resp.cuenta_bancaria.id == cuenta
+        assert resp.cuenta_bancaria.receptor.id == receptor_id
+        assert resp.cuenta_bancaria.entidad_bancaria == "Bancolombia"
+
+    def test_sin_cuenta_bancaria_nested_es_none(self):
+        """Fila real sin cuenta asignada -> `cuenta_bancaria` es None (no un dict vacío)."""
+        row = _fake_row(cuenta_bancaria_id=None)
+        resp = PagoResponse.model_validate(_pago_row_a_dict(row, _HOY, _LIMITE))
+        assert resp.cuenta_bancaria is None
 
     def test_flags_mora_usa_limite_precalculado(self):
         """flags_mora recibe `limite` ya calculado (una vez por request)."""
