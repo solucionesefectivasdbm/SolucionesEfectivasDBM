@@ -256,7 +256,7 @@ class TestGenerarSiguienteCuotaWalkBack:
 
         cuota_n_mas_2 = await generar_siguiente_cuota(
             db=db_session, credito=credito, cuota_anterior=cuota_n_mas_1,
-            receptor_id=None, saldo_pendiente=Decimal("0.00"),
+            cuenta_bancaria_id=None, saldo_pendiente=Decimal("0.00"),
         )
         assert cuota_n_mas_2.tipo_cuota == TipoCuota.interes
         assert cuota_n_mas_2.interes_a_pagar == Decimal("70000.00")
@@ -288,7 +288,7 @@ class TestGenerarSiguienteCuotaWalkBack:
 
         cuota_n_mas_4 = await generar_siguiente_cuota(
             db=db_session, credito=credito, cuota_anterior=cuota_n_mas_3,
-            receptor_id=None, saldo_pendiente=Decimal("0.00"),
+            cuenta_bancaria_id=None, saldo_pendiente=Decimal("0.00"),
         )
         base_interes = credito.saldo_capital * credito.tasa_interes_mensual
         assert cuota_n_mas_4.interes_a_pagar == base_interes + Decimal("10000.00")

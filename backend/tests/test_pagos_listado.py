@@ -117,7 +117,7 @@ def _fake_row(**overrides) -> SimpleNamespace:
         interes_pagado=Decimal("0.00"),
         momento="m3",
         fecha_maxima=date(2026, 3, 10),
-        receptor_id=None,
+        cuenta_bancaria_id=None,
         pagado=False,
         validado_recaudador=False,
         fecha_pago_real=None,
@@ -156,16 +156,16 @@ class TestPagoRowADict:
         assert resp.razon_bloqueo is None
         assert resp.tipo_credito == TipoCredito.cuota_fija
 
-    def test_excedente_y_receptor_se_mapean(self):
-        receptor = uuid.uuid4()
+    def test_excedente_y_cuenta_bancaria_se_mapean(self):
+        cuenta = uuid.uuid4()
         row = _fake_row(
             es_excedente_a=DestinoExcedente.capital,
-            receptor_id=receptor,
+            cuenta_bancaria_id=cuenta,
             pagado=True,
         )
         resp = PagoResponse.model_validate(_pago_row_a_dict(row, _HOY, _LIMITE))
         assert resp.es_excedente_a == DestinoExcedente.capital
-        assert resp.receptor_id == receptor
+        assert resp.cuenta_bancaria_id == cuenta
         assert resp.pagado is True
 
     def test_flags_mora_usa_limite_precalculado(self):

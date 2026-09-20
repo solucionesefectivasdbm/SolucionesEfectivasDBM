@@ -226,7 +226,7 @@ class PagoService:
                 db=db,
                 credito=credito,
                 cuota_anterior=pago,
-                receptor_id=pago.receptor_id,
+                cuenta_bancaria_id=pago.cuenta_bancaria_id,
             )
             if nueva_cuota:
                 db.add(nueva_cuota)
@@ -294,7 +294,7 @@ class PagoService:
                 db=db,
                 credito=credito,
                 cuota_anterior=pago,
-                receptor_id=pago.receptor_id,
+                cuenta_bancaria_id=pago.cuenta_bancaria_id,
                 saldo_pendiente=saldo_a_arrastrar,
             )
             if nueva_cuota:
@@ -363,7 +363,7 @@ class PagoService:
                 db=db,
                 credito=credito,
                 cuota_anterior=pago,
-                receptor_id=pago.receptor_id,
+                cuenta_bancaria_id=pago.cuenta_bancaria_id,
             )
             if nueva_cuota:
                 db.add(nueva_cuota)
@@ -381,7 +381,7 @@ class PagoService:
         monto: Decimal,
         destino: DestinoExcedente,
         fecha_pago: date,
-        receptor_id,
+        cuenta_bancaria_id,
     ) -> Pago:
         """
         Registra un pago no programado. No afecta las cuotas programadas.
@@ -419,7 +419,7 @@ class PagoService:
             interes_pagado=interes_pago,
             momento=get_momento(fecha_pago),
             fecha_maxima=fecha_pago,
-            receptor_id=receptor_id,
+            cuenta_bancaria_id=cuenta_bancaria_id,
             pagado=True,
             fecha_pago_real=fecha_pago,
         )

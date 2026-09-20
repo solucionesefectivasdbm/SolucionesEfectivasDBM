@@ -81,7 +81,7 @@ def make_pago(
     p.interes_pagado = Decimal("0")
     p.momento = "m3"
     p.fecha_maxima = date(2026, 3, 10)
-    p.receptor_id = None
+    p.cuenta_bancaria_id = None
     p.pagado = False
     p.validado_recaudador = False
     p.fecha_pago_real = None
@@ -634,7 +634,7 @@ class TestCierreEnTodasLasRutas:
             monto=Decimal("500.00"),
             destino=DestinoExcedente.capital,
             fecha_pago=date(2027, 3, 10),
-            receptor_id=None,
+            cuenta_bancaria_id=None,
         )
 
         assert credito.activo is False
@@ -684,7 +684,7 @@ class TestCierreEnTodasLasRutas:
             monto=Decimal("500.00"),
             destino=DestinoExcedente.capital,
             fecha_pago=date(2027, 3, 10),
-            receptor_id=None,
+            cuenta_bancaria_id=None,
         )
 
         assert credito.saldo_capital == Decimal("0.00")
@@ -893,22 +893,22 @@ class TestCierreEnTodasLasRutas:
         assert credito.saldo_intereses == Decimal("42.68")
 
 
-class TestPropagacionReceptor:
-    """Tests del router de gestores para propagación de receptor."""
+class TestPropagacionCuentaBancaria:
+    """Tests del router de gestores para propagación de cuenta bancaria."""
 
     @pytest.mark.asyncio
-    async def test_propagacion_se_llama_al_cambiar_receptor(self):
-        """Verificar que _propagar_receptor_a_pagos se invoca al cambiar receptor."""
-        from app.routers.gestores import _propagar_receptor_a_pagos
+    async def test_propagacion_se_llama_al_cambiar_cuenta(self):
+        """Verificar que _propagar_cuenta_a_pagos se invoca al cambiar cuenta_bancaria_id."""
+        from app.routers.gestores import _propagar_cuenta_a_pagos
 
         db = AsyncMock()
         db.execute = AsyncMock()
 
-        nuevo_receptor = uuid.uuid4()
+        nueva_cuenta = uuid.uuid4()
         gestor_id = uuid.uuid4()
 
         # No debería lanzar excepción
-        await _propagar_receptor_a_pagos(db, gestor_id, nuevo_receptor)
+        await _propagar_cuenta_a_pagos(db, gestor_id, nueva_cuenta)
         assert db.execute.called
 
 
@@ -1060,7 +1060,7 @@ class TestCaracterizacionPagoNoProgramadoDobleReduccion:
             monto=Decimal("500.00"),
             destino=DestinoExcedente.capital,
             fecha_pago=date(2026, 6, 1),
-            receptor_id=None,
+            cuenta_bancaria_id=None,
         )
 
         # saldo_capital debe haber bajado exactamente 500 (una sola vez)
@@ -1534,7 +1534,7 @@ class TestPagoNoProgramadoReduceUnaVez:
             monto=Decimal("100.00"),
             destino=DestinoExcedente.capital,
             fecha_pago=date(2026, 6, 1),
-            receptor_id=None,
+            cuenta_bancaria_id=None,
         )
 
         assert credito.saldo_capital == Decimal("900.00"), (
@@ -1578,7 +1578,7 @@ class TestPagoNoProgramadoReduceUnaVez:
             monto=Decimal("500.00"),
             destino=DestinoExcedente.capital,
             fecha_pago=date(2026, 6, 1),
-            receptor_id=None,
+            cuenta_bancaria_id=None,
         )
 
         assert credito.saldo_capital == Decimal("1500.00"), (
@@ -1624,7 +1624,7 @@ class TestPagoNoProgramadoReduceUnaVez:
             monto=Decimal("60.00"),
             destino=DestinoExcedente.intereses,
             fecha_pago=date(2026, 6, 1),
-            receptor_id=None,
+            cuenta_bancaria_id=None,
         )
 
         # Capital no debe haber cambiado

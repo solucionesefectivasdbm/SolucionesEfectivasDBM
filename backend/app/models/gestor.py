@@ -36,6 +36,9 @@ class Gestor(AuditMixin, Base):
     telefono: Mapped[str] = mapped_column(String(20), nullable=False)
     direccion: Mapped[str] = mapped_column(Text, nullable=False)
     correo_electronico: Mapped[str] = mapped_column(String(150), unique=True, nullable=False)
+    # DEPRECATED, dropped in PR4 (receiver-bank-account-assignment decision 7):
+    # nunca se lee ni se escribe desde PR2a en adelante — se mantiene mapeado
+    # solo para que el esquema SQLite de tests siga aceptando la columna.
     receptor_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("receptores.id"),
@@ -50,9 +53,6 @@ class Gestor(AuditMixin, Base):
     # Relaciones
     usuario: Mapped["Usuario"] = relationship(  # type: ignore[name-defined]  # noqa: F821
         "Usuario", back_populates="gestor_perfil"
-    )
-    receptor: Mapped[Optional["Receptor"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
-        "Receptor", back_populates="gestores"
     )
     cuenta_bancaria: Mapped[Optional["CuentaBancaria"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
         "CuentaBancaria"

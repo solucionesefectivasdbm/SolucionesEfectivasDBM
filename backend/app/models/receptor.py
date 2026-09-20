@@ -35,12 +35,6 @@ class Receptor(AuditMixin, Base):
     cuentas_bancarias: Mapped[list["CuentaBancaria"]] = relationship(
         "CuentaBancaria", back_populates="receptor", cascade="all, delete-orphan"
     )
-    gestores: Mapped[list["Gestor"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
-        "Gestor", back_populates="receptor"
-    )
-    pagos: Mapped[list["Pago"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
-        "Pago", back_populates="receptor"
-    )
 
 
 class CuentaBancaria(Base):

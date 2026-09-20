@@ -77,7 +77,7 @@ def make_cuota(
     p.interes_pagado = Decimal("0")
     p.momento = "m3"
     p.fecha_maxima = fecha_maxima
-    p.receptor_id = None
+    p.cuenta_bancaria_id = None
     p.pagado = False
     p.validado_recaudador = True
     p.fecha_pago_real = None

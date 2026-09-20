@@ -212,7 +212,7 @@ class TestGenerarSiguienteCuotaDiarioDomingoConArrastre:
 
         nueva = await generar_siguiente_cuota(
             db=None, credito=credito, cuota_anterior=cuota_anterior,
-            receptor_id=None, saldo_pendiente=Decimal("40.00"),
+            cuenta_bancaria_id=None, saldo_pendiente=Decimal("40.00"),
         )
 
         assert nueva is not None

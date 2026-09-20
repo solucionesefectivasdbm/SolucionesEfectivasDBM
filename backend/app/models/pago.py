@@ -64,6 +64,8 @@ class Pago(AuditMixin, Base):
     )
     momento: Mapped[str] = mapped_column(String(5), nullable=False)
     fecha_maxima: Mapped[date] = mapped_column(Date, nullable=False)
+    # DEPRECATED, dropped in PR4 (receiver-bank-account-assignment decision 7):
+    # nunca se lee ni se escribe desde PR2a en adelante.
     receptor_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("receptores.id"), nullable=True
     )
@@ -94,7 +96,4 @@ class Pago(AuditMixin, Base):
     # Relaciones
     credito: Mapped["Credito"] = relationship(  # type: ignore[name-defined]  # noqa: F821
         "Credito", back_populates="pagos"
-    )
-    receptor: Mapped[Optional["Receptor"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
-        "Receptor", back_populates="pagos"
     )

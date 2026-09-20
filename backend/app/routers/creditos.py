@@ -221,14 +221,14 @@ async def crear_credito(
     db.add(credito)
     await db.flush()  # Obtener el ID
 
-    # Obtener receptor del gestor del cliente
+    # Obtener cuenta bancaria del gestor del cliente
     gestor = (await db.execute(
         select(Gestor).where(Gestor.id == cliente.gestor_id)
     )).scalar_one_or_none()
-    receptor_id = gestor.receptor_id if gestor else None
+    cuenta_bancaria_id = gestor.cuenta_bancaria_id if gestor else None
 
     # Crear primera cuota
-    primera_cuota = await crear_primera_cuota(credito, receptor_id)
+    primera_cuota = await crear_primera_cuota(credito, cuenta_bancaria_id)
     db.add(primera_cuota)
 
     await audit_service.registrar_creacion(

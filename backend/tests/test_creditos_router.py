@@ -796,3 +796,104 @@ class TestCrearCreditoDiarioDomingoRechazado:
         )
         r = await client.post("/api/v1/creditos", json=payload)
         assert r.status_code == 201, r.text
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Payment Account Inheritance (receiver-bank-account-assignment, PR2a)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestPrimeraCuotaHeredaCuentaBancaria:
+    @pytest.mark.asyncio
+    async def test_primera_cuota_hereda_cuenta_del_gestor(self, make_client, db_session):
+        """Req: Payment Account Inheritance — 'First cuota inherits'."""
+        from app.models.gestor import Gestor
+        from app.models.receptor import CuentaBancaria, Receptor, TipoCuenta
+        from app.models.usuario import Usuario
+
+        receptor = Receptor(
+            id=uuid.uuid4(), nombre="Receptor Prueba",
+            cedula=str(uuid.uuid4().int)[:10], telefono="3000000000",
+        )
+        cuenta = CuentaBancaria(
+            id=uuid.uuid4(), receptor_id=receptor.id, entidad_bancaria="A",
+            tipo_cuenta=TipoCuenta.ahorros, numero_cuenta="A1", es_predeterminada=True,
+        )
+        usuario = Usuario(
+            id=uuid.uuid4(), username=f"gestor{uuid.uuid4().hex[:8]}",
+            password_hash="x", telefono="3000000000",
+            tipo_usuario=TipoUsuario.gestor, activo=True,
+        )
+        db_session.add_all([receptor, cuenta, usuario])
+        await db_session.flush()
+
+        gestor = Gestor(
+            id=uuid.uuid4(), user_id=usuario.id, cedula=str(uuid.uuid4().int)[:10],
+            nombre="Gestor", apellidos="Prueba", telefono="3000000000",
+            direccion="Calle 1", correo_electronico=f"{uuid.uuid4().hex[:8]}@test.com",
+            cuenta_bancaria_id=cuenta.id,
+        )
+        db_session.add(gestor)
+        await db_session.flush()
+
+        cliente = Cliente(
+            id=uuid.uuid4(), gestor_id=gestor.id, nombre="Cliente",
+            apellidos=f"Prueba{uuid.uuid4().hex[:6]}", cedula=str(uuid.uuid4().int)[:10],
+            telefono="3000000000", direccion="Calle 2",
+        )
+        db_session.add(cliente)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        payload = _credito_create_payload(
+            cliente.id, periodicidad="mensual", fecha_inicial_pago=date(2026, 2, 2)
+        )
+        r = await client.post("/api/v1/creditos", json=payload)
+        assert r.status_code == 201, r.text
+
+        primera_cuota = (await db_session.execute(
+            select(Pago).where(Pago.credito_id == uuid.UUID(r.json()["id"]), Pago.numero_cuota == 1)
+        )).scalar_one()
+        assert primera_cuota.cuenta_bancaria_id == cuenta.id
+
+    @pytest.mark.asyncio
+    async def test_primera_cuota_gestor_sin_cuenta_es_null(self, make_client, db_session):
+        """Req: Payment Account Inheritance — 'Gestor without account'."""
+        from app.models.gestor import Gestor
+        from app.models.usuario import Usuario
+
+        usuario = Usuario(
+            id=uuid.uuid4(), username=f"gestor{uuid.uuid4().hex[:8]}",
+            password_hash="x", telefono="3000000000",
+            tipo_usuario=TipoUsuario.gestor, activo=True,
+        )
+        db_session.add(usuario)
+        await db_session.flush()
+
+        gestor = Gestor(
+            id=uuid.uuid4(), user_id=usuario.id, cedula=str(uuid.uuid4().int)[:10],
+            nombre="Gestor", apellidos="SinCuenta", telefono="3000000000",
+            direccion="Calle 1", correo_electronico=f"{uuid.uuid4().hex[:8]}@test.com",
+            cuenta_bancaria_id=None,
+        )
+        db_session.add(gestor)
+        await db_session.flush()
+
+        cliente = Cliente(
+            id=uuid.uuid4(), gestor_id=gestor.id, nombre="Cliente",
+            apellidos=f"Prueba{uuid.uuid4().hex[:6]}", cedula=str(uuid.uuid4().int)[:10],
+            telefono="3000000000", direccion="Calle 2",
+        )
+        db_session.add(cliente)
+        await db_session.flush()
+
+        client = await make_client(TipoUsuario.admin)
+        payload = _credito_create_payload(
+            cliente.id, periodicidad="mensual", fecha_inicial_pago=date(2026, 2, 2)
+        )
+        r = await client.post("/api/v1/creditos", json=payload)
+        assert r.status_code == 201, r.text
+
+        primera_cuota = (await db_session.execute(
+            select(Pago).where(Pago.credito_id == uuid.UUID(r.json()["id"]), Pago.numero_cuota == 1)
+        )).scalar_one()
+        assert primera_cuota.cuenta_bancaria_id is None

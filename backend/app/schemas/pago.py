@@ -6,6 +6,7 @@ from pydantic import BaseModel, field_validator
 
 from app.models.credito import TipoCredito
 from app.models.pago import TipoCuota, DestinoExcedente
+from app.schemas.receptor import CuentaBancariaResumen
 
 
 class PagoResponse(BaseModel):
@@ -22,7 +23,8 @@ class PagoResponse(BaseModel):
     interes_pagado: Decimal
     momento: str
     fecha_maxima: date
-    receptor_id: Optional[uuid.UUID]
+    cuenta_bancaria_id: Optional[uuid.UUID]
+    cuenta_bancaria: Optional[CuentaBancariaResumen] = None
     pagado: bool
     validado_recaudador: bool
     fecha_pago_real: Optional[date]
@@ -115,9 +117,9 @@ class ModificarFechaPagoRequest(BaseModel):
     es_aplazamiento: bool = False
 
 
-class ModificarReceptorPagoRequest(BaseModel):
-    """Recaudador / Admin: modifica receptor de un pago individual."""
-    receptor_id: uuid.UUID
+class ModificarCuentaBancariaPagoRequest(BaseModel):
+    """Recaudador / Admin: modifica la cuenta bancaria de un pago individual."""
+    cuenta_bancaria_id: uuid.UUID
 
 
 class PagoFiltros(BaseModel):
@@ -128,6 +130,7 @@ class PagoFiltros(BaseModel):
     gestor_id: Optional[uuid.UUID] = None
     cliente_id: Optional[uuid.UUID] = None
     receptor_id: Optional[uuid.UUID] = None
+    cuenta_bancaria_id: Optional[uuid.UUID] = None
     busqueda: Optional[str] = None
     page: int = 1
     page_size: int = 50
