@@ -42,12 +42,24 @@ class ReporteDetalleGestor(BaseModel):
     total_capital: float
 
 
+class ReporteDetalleCuenta(BaseModel):
+    """Sub-desglose por cuenta bancaria dentro de un receptor (PR2b lo puebla)."""
+    cuenta_bancaria_id: uuid.UUID
+    etiqueta: str
+    es_predeterminada: bool
+    total_recaudado: float
+    total_intereses: float
+    total_capital: float
+
+
 class ReporteDetalleReceptor(BaseModel):
     receptor_id: uuid.UUID
     receptor_nombre: str
     total_recaudado: float
     total_intereses: float
     total_capital: float
+    # Poblado a partir de PR2b (receiver-bank-account-assignment); vacío hasta entonces.
+    por_cuenta: list[ReporteDetalleCuenta] = []
 
 
 class ReporteResponse(BaseModel):

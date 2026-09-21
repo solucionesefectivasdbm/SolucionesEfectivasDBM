@@ -1,7 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { gestoresApi, usuariosApi, receptoresApi } from '@/api'
 import { LoadingPage, EmptyState, Paginacion, FormField, ConfirmarCreacion, type ItemConfirmacion } from '@/components/ui'
 import Modal from '@/components/ui/Modal'
+import SelectCuentaBancaria from '@/components/ui/SelectCuentaBancaria'
+import { formatCuentaBancaria } from '@/utils/formatters'
 import type { Gestor, Usuario, Receptor } from '@/types'
 import { Plus, Pencil, Search } from 'lucide-react'
 import { useForm } from 'react-hook-form'
@@ -15,7 +17,7 @@ interface GestorForm {
   direccion: string
   correo_electronico: string
   user_id: string
-  receptor_id: string
+  cuenta_bancaria_id: string
 }
 
 export default function GestoresPage() {
@@ -33,7 +35,8 @@ export default function GestoresPage() {
   const [editando, setEditando] = useState<Gestor | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
-  const { register, handleSubmit, reset, formState: { errors } } = useForm<GestorForm>()
+  const { register, handleSubmit, reset, setValue, watch, formState: { errors } } = useForm<GestorForm>()
+  const cuentaBancariaId = watch('cuenta_bancaria_id')
 
   const cargar = useCallback(async () => {
     setLoading(true)
@@ -57,19 +60,34 @@ export default function GestoresPage() {
       setUsuarios(r.data.items.filter(u => u.tipo_usuario === 'gestor'))
     }).catch(() => {})
 
-    receptoresApi.listar({ page: 1 }).then(r => {
-      setReceptores(r.data.items)
-    }).catch(() => {})
   }, [])
+
+  // Buscador de receptores dentro de SelectCuentaBancaria: el backend limita
+  // /receptores a 50 resultados, así que se recarga con `busqueda` para que
+  // cualquier receptor siga siendo alcanzable.
+  // Request sequence counter: only the latest response is applied so a slow
+  // earlier request cannot overwrite a newer one. The initial load and every
+  // form open go through the same counter and reset the list to unfiltered.
+  const receptoresSeqRef = useRef(0)
+  const handleBusquedaReceptores = useCallback((busqueda: string) => {
+    const seq = ++receptoresSeqRef.current
+    receptoresApi.listar({ page: 1, busqueda })
+      .then(r => { if (seq === receptoresSeqRef.current) setReceptores(r.data.items) })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => { handleBusquedaReceptores('') }, [handleBusquedaReceptores])
 
   const abrirCrear = () => {
     setEditando(null)
     reset({})
+    handleBusquedaReceptores('')
     setModalForm(true)
   }
 
   const abrirEditar = (g: Gestor) => {
     setEditando(g)
+    handleBusquedaReceptores('')
     reset({
       cedula: g.cedula,
       nombre: g.nombre,
@@ -77,7 +95,7 @@ export default function GestoresPage() {
       telefono: g.telefono,
       direccion: g.direccion,
       correo_electronico: g.correo_electronico,
-      receptor_id: g.receptor_id ?? '',
+      cuenta_bancaria_id: g.cuenta_bancaria_id ?? '',
     })
     setModalForm(true)
   }
@@ -93,7 +111,7 @@ export default function GestoresPage() {
           telefono: data.telefono,
           direccion: data.direccion,
           correo_electronico: data.correo_electronico,
-          receptor_id: data.receptor_id || null,
+          cuenta_bancaria_id: data.cuenta_bancaria_id || null,
         })
         toast.success('Gestor actualizado')
         setModalForm(false)
@@ -117,7 +135,7 @@ export default function GestoresPage() {
     try {
       await gestoresApi.crear({
         ...datosPendientes,
-        receptor_id: datosPendientes.receptor_id || null,
+        cuenta_bancaria_id: datosPendientes.cuenta_bancaria_id || null,
       })
       toast.success('Gestor creado')
       setModalConfirmarCrear(false)
@@ -138,7 +156,8 @@ export default function GestoresPage() {
   const itemsConfirmacion = (): ItemConfirmacion[] => {
     if (!datosPendientes) return []
     const usuario = usuarios.find(u => u.id === datosPendientes.user_id)
-    const receptor = receptores.find(r => r.id === datosPendientes.receptor_id)
+    const receptor = receptores.find(r => r.cuentas_bancarias.some(c => c.id === datosPendientes.cuenta_bancaria_id))
+    const cuenta = receptor?.cuentas_bancarias.find(c => c.id === datosPendientes.cuenta_bancaria_id)
     return [
       { label: 'Nombre', value: datosPendientes.nombre },
       { label: 'Apellidos', value: datosPendientes.apellidos },
@@ -147,7 +166,7 @@ export default function GestoresPage() {
       { label: 'Correo', value: datosPendientes.correo_electronico },
       { label: 'Dirección', value: datosPendientes.direccion },
       { label: 'Usuario asociado', value: usuario ? usuario.username : '—' },
-      { label: 'Receptor asignado', value: receptor ? `${receptor.nombre} — ${receptor.cedula}` : 'Sin receptor' },
+      { label: 'Cuenta bancaria asignada', value: cuenta && receptor ? formatCuentaBancaria(cuenta, receptor.nombre) : 'Sin cuenta' },
     ]
   }
 
@@ -184,7 +203,7 @@ export default function GestoresPage() {
                   <th className="table-header">Cédula</th>
                   <th className="table-header">Teléfono</th>
                   <th className="table-header">Correo</th>
-                  <th className="table-header">Receptor asignado</th>
+                  <th className="table-header">Cuenta bancaria</th>
                   <th className="table-header">Acciones</th>
                 </tr>
               </thead>
@@ -196,9 +215,9 @@ export default function GestoresPage() {
                     <td className="table-cell">{g.telefono}</td>
                     <td className="table-cell text-xs text-gray-500">{g.correo_electronico}</td>
                     <td className="table-cell">
-                      {g.receptor
-                        ? <span className="badge-success">{g.receptor.nombre}</span>
-                        : <span className="badge-warning">Sin receptor</span>}
+                      {g.cuenta_bancaria
+                        ? <span className="badge-success">{g.cuenta_bancaria.receptor.nombre} · {g.cuenta_bancaria.entidad_bancaria}</span>
+                        : <span className="badge-warning">Sin cuenta</span>}
                     </td>
                     <td className="table-cell">
                       <button
@@ -290,13 +309,15 @@ export default function GestoresPage() {
             </FormField>
           )}
 
-          <FormField label="Receptor asignado">
-            <select {...register('receptor_id')} className="input">
-              <option value="">-- Sin receptor --</option>
-              {receptores.map(r => (
-                <option key={r.id} value={r.id}>{r.nombre} — {r.cedula}</option>
-              ))}
-            </select>
+          <FormField label="Cuenta bancaria asignada">
+            <SelectCuentaBancaria
+              receptores={receptores}
+              value={cuentaBancariaId ?? ''}
+              onChange={id => setValue('cuenta_bancaria_id', id)}
+              placeholder="-- Sin cuenta --"
+              onBusquedaChange={handleBusquedaReceptores}
+              cuentaActual={editando?.cuenta_bancaria}
+            />
           </FormField>
 
           <div className="col-span-2 flex gap-3 justify-end pt-2">

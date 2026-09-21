@@ -6,7 +6,7 @@ Este es el router más complejo. Maneja:
 - Registro de montos pagados (Registrador/Admin)
 - Confirmación de excedente (modal del frontend)
 - Validación por Recaudador
-- Modificación de fecha y receptor por Recaudador
+- Modificación de fecha y cuenta bancaria por Recaudador
 - Pagos no programados
 - Alertas (próximos a vencer, vencidos)
 """
@@ -30,12 +30,13 @@ from app.models.cliente import Cliente
 from app.models.credito import Credito, Periodicidad
 from app.models.gestor import Gestor
 from app.models.pago import Pago, TipoCuota
+from app.models.receptor import CuentaBancaria, Receptor
 from app.models.usuario import TipoUsuario, Usuario
 from app.schemas.common import PaginatedResponse
 from app.schemas.pago import (
     ConfirmarExcedenteRequest,
+    ModificarCuentaBancariaPagoRequest,
     ModificarFechaPagoRequest,
-    ModificarReceptorPagoRequest,
     PagoFiltros,
     PagoNoProgramadoRequest,
     PagoResponse,
@@ -45,6 +46,7 @@ from app.schemas.pago import (
 )
 from app.services import audit_service
 from app.services.credito_service import credito_operativamente_abierto
+from app.services.cuenta_bancaria_service import obtener_cuenta_o_404
 from app.services.pago_service import PagoService
 from app.utils.fechas import siguiente_fecha_maxima
 from app.utils.momentos import fecha_limite_mora, flags_mora, get_momento, get_periodo_momento
@@ -66,6 +68,17 @@ def _pago_row_a_dict(row, hoy: date, limite: date) -> dict:
     columnas. La validación a PagoResponse ocurre solo sobre los items de la
     página, no sobre todas las filas.
     """
+    cuenta_bancaria = None
+    if row.cuenta_bancaria_id is not None and row.cb_receptor_id is not None:
+        cuenta_bancaria = {
+            "id": row.cuenta_bancaria_id,
+            "receptor_id": row.cb_receptor_id,
+            "entidad_bancaria": row.cb_entidad_bancaria,
+            "tipo_cuenta": row.cb_tipo_cuenta,
+            "numero_cuenta": row.cb_numero_cuenta,
+            "es_predeterminada": row.cb_es_predeterminada,
+            "receptor": {"id": row.cb_receptor_id, "nombre": row.cb_receptor_nombre},
+        }
     return {
         "id": row.id,
         "credito_id": row.credito_id,
@@ -78,7 +91,8 @@ def _pago_row_a_dict(row, hoy: date, limite: date) -> dict:
         "interes_pagado": row.interes_pagado,
         "momento": row.momento,
         "fecha_maxima": row.fecha_maxima,
-        "receptor_id": row.receptor_id,
+        "cuenta_bancaria_id": row.cuenta_bancaria_id,
+        "cuenta_bancaria": cuenta_bancaria,
         "pagado": row.pagado,
         "validado_recaudador": row.validado_recaudador,
         "fecha_pago_real": row.fecha_pago_real,
@@ -168,16 +182,24 @@ async def listar_pagos_aplazados(
             Pago.id, Pago.credito_id, Pago.numero_cuota, Pago.tipo_cuota,
             Pago.monto_a_pagar, Pago.capital_a_pagar, Pago.interes_a_pagar,
             Pago.capital_pagado, Pago.interes_pagado, Pago.momento, Pago.fecha_maxima,
-            Pago.receptor_id, Pago.pagado, Pago.validado_recaudador,
+            Pago.cuenta_bancaria_id, Pago.pagado, Pago.validado_recaudador,
             Pago.fecha_pago_real, Pago.es_excedente_a, Pago.es_ultimo_pago,
             Pago.tipo_validacion, Pago.veces_aplazado,
             Cliente.nombre.label("cliente_nombre"),
             Cliente.apellidos.label("cliente_apellidos"),
             Credito.numero_credito_cliente.label("numero_credito_cliente"),
             Credito.tipo_credito.label("tipo_credito"),
+            CuentaBancaria.entidad_bancaria.label("cb_entidad_bancaria"),
+            CuentaBancaria.tipo_cuenta.label("cb_tipo_cuenta"),
+            CuentaBancaria.numero_cuenta.label("cb_numero_cuenta"),
+            CuentaBancaria.es_predeterminada.label("cb_es_predeterminada"),
+            Receptor.id.label("cb_receptor_id"),
+            Receptor.nombre.label("cb_receptor_nombre"),
         )
         .join(Credito, Pago.credito_id == Credito.id)
         .join(Cliente, Credito.cliente_id == Cliente.id)
+        .outerjoin(CuentaBancaria, Pago.cuenta_bancaria_id == CuentaBancaria.id)
+        .outerjoin(Receptor, CuentaBancaria.receptor_id == Receptor.id)
         .where(
             Pago.deleted_at == None,  # noqa: E711
             Pago.veces_aplazado > 0,
@@ -223,6 +245,7 @@ async def listar_pagos(
     gestor_id: uuid.UUID | None = Query(None),
     cliente_id: uuid.UUID | None = Query(None),
     receptor_id: uuid.UUID | None = Query(None),
+    cuenta_bancaria_id: uuid.UUID | None = Query(None),
     solo_periodicidad: Periodicidad | None = Query(None, description="Filtrar solo créditos con esta periodicidad"),
     excluir_periodicidad: Periodicidad | None = Query(None, description="Excluir créditos con esta periodicidad (legacy, singular)"),
     excluir_periodicidades: Annotated[list[Periodicidad] | None, Query()] = None,
@@ -243,6 +266,16 @@ async def listar_pagos(
     if sort_dir not in ("asc", "desc"):
         raise HTTPException(status_code=400, detail="sort_dir inválido. Use asc o desc")
 
+    if receptor_id and cuenta_bancaria_id:
+        # Decision 9 / Spec-Design Reconciliation: la cuenta debe existir (404)
+        # y pertenecer al receptor cuando ambos filtros se combinan, si no 422.
+        cuenta_filtro = await obtener_cuenta_o_404(db, cuenta_bancaria_id)
+        if cuenta_filtro.receptor_id != receptor_id:
+            raise HTTPException(
+                status_code=422,
+                detail="La cuenta bancaria no pertenece al receptor indicado",
+            )
+
     hoy = hoy_bogota()
     limite = fecha_limite_mora(hoy)
 
@@ -261,16 +294,24 @@ async def listar_pagos(
             Pago.id, Pago.credito_id, Pago.numero_cuota, Pago.tipo_cuota,
             Pago.monto_a_pagar, Pago.capital_a_pagar, Pago.interes_a_pagar,
             Pago.capital_pagado, Pago.interes_pagado, Pago.momento, Pago.fecha_maxima,
-            Pago.receptor_id, Pago.pagado, Pago.validado_recaudador,
+            Pago.cuenta_bancaria_id, Pago.pagado, Pago.validado_recaudador,
             Pago.fecha_pago_real, Pago.es_excedente_a, Pago.es_ultimo_pago,
             Pago.tipo_validacion, Pago.veces_aplazado,
             Cliente.nombre.label("cliente_nombre"),
             Cliente.apellidos.label("cliente_apellidos"),
             Credito.numero_credito_cliente.label("numero_credito_cliente"),
             Credito.tipo_credito.label("tipo_credito"),
+            CuentaBancaria.entidad_bancaria.label("cb_entidad_bancaria"),
+            CuentaBancaria.tipo_cuenta.label("cb_tipo_cuenta"),
+            CuentaBancaria.numero_cuenta.label("cb_numero_cuenta"),
+            CuentaBancaria.es_predeterminada.label("cb_es_predeterminada"),
+            Receptor.id.label("cb_receptor_id"),
+            Receptor.nombre.label("cb_receptor_nombre"),
         )
         .join(Credito, Pago.credito_id == Credito.id)
         .join(Cliente, Credito.cliente_id == Cliente.id)
+        .outerjoin(CuentaBancaria, Pago.cuenta_bancaria_id == CuentaBancaria.id)
+        .outerjoin(Receptor, CuentaBancaria.receptor_id == Receptor.id)
         .where(
             Pago.deleted_at == None,  # noqa: E711
             Pago.fecha_maxima >= fecha_inicio,
@@ -291,7 +332,15 @@ async def listar_pagos(
         cliente_id=cliente_id, busqueda=busqueda,
     )
     if receptor_id:
-        query = query.where(Pago.receptor_id == receptor_id)
+        # `Pago.receptor_id` está deprecado (decision 7, nunca se lee desde
+        # PR2a): se resuelve vía las cuentas bancarias del receptor.
+        query = query.where(
+            Pago.cuenta_bancaria_id.in_(
+                select(CuentaBancaria.id).where(CuentaBancaria.receptor_id == receptor_id)
+            )
+        )
+    if cuenta_bancaria_id:
+        query = query.where(Pago.cuenta_bancaria_id == cuenta_bancaria_id)
     if solo_periodicidad:
         query = query.where(Credito.periodicidad == solo_periodicidad)
 
@@ -329,6 +378,7 @@ async def listar_pagos(
         gestor_id_filtro=gestor_id,
         cliente_id_filtro=cliente_id,
         receptor_id_filtro=receptor_id,
+        cuenta_bancaria_id_filtro=cuenta_bancaria_id,
         solo_periodicidad=solo_periodicidad,
         excluir_set=excluidas,
         busqueda=busqueda,
@@ -364,6 +414,7 @@ async def _calcular_virtuales(
     gestor_id_filtro,
     cliente_id_filtro,
     receptor_id_filtro,
+    cuenta_bancaria_id_filtro,
     solo_periodicidad,
     excluir_set: "set[Periodicidad] | None",
     busqueda: str,
@@ -373,8 +424,8 @@ async def _calcular_virtuales(
     cuota en el período pero no la tiene generada (porque la cuota anterior
     está pendiente). Respeta los mismos filtros que el listado regular.
 
-    Si hay filtro de receptor activo, no se generan virtuales (las virtuales
-    no tienen receptor asignado todavía).
+    Si hay filtro de receptor y/o cuenta bancaria activo, no se generan
+    virtuales (las virtuales no tienen cuenta asignada todavía).
     """
     from datetime import timedelta
     from decimal import Decimal, ROUND_HALF_UP
@@ -386,7 +437,7 @@ async def _calcular_virtuales(
         desglosar_arrastre,
     )
 
-    if receptor_id_filtro is not None:
+    if receptor_id_filtro is not None or cuenta_bancaria_id_filtro is not None:
         return []
 
     # Créditos activos que matchean los filtros del listado.
@@ -557,7 +608,8 @@ async def _calcular_virtuales(
                     "interes_pagado": Decimal("0.00"),
                     "momento": get_momento(fecha_proy),
                     "fecha_maxima": fecha_proy,
-                    "receptor_id": None,
+                    "cuenta_bancaria_id": None,
+                    "cuenta_bancaria": None,
                     "pagado": False,
                     "validado_recaudador": False,
                     "fecha_pago_real": None,
@@ -840,29 +892,39 @@ async def modificar_fecha_pago(
     return PagoResponse.model_validate(pago)
 
 
-@router.patch("/{pago_id}/receptor", response_model=PagoResponse)
-async def modificar_receptor_pago(
+@router.patch("/{pago_id}/cuenta-bancaria", response_model=PagoResponse)
+async def modificar_cuenta_bancaria_pago(
     pago_id: uuid.UUID,
-    body: ModificarReceptorPagoRequest,
+    body: ModificarCuentaBancariaPagoRequest,
     request: Request,
     current_user: Usuario = Depends(require_role("admin", "recaudador")),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Recaudador/Admin modifica el receptor de un pago individual.
-    Esta modificación NO propaga a siguientes pagos.
+    Recaudador/Admin modifica la cuenta bancaria de un pago individual.
+    La cuenta puede pertenecer a un receptor distinto (assumption 2). No
+    reescribe otros pagos ya existentes, pero la siguiente cuota que se genere
+    al pagar este pago hereda su `cuenta_bancaria_id` (encadenamiento).
     """
     pago, _ = await _get_pago_con_credito(db, pago_id)
+    cuenta = await obtener_cuenta_o_404(db, body.cuenta_bancaria_id)
 
-    receptor_anterior = pago.receptor_id
-    pago.receptor_id = body.receptor_id
+    cuenta_anterior = pago.cuenta_bancaria_id
+    pago.cuenta_bancaria_id = body.cuenta_bancaria_id
 
     await audit_service.registrar_actualizacion_campos(
         db=db, entidad="pagos", entidad_id=pago.id,
         usuario_id=current_user.id, ip_origen=get_client_ip(request),
-        cambios={"receptor_id": (str(receptor_anterior), str(body.receptor_id))},
+        cambios={"cuenta_bancaria_id": (str(cuenta_anterior), str(body.cuenta_bancaria_id))},
     )
-    return PagoResponse.model_validate(pago)
+    await db.flush()
+
+    # Pago no tiene relación ORM a CuentaBancaria (decision 4): se arma el
+    # dict explícito con la cuenta ya cargada por obtener_cuenta_o_404.
+    from app.schemas.receptor import CuentaBancariaResumen
+    resumen = CuentaBancariaResumen.model_validate(cuenta)
+    respuesta = PagoResponse.model_validate(pago).model_copy(update={"cuenta_bancaria": resumen})
+    return respuesta
 
 
 @router.post("/no-programado/{credito_id}", response_model=PagoResponse, status_code=201)
@@ -887,10 +949,10 @@ async def registrar_pago_no_programado(
     if not credito:
         raise HTTPException(status_code=404, detail="Crédito no encontrado")
 
-    # Obtener receptor por defecto del gestor
+    # Obtener cuenta bancaria vigente del gestor
     cliente = (await db.execute(select(Cliente).where(Cliente.id == credito.cliente_id))).scalar_one()
     gestor = (await db.execute(select(Gestor).where(Gestor.id == cliente.gestor_id))).scalar_one_or_none()
-    receptor_id = gestor.receptor_id if gestor else None
+    cuenta_bancaria_id = gestor.cuenta_bancaria_id if gestor else None
 
     try:
         pago = await PagoService.registrar_pago_no_programado(
@@ -899,7 +961,7 @@ async def registrar_pago_no_programado(
             monto=body.monto,
             destino=body.destino,
             fecha_pago=body.fecha_pago,
-            receptor_id=receptor_id,
+            cuenta_bancaria_id=cuenta_bancaria_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))

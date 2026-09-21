@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { pagosApi, receptoresApi, creditosApi, gestoresApi } from '@/api'
-import { formatCOP, formatFecha, MESES, MOMENTOS, aniosDisponibles } from '@/utils/formatters'
+import { formatCOP, formatFecha, formatCuentaBancaria, MESES, MOMENTOS, aniosDisponibles } from '@/utils/formatters'
 import { LoadingPage, EmptyState, Paginacion, PagoBadge, ConfirmarCreacion, ConfirmarCierreInteresPendiente, type ItemConfirmacion } from '@/components/ui'
 import Modal from '@/components/ui/Modal'
+import SelectCuentaBancaria from '@/components/ui/SelectCuentaBancaria'
 import { usePermissions } from '@/store/authStore'
 import { mensajeError, esErrorSesionExpirada } from '@/utils/apiErrors'
 import type { Pago, Receptor, Credito, Gestor } from '@/types'
@@ -28,6 +29,9 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   const [momento, setMomento] = useState('')
   const [busqueda, setBusqueda] = useState('')
   const [filtroGestor, setFiltroGestor] = useState('')
+  const [filtroReceptor, setFiltroReceptor] = useState('')
+  const [filtroReceptorBusqueda, setFiltroReceptorBusqueda] = useState('')
+  const [filtroCuentaBancaria, setFiltroCuentaBancaria] = useState('')
   const [gestores, setGestores] = useState<Gestor[]>([])
   const [page, setPage] = useState(1)
   const [incluirPagados, setIncluirPagados] = useState(false)
@@ -44,13 +48,14 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   const [modalConfirmarRegistrar, setModalConfirmarRegistrar] = useState(false)
   const [modalExcedente, setModalExcedente] = useState(false)
   const [modalFecha, setModalFecha] = useState(false)
-  const [modalReceptor, setModalReceptor] = useState(false)
+  const [modalCuentaBancaria, setModalCuentaBancaria] = useState(false)
   const [modalConfirmarNoProgramado, setModalConfirmarNoProgramado] = useState(false)
   const [modalTipoValidacion, setModalTipoValidacion] = useState(false)
   const [pagoAValidar, setPagoAValidar] = useState<Pago | null>(null)
   const [excedenteMonto, setExcedenteMonto] = useState(0)
   const [montosTemp, setMontosTemp] = useState({ capital: 0, interes: 0 })
   const [receptores, setReceptores] = useState<Receptor[]>([])
+  const [receptoresCuenta, setReceptoresCuenta] = useState<Receptor[]>([])
 
   // Modal pago no programado
   const [modalNoProgramado, setModalNoProgramado] = useState(false)
@@ -70,7 +75,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   const [interesPagado, setInteresPagado] = useState('')
   const [nuevaFecha, setNuevaFecha] = useState('')
   const [esAplazamiento, setEsAplazamiento] = useState(false)
-  const [nuevoReceptor, setNuevoReceptor] = useState('')
+  const [nuevaCuentaBancaria, setNuevaCuentaBancaria] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
   // En las variantes semanal, diario y aplazados, momento es opcional (o no
@@ -106,6 +111,8 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
             busqueda,
             page,
             gestor_id: filtroGestor || undefined,
+            receptor_id: filtroReceptor || undefined,
+            cuenta_bancaria_id: filtroCuentaBancaria || undefined,
             solo_periodicidad: esSemanal ? 'semanal' : esDiario ? 'diario' : undefined,
             excluir_periodicidades: (!esSemanal && !esDiario) ? ['semanal', 'diario'] : undefined,
           })
@@ -114,7 +121,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       setPages(res.data.pages)
     } catch (e: any) { toast.error(e.response?.data?.detail || 'Error al cargar pagos') }
     finally { if (mostrarSpinner) setLoading(false) }
-  }, [anio, mes, momento, sortDir, busqueda, page, filtroGestor, filtrosCompletos, esSemanal, esDiario, esAplazados, incluirPagados])
+  }, [anio, mes, momento, sortDir, busqueda, page, filtroGestor, filtroReceptor, filtroCuentaBancaria, filtrosCompletos, esSemanal, esDiario, esAplazados, incluirPagados])
 
   useEffect(() => { cargarPagos() }, [cargarPagos])
 
@@ -122,11 +129,59 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
     gestoresApi.listar({ page: 1 }).then(r => setGestores(r.data.items)).catch(() => {})
   }, [])
 
+  // Receptores (con sus cuentas bancarias) para el filtro en cascada
+  // (perms.canValidarPago). El backend limita /receptores a 50 resultados,
+  // así que se recarga con `busqueda` (debounce 300ms) para que cualquier
+  // receptor siga siendo alcanzable.
   useEffect(() => {
-    if (modalReceptor) {
-      receptoresApi.listar().then(r => setReceptores(r.data.items)).catch(() => {})
-    }
-  }, [modalReceptor])
+    if (!perms.canValidarPago || esAplazados) return
+    let cancelado = false
+    const timer = setTimeout(() => {
+      receptoresApi.listar({ page: 1, busqueda: filtroReceptorBusqueda })
+        .then(r => { if (!cancelado) setReceptores(r.data.items) })
+        .catch(() => {})
+    }, 300)
+    return () => { cancelado = true; clearTimeout(timer) }
+  }, [perms.canValidarPago, esAplazados, filtroReceptorBusqueda])
+
+  // Receptores para el modal "Modificar cuenta" (lista propia e independiente
+  // del filtro en cascada, se recarga solo al abrir el modal; el buscador
+  // interno de SelectCuentaBancaria dispara sus propias recargas).
+  // Request sequence counter shared by the initial load and the search
+  // handler: only the latest response is applied.
+  const receptoresCuentaSeqRef = useRef(0)
+  useEffect(() => {
+    if (!modalCuentaBancaria) return
+    const seq = ++receptoresCuentaSeqRef.current
+    receptoresApi.listar({ page: 1 })
+      .then(r => { if (seq === receptoresCuentaSeqRef.current) setReceptoresCuenta(r.data.items) })
+      .catch(() => {})
+  }, [modalCuentaBancaria])
+
+  const handleBusquedaReceptoresCuenta = useCallback((busqueda: string) => {
+    const seq = ++receptoresCuentaSeqRef.current
+    receptoresApi.listar({ page: 1, busqueda })
+      .then(r => { if (seq === receptoresCuentaSeqRef.current) setReceptoresCuenta(r.data.items) })
+      .catch(() => {})
+  }, [])
+
+  const handleFiltroReceptorChange = (receptorId: string) => {
+    setFiltroReceptor(receptorId)
+    setFiltroCuentaBancaria('')
+    setPage(1)
+  }
+
+  // El receptor filtrado se conserva en memoria para que no desaparezca del
+  // <select> cuando una búsqueda posterior lo excluye de `receptores`.
+  const receptorFiltroSeleccionadoRef = useRef<Receptor | null>(null)
+  const receptorFiltroActual = receptores.find(r => r.id === filtroReceptor)
+  if (receptorFiltroActual) receptorFiltroSeleccionadoRef.current = receptorFiltroActual
+  const receptorFiltroSeleccionado = receptorFiltroActual
+    ?? (receptorFiltroSeleccionadoRef.current?.id === filtroReceptor ? receptorFiltroSeleccionadoRef.current : undefined)
+  const cuentasDelReceptorFiltro = receptorFiltroSeleccionado?.cuentas_bancarias ?? []
+  const receptoresFiltroOpciones = receptorFiltroSeleccionado && !receptorFiltroActual
+    ? [receptorFiltroSeleccionado, ...receptores]
+    : receptores
 
   const handleSolicitarRegistrar = () => {
     // Antes de registrar, mostrar confirmación con los montos
@@ -281,16 +336,16 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
     } finally { setSubmitting(false) }
   }
 
-  const handleModificarReceptor = async () => {
-    if (!pagoSeleccionado || !nuevoReceptor) return
+  const handleModificarCuentaBancaria = async () => {
+    if (!pagoSeleccionado || !nuevaCuentaBancaria) return
     setSubmitting(true)
     try {
-      await pagosApi.modificarReceptor(pagoSeleccionado.id, nuevoReceptor)
-      toast.success('Receptor actualizado')
-      setModalReceptor(false)
+      await pagosApi.modificarCuentaBancaria(pagoSeleccionado.id, nuevaCuentaBancaria)
+      toast.success('Cuenta bancaria actualizada')
+      setModalCuentaBancaria(false)
       cargarPagos(false)
     } catch (e: any) {
-      const msg = mensajeError(e, 'No se pudo actualizar el receptor')
+      const msg = mensajeError(e, 'No se pudo actualizar la cuenta bancaria')
       if (msg) toast.error(msg)
       if (e.response && !esErrorSesionExpirada(e)) cargarPagos(false)
     } finally { setSubmitting(false) }
@@ -456,6 +511,39 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
               />
             </div>
           </div>
+          {perms.canValidarPago && !esAplazados && (
+            <>
+              <div>
+                <label className="label">Receptor</label>
+                <div className="relative mb-1">
+                  <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input
+                    type="text"
+                    className="input pl-8 text-sm"
+                    placeholder="Buscar receptor..."
+                    value={filtroReceptorBusqueda}
+                    onChange={e => setFiltroReceptorBusqueda(e.target.value)}
+                  />
+                </div>
+                <select className="input" value={filtroReceptor}
+                  onChange={e => handleFiltroReceptorChange(e.target.value)}>
+                  <option value="">Todos</option>
+                  {receptoresFiltroOpciones.map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="label">Cuenta</label>
+                <select className="input" value={filtroCuentaBancaria}
+                  disabled={!filtroReceptor}
+                  onChange={e => { setFiltroCuentaBancaria(e.target.value); setPage(1) }}>
+                  <option value="">Todas</option>
+                  {cuentasDelReceptorFiltro.map(c => (
+                    <option key={c.id} value={c.id}>{formatCuentaBancaria(c)}</option>
+                  ))}
+                </select>
+              </div>
+            </>
+          )}
           {esAplazados && (
             <div className="flex items-end">
               <label className="flex items-center gap-2 text-sm text-gray-600">
@@ -499,6 +587,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                       <th className="table-header">Acciones</th>
                       <th className="table-header">Cuota</th>
                       <th className="table-header">Cliente</th>
+                      <th className="table-header">Cuenta</th>
                       <th className="table-header">Crédito</th>
                       <th className="table-header">Tipo</th>
                       <th className="table-header">Monto</th>
@@ -590,14 +679,14 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                                 <Calendar size={14} />
                               </button>
                             )}
-                            {/* Modificar receptor */}
+                            {/* Modificar cuenta bancaria */}
                             {!p.es_proyectada && perms.canValidarPago && (
                               <button
-                                title="Modificar receptor"
+                                title="Modificar cuenta"
                                 onClick={() => {
                                   setPagoSeleccionado(p)
-                                  setNuevoReceptor(p.receptor_id ?? '')
-                                  setModalReceptor(true)
+                                  setNuevaCuentaBancaria(p.cuenta_bancaria_id ?? '')
+                                  setModalCuentaBancaria(true)
                                 }}
                                 className="p-1.5 bg-gray-500 text-white rounded-lg hover:opacity-90 transition-opacity"
                               >
@@ -612,6 +701,13 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                         </td>
                         <td className={clsx('table-cell font-medium', p.es_proyectada ? 'text-gray-500' : 'text-gray-800')}>
                           {p.cliente_nombre || '—'}
+                        </td>
+                        <td className="table-cell text-xs text-gray-600">
+                          {p.cuenta_bancaria
+                            ? <span title={formatCuentaBancaria(p.cuenta_bancaria, p.cuenta_bancaria.receptor.nombre)}>
+                                {p.cuenta_bancaria.entidad_bancaria} · {p.cuenta_bancaria.numero_cuenta}
+                              </span>
+                            : '—'}
                         </td>
                         <td className="table-cell font-mono text-xs text-gray-500">{p.numero_credito_cliente || p.credito_id.slice(0, 8) + '...'}</td>
                         <td className="table-cell">
@@ -832,21 +928,22 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
         </div>
       </Modal>
 
-      {/* Modal: Modificar receptor */}
-      <Modal isOpen={modalReceptor} onClose={() => setModalReceptor(false)} title="Modificar Receptor">
+      {/* Modal: Modificar cuenta bancaria */}
+      <Modal isOpen={modalCuentaBancaria} onClose={() => setModalCuentaBancaria(false)} title="Modificar Cuenta">
         <div className="space-y-4">
           <div>
-            <label className="label">Receptor</label>
-            <select className="input" value={nuevoReceptor} onChange={e => setNuevoReceptor(e.target.value)}>
-              <option value="">-- Seleccionar --</option>
-              {receptores.map(r => (
-                <option key={r.id} value={r.id}>{r.nombre} — {r.cedula}</option>
-              ))}
-            </select>
+            <label className="label">Cuenta bancaria</label>
+            <SelectCuentaBancaria
+              receptores={receptoresCuenta}
+              value={nuevaCuentaBancaria}
+              onChange={setNuevaCuentaBancaria}
+              onBusquedaChange={handleBusquedaReceptoresCuenta}
+              cuentaActual={pagoSeleccionado?.cuenta_bancaria}
+            />
           </div>
           <div className="flex gap-3 justify-end">
-            <button onClick={() => setModalReceptor(false)} className="btn-ghost">Cancelar</button>
-            <button onClick={handleModificarReceptor} disabled={submitting} className="btn-primary">
+            <button onClick={() => setModalCuentaBancaria(false)} className="btn-ghost">Cancelar</button>
+            <button onClick={handleModificarCuentaBancaria} disabled={submitting || !nuevaCuentaBancaria} className="btn-primary">
               {submitting ? 'Guardando...' : 'Guardar'}
             </button>
           </div>

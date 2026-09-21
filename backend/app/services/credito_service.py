@@ -464,7 +464,7 @@ async def generar_numero_credito(db: AsyncSession, prefijo_base: str) -> str:
 
 async def crear_primera_cuota(
     credito: Credito,
-    receptor_id: uuid.UUID | None,
+    cuenta_bancaria_id: uuid.UUID | None,
 ) -> Pago:
     """
     Crea la primera cuota de un crédito recién creado.
@@ -474,16 +474,16 @@ async def crear_primera_cuota(
     momento = get_momento(fecha_maxima)
 
     if credito.tipo_credito == TipoCredito.cuota_fija:
-        return await _primera_cuota_fija(credito, fecha_maxima, momento, receptor_id)
+        return await _primera_cuota_fija(credito, fecha_maxima, momento, cuenta_bancaria_id)
     else:
-        return await _primera_cuota_abono_capital(credito, fecha_maxima, momento, receptor_id)
+        return await _primera_cuota_abono_capital(credito, fecha_maxima, momento, cuenta_bancaria_id)
 
 
 async def _primera_cuota_fija(
     credito: Credito,
     fecha_maxima: date,
     momento: str,
-    receptor_id: uuid.UUID | None,
+    cuenta_bancaria_id: uuid.UUID | None,
 ) -> Pago:
     """Primera cuota de crédito cuota_fija (interés simple)."""
     capital_por_cuota = calcular_capital_cuota_fija(
@@ -514,7 +514,7 @@ async def _primera_cuota_fija(
         interes_a_pagar=interes,
         momento=momento,
         fecha_maxima=fecha_maxima,
-        receptor_id=receptor_id,
+        cuenta_bancaria_id=cuenta_bancaria_id,
         es_ultimo_pago=es_ultima,
     )
 
@@ -523,7 +523,7 @@ async def _primera_cuota_abono_capital(
     credito: Credito,
     fecha_maxima: date,
     momento: str,
-    receptor_id: uuid.UUID | None,
+    cuenta_bancaria_id: uuid.UUID | None,
 ) -> Pago:
     """
     Primera cuota de abono_capital. La estructura depende de la periodicidad:
@@ -553,7 +553,7 @@ async def _primera_cuota_abono_capital(
             interes_a_pagar=interes,
             momento=momento,
             fecha_maxima=fecha_maxima,
-            receptor_id=receptor_id,
+            cuenta_bancaria_id=cuenta_bancaria_id,
             es_ultimo_pago=False,
         )
 
@@ -566,7 +566,7 @@ async def _primera_cuota_abono_capital(
         interes_a_pagar=interes,
         momento=momento,
         fecha_maxima=fecha_maxima,
-        receptor_id=receptor_id,
+        cuenta_bancaria_id=cuenta_bancaria_id,
         es_ultimo_pago=False,
     )
 
@@ -575,7 +575,7 @@ async def generar_siguiente_cuota(
     db: AsyncSession,
     credito: Credito,
     cuota_anterior: Pago,
-    receptor_id: uuid.UUID | None,
+    cuenta_bancaria_id: uuid.UUID | None,
     saldo_pendiente: Decimal = Decimal("0.00"),
 ) -> Pago | None:
     """
@@ -599,7 +599,7 @@ async def generar_siguiente_cuota(
 
     if credito.tipo_credito == TipoCredito.cuota_fija:
         return _siguiente_cuota_fija(
-            credito, cuota_anterior, siguiente_numero, fecha_maxima, momento, receptor_id, saldo_pendiente
+            credito, cuota_anterior, siguiente_numero, fecha_maxima, momento, cuenta_bancaria_id, saldo_pendiente
         )
     else:
         if (
@@ -616,7 +616,7 @@ async def generar_siguiente_cuota(
             )
             saldo_pendiente = arrastre_interes_abono_capital(cuota_previa_interes)
         return _siguiente_cuota_abono_capital(
-            credito, cuota_anterior, siguiente_numero, fecha_maxima, momento, receptor_id, saldo_pendiente
+            credito, cuota_anterior, siguiente_numero, fecha_maxima, momento, cuenta_bancaria_id, saldo_pendiente
         )
 
 
@@ -626,7 +626,7 @@ def _siguiente_cuota_fija(
     numero: int,
     fecha_maxima: date,
     momento: str,
-    receptor_id: uuid.UUID | None,
+    cuenta_bancaria_id: uuid.UUID | None,
     saldo_pendiente: Decimal,
 ) -> Pago:
     """
@@ -640,7 +640,7 @@ def _siguiente_cuota_fija(
     cuotas de solo interés.
     """
     if credito.saldo_capital <= Decimal("0.00"):
-        return _siguiente_cuota_fija_solo_interes(credito, numero, fecha_maxima, momento, receptor_id)
+        return _siguiente_cuota_fija_solo_interes(credito, numero, fecha_maxima, momento, cuenta_bancaria_id)
 
     capital_por_cuota = calcular_capital_cuota_fija(
         credito.capital_prestado, credito.numero_cuotas,
@@ -670,7 +670,7 @@ def _siguiente_cuota_fija(
         interes_a_pagar=interes_a_pagar,
         momento=momento,
         fecha_maxima=fecha_maxima,
-        receptor_id=receptor_id,
+        cuenta_bancaria_id=cuenta_bancaria_id,
         es_ultimo_pago=es_ultima,
     )
 
@@ -680,7 +680,7 @@ def _siguiente_cuota_fija_solo_interes(
     numero: int,
     fecha_maxima: date,
     momento: str,
-    receptor_id: uuid.UUID | None,
+    cuenta_bancaria_id: uuid.UUID | None,
 ) -> Pago:
     """
     Regla 10 — cola de cuotas de solo interés: el capital de un crédito
@@ -717,7 +717,7 @@ def _siguiente_cuota_fija_solo_interes(
         interes_a_pagar=interes_a_pagar,
         momento=momento,
         fecha_maxima=fecha_maxima,
-        receptor_id=receptor_id,
+        cuenta_bancaria_id=cuenta_bancaria_id,
         es_ultimo_pago=es_ultima,
     )
 
@@ -728,7 +728,7 @@ def _siguiente_cuota_abono_capital(
     numero: int,
     fecha_maxima: date,
     momento: str,
-    receptor_id: uuid.UUID | None,
+    cuenta_bancaria_id: uuid.UUID | None,
     saldo_pendiente: Decimal,
 ) -> Pago:
     """
@@ -760,7 +760,7 @@ def _siguiente_cuota_abono_capital(
             interes_a_pagar=interes_a_pagar,
             momento=momento,
             fecha_maxima=fecha_maxima,
-            receptor_id=receptor_id,
+            cuenta_bancaria_id=cuenta_bancaria_id,
             es_ultimo_pago=False,
         )
 
@@ -779,7 +779,7 @@ def _siguiente_cuota_abono_capital(
             interes_a_pagar=Decimal("0.00"),
             momento=momento,
             fecha_maxima=fecha_maxima,
-            receptor_id=receptor_id,
+            cuenta_bancaria_id=cuenta_bancaria_id,
         )
     else:
         # La anterior fue ABONO → siguiente es INTERÉS
@@ -799,7 +799,7 @@ def _siguiente_cuota_abono_capital(
             interes_a_pagar=interes_a_pagar,
             momento=momento,
             fecha_maxima=fecha_maxima,
-            receptor_id=receptor_id,
+            cuenta_bancaria_id=cuenta_bancaria_id,
         )
 
 
@@ -859,7 +859,7 @@ async def recalcular_cuota_actual_si_no_pagada(
     o abono_minimo, para que el cambio se vea reflejado DESDE la cuota actual
     (no solo en las cuotas posteriores que se generen luego).
 
-    Mantiene numero_cuota, fecha_maxima, momento y receptor_id intactos —
+    Mantiene numero_cuota, fecha_maxima, momento y cuenta_bancaria_id intactos —
     solo actualiza los montos (capital_a_pagar, interes_a_pagar, monto_a_pagar)
     y el tipo de cuota.
     """

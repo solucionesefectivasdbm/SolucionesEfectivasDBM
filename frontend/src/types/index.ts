@@ -34,6 +34,22 @@ export interface CuentaBancaria {
   entidad_bancaria: string
   tipo_cuenta: TipoCuenta
   numero_cuenta: string
+  es_predeterminada: boolean
+}
+
+export interface ReceptorMin {
+  id: string
+  nombre: string
+}
+
+export interface CuentaBancariaResumen {
+  id: string
+  receptor_id: string
+  entidad_bancaria: string
+  tipo_cuenta: TipoCuenta
+  numero_cuenta: string
+  es_predeterminada: boolean
+  receptor: ReceptorMin
 }
 
 export interface Receptor {
@@ -55,8 +71,8 @@ export interface Gestor {
   telefono: string
   direccion: string
   correo_electronico: string
-  receptor_id: string | null
-  receptor: Receptor | null
+  cuenta_bancaria_id: string | null
+  cuenta_bancaria: CuentaBancariaResumen | null
 }
 
 // ─── Cliente ──────────────────────────────────────────────────────────────────
@@ -112,7 +128,8 @@ export interface Pago {
   interes_pagado: number
   momento: string
   fecha_maxima: string
-  receptor_id: string | null
+  cuenta_bancaria_id: string | null
+  cuenta_bancaria?: CuentaBancariaResumen | null
   pagado: boolean
   validado_recaudador: boolean
   fecha_pago_real: string | null
@@ -146,12 +163,25 @@ export interface ReporteDetalleGestor {
   total_capital: number
 }
 
+export interface ReporteDetalleCuenta {
+  cuenta_bancaria_id: string
+  etiqueta: string
+  es_predeterminada: boolean
+  total_recaudado: number
+  total_intereses_recaudados: number
+  total_capital_recaudado: number
+  total_pendiente: number
+  total_intereses_pendientes: number
+  total_capital_pendiente: number
+}
+
 export interface ReporteDetalleReceptor {
   receptor_id: string
   receptor_nombre: string
   total_recaudado: number
   total_intereses: number
   total_capital: number
+  por_cuenta: ReporteDetalleCuenta[]
 }
 
 export interface Reporte {

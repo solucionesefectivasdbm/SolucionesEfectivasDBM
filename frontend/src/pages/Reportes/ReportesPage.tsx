@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { reportesApi } from '@/api'
 import { formatCOP, MESES, MOMENTOS, aniosDisponibles } from '@/utils/formatters'
 import { LoadingPage } from '@/components/ui'
@@ -173,15 +173,28 @@ export default function ReportesPage() {
                     </thead>
                     <tbody>
                       {reporte.por_receptor.map((r: any, i: number) => (
-                        <tr key={r.receptor_id} className={i % 2 === 0 ? 'table-row-even' : 'table-row-odd'}>
-                          <td className="table-cell font-medium">{r.receptor_nombre}</td>
-                          <td className="table-cell font-bold text-primary-600">{formatCOP(r.total_recaudado)}</td>
-                          <td className="table-cell">{formatCOP(r.total_capital_recaudado)}</td>
-                          <td className="table-cell">{formatCOP(r.total_intereses_recaudados)}</td>
-                          <td className="table-cell font-bold text-yellow-600">{formatCOP(r.total_pendiente)}</td>
-                          <td className="table-cell">{formatCOP(r.total_capital_pendiente)}</td>
-                          <td className="table-cell">{formatCOP(r.total_intereses_pendientes)}</td>
-                        </tr>
+                        <Fragment key={r.receptor_id}>
+                          <tr className={i % 2 === 0 ? 'table-row-even' : 'table-row-odd'}>
+                            <td className="table-cell font-medium">{r.receptor_nombre}</td>
+                            <td className="table-cell font-bold text-primary-600">{formatCOP(r.total_recaudado)}</td>
+                            <td className="table-cell">{formatCOP(r.total_capital_recaudado)}</td>
+                            <td className="table-cell">{formatCOP(r.total_intereses_recaudados)}</td>
+                            <td className="table-cell font-bold text-yellow-600">{formatCOP(r.total_pendiente)}</td>
+                            <td className="table-cell">{formatCOP(r.total_capital_pendiente)}</td>
+                            <td className="table-cell">{formatCOP(r.total_intereses_pendientes)}</td>
+                          </tr>
+                          {(r.por_cuenta ?? []).map((c: any) => (
+                            <tr key={c.cuenta_bancaria_id} className="bg-gray-50/50">
+                              <td className="table-cell text-xs text-gray-500 pl-6">↳ {c.etiqueta}</td>
+                              <td className="table-cell text-xs text-gray-500">{formatCOP(c.total_recaudado)}</td>
+                              <td className="table-cell text-xs text-gray-500">{formatCOP(c.total_capital_recaudado)}</td>
+                              <td className="table-cell text-xs text-gray-500">{formatCOP(c.total_intereses_recaudados)}</td>
+                              <td className="table-cell text-xs text-gray-500">{formatCOP(c.total_pendiente)}</td>
+                              <td className="table-cell text-xs text-gray-500">{formatCOP(c.total_capital_pendiente)}</td>
+                              <td className="table-cell text-xs text-gray-500">{formatCOP(c.total_intereses_pendientes)}</td>
+                            </tr>
+                          ))}
+                        </Fragment>
                       ))}
                     </tbody>
                   </table>

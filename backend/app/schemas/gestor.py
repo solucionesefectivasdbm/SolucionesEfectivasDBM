@@ -2,7 +2,7 @@ import uuid
 from typing import Optional
 from pydantic import BaseModel, EmailStr, field_validator
 
-from app.schemas.receptor import ReceptorResponse
+from app.schemas.receptor import CuentaBancariaResumen
 
 
 class GestorBase(BaseModel):
@@ -30,7 +30,7 @@ class GestorBase(BaseModel):
 
 class GestorCreate(GestorBase):
     user_id: uuid.UUID
-    receptor_id: Optional[uuid.UUID] = None
+    cuenta_bancaria_id: Optional[uuid.UUID] = None
 
 
 class GestorUpdate(BaseModel):
@@ -40,7 +40,7 @@ class GestorUpdate(BaseModel):
     telefono: Optional[str] = None
     direccion: Optional[str] = None
     correo_electronico: Optional[str] = None
-    receptor_id: Optional[uuid.UUID] = None
+    cuenta_bancaria_id: Optional[uuid.UUID] = None
 
 
 class GestorResponse(GestorBase):
@@ -48,5 +48,5 @@ class GestorResponse(GestorBase):
 
     id: uuid.UUID
     user_id: uuid.UUID
-    receptor_id: Optional[uuid.UUID] = None
-    receptor: Optional[ReceptorResponse] = None
+    cuenta_bancaria_id: Optional[uuid.UUID] = None
+    cuenta_bancaria: Optional[CuentaBancariaResumen] = None

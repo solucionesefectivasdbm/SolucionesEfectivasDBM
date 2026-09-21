@@ -570,7 +570,7 @@ class TestGenerarSiguienteCuotaTailTermination:
         await db_session.flush()
 
         nueva = await generar_siguiente_cuota(
-            db=db_session, credito=credito, cuota_anterior=cuota_anterior, receptor_id=None,
+            db=db_session, credito=credito, cuota_anterior=cuota_anterior, cuenta_bancaria_id=None,
         )
 
         assert nueva is not None
@@ -600,7 +600,7 @@ class TestGenerarSiguienteCuotaTailTermination:
         await db_session.flush()
 
         nueva = await generar_siguiente_cuota(
-            db=db_session, credito=credito, cuota_anterior=cuota_anterior, receptor_id=None,
+            db=db_session, credito=credito, cuota_anterior=cuota_anterior, cuenta_bancaria_id=None,
         )
 
         assert nueva is None

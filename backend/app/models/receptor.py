@@ -8,7 +8,7 @@ independiente). La relación es 1:N — un receptor puede tener múltiples cuent
 import enum
 import uuid
 
-from sqlalchemy import Enum, ForeignKey, String
+from sqlalchemy import Boolean, Enum, ForeignKey, Index, String, false, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -35,12 +35,6 @@ class Receptor(AuditMixin, Base):
     cuentas_bancarias: Mapped[list["CuentaBancaria"]] = relationship(
         "CuentaBancaria", back_populates="receptor", cascade="all, delete-orphan"
     )
-    gestores: Mapped[list["Gestor"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
-        "Gestor", back_populates="receptor"
-    )
-    pagos: Mapped[list["Pago"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
-        "Pago", back_populates="receptor"
-    )
 
 
 class CuentaBancaria(Base):
@@ -58,6 +52,19 @@ class CuentaBancaria(Base):
         Enum(TipoCuenta, name="tipo_cuenta_enum"), nullable=False
     )
     numero_cuenta: Mapped[str] = mapped_column(String(30), nullable=False)
+    es_predeterminada: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_cuentas_bancarias_default_por_receptor",
+            "receptor_id",
+            unique=True,
+            postgresql_where=text("es_predeterminada"),
+            sqlite_where=text("es_predeterminada"),
+        ),
+    )
 
     # Relaciones
     receptor: Mapped["Receptor"] = relationship("Receptor", back_populates="cuentas_bancarias")

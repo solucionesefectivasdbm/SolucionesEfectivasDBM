@@ -14,22 +14,23 @@ from app.models.cliente import Cliente
 from app.models.credito import Credito
 from app.models.gestor import Gestor
 from app.models.pago import Pago
-from app.models.receptor import Receptor
+from app.models.receptor import CuentaBancaria
 from app.models.usuario import TipoUsuario, Usuario
 from app.schemas.common import PaginatedResponse
 from app.schemas.gestor import GestorCreate, GestorResponse, GestorUpdate
 from app.services import audit_service
+from app.services.cuenta_bancaria_service import obtener_cuenta_o_404
 
 router = APIRouter(prefix="/gestores", tags=["Gestores"])
 
 
 def _query_con_relaciones():
-    """Query base que carga receptor y sus cuentas_bancarias en un solo viaje."""
+    """Query base que carga la cuenta bancaria (y su receptor) en un solo viaje."""
     return (
         select(Gestor)
         .where(Gestor.deleted_at == None)  # noqa: E711
         .options(
-            selectinload(Gestor.receptor).selectinload(Receptor.cuentas_bancarias)
+            selectinload(Gestor.cuenta_bancaria).selectinload(CuentaBancaria.receptor)
         )
     )
 
@@ -92,6 +93,9 @@ async def crear_gestor(
     if usuario.tipo_usuario != TipoUsuario.gestor:
         raise HTTPException(status_code=422, detail="El usuario debe tener rol 'gestor'")
 
+    if body.cuenta_bancaria_id is not None:
+        await obtener_cuenta_o_404(db, body.cuenta_bancaria_id)
+
     gestor = Gestor(**body.model_dump())
     db.add(gestor)
     await db.flush()
@@ -153,17 +157,20 @@ async def actualizar_gestor(
     if not gestor:
         raise HTTPException(status_code=404, detail="Gestor no encontrado")
 
+    if body.cuenta_bancaria_id is not None:
+        await obtener_cuenta_o_404(db, body.cuenta_bancaria_id)
+
     cambios = {}
-    receptor_cambiado = False
+    cuenta_cambiada = False
 
     for field, value in body.model_dump(exclude_none=True).items():
-        if field == "receptor_id":
-            receptor_cambiado = True
+        if field == "cuenta_bancaria_id":
+            cuenta_cambiada = True
         cambios[field] = (str(getattr(gestor, field)), str(value))
         setattr(gestor, field, value)
 
-    if receptor_cambiado and body.receptor_id is not None:
-        await _propagar_receptor_a_pagos(db, gestor_id, body.receptor_id)
+    if cuenta_cambiada and body.cuenta_bancaria_id is not None:
+        await _propagar_cuenta_a_pagos(db, gestor_id, body.cuenta_bancaria_id)
 
     await audit_service.registrar_actualizacion_campos(
         db=db, entidad="gestores", entidad_id=gestor.id,
@@ -172,18 +179,22 @@ async def actualizar_gestor(
 
     await db.flush()
 
-    # Recargar con relaciones
+    # Recargar con relaciones. populate_existing fuerza a refrescar la instancia
+    # ya presente en la identity map; sin esto, `cuenta_bancaria` conservaría la
+    # relación cargada antes de cambiar `cuenta_bancaria_id`.
     result = await db.execute(
-        _query_con_relaciones().where(Gestor.id == gestor_id)
+        _query_con_relaciones()
+        .where(Gestor.id == gestor_id)
+        .execution_options(populate_existing=True)
     )
     gestor = result.scalar_one()
     return GestorResponse.model_validate(gestor)
 
 
-async def _propagar_receptor_a_pagos(
+async def _propagar_cuenta_a_pagos(
     db: AsyncSession,
     gestor_id: uuid.UUID,
-    nuevo_receptor_id: uuid.UUID,
+    nueva_cuenta_bancaria_id: uuid.UUID,
 ) -> None:
     subq = (
         select(Credito.id)
@@ -199,7 +210,8 @@ async def _propagar_receptor_a_pagos(
         update(Pago)
         .where(
             Pago.pagado == False,  # noqa: E712
+            Pago.deleted_at == None,  # noqa: E711
             Pago.credito_id.in_(subq),
         )
-        .values(receptor_id=nuevo_receptor_id)
+        .values(cuenta_bancaria_id=nueva_cuenta_bancaria_id)
     )
