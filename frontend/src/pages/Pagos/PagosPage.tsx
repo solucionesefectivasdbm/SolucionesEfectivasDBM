@@ -34,7 +34,6 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   const [receptorDropdownAbierto, setReceptorDropdownAbierto] = useState(false)
   // Opción resaltada por teclado en el combobox de receptor.
   const [receptorActivoId, setReceptorActivoId] = useState<string | null>(null)
-  const receptorInputRef = useRef<HTMLInputElement>(null)
   const idListboxReceptor = `${useId()}-receptores`
   const [filtroCuentaBancaria, setFiltroCuentaBancaria] = useState('')
   const [gestores, setGestores] = useState<Gestor[]>([])
@@ -191,22 +190,22 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
     : receptores
 
   const idsReceptorNavegables = ['', ...receptoresFiltroOpciones.map(r => r.id)]
-  // Resaltado por defecto = el receptor filtrado. NO se adivina "la primera
-  // coincidencia": la lista sigue stale durante el debounce y el receptor
-  // elegido va fijado al principio, así que un índice fijo mentiría.
+  // Resaltado y `aria-activedescendant` siguen SOLO la navegación explícita:
+  // anunciar como activa una opción que Enter no confirma sería mentirle al
+  // lector de pantalla. `null` = sin opción activa.
   const receptorIdActivo = receptorActivoId !== null && idsReceptorNavegables.includes(receptorActivoId)
     ? receptorActivoId
-    : (idsReceptorNavegables.includes(filtroReceptor) ? filtroReceptor : idsReceptorNavegables[0])
+    : null
 
   const seleccionarReceptor = (receptorId: string) => {
     // Reafirmar el mismo receptor no debe limpiar el filtro de cuenta ni
     // resetear la paginación; el <select> nativo tampoco emitía onChange.
     if (receptorId !== filtroReceptor) handleFiltroReceptorChange(receptorId)
+    // Cerrar es un cambio de estado, no soltar el foco: `Modal` y la página
+    // no tienen focus trap, así que un blur dejaría el foco en <body>.
+    setReceptorDropdownAbierto(false)
     setFiltroReceptorBusqueda('')
     setReceptorActivoId(null)
-    // Blur explícito: `onBlur` es lo único que cierra la lista, y al soltar
-    // el foco el input vuelve a mostrar el nombre del receptor elegido.
-    receptorInputRef.current?.blur()
   }
 
   // El <select> que este combobox reemplaza era operable con teclado.
@@ -217,15 +216,17 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
         setReceptorDropdownAbierto(true)
         return
       }
-      const actual = idsReceptorNavegables.indexOf(receptorIdActivo)
+      const desde = receptorIdActivo
+        ?? (idsReceptorNavegables.includes(filtroReceptor) ? filtroReceptor : idsReceptorNavegables[0])
+      const actual = idsReceptorNavegables.indexOf(desde)
       const delta = e.key === 'ArrowDown' ? 1 : -1
       const siguiente = actual < 0
         ? 0
         : (actual + delta + idsReceptorNavegables.length) % idsReceptorNavegables.length
       setReceptorActivoId(idsReceptorNavegables[siguiente])
     } else if (e.key === 'Enter') {
-      if (!receptorDropdownAbierto) return
       e.preventDefault()
+      if (!receptorDropdownAbierto) return
       // Solo confirma navegación explícita, y solo si ese receptor sigue en
       // la lista: el refetch del debounce puede haberlo sacado.
       if (receptorActivoId === null || !idsReceptorNavegables.includes(receptorActivoId)) return
@@ -234,9 +235,9 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       if (!receptorDropdownAbierto) return
       e.preventDefault()
       e.stopPropagation()
+      setReceptorDropdownAbierto(false)
       setFiltroReceptorBusqueda('')
       setReceptorActivoId(null)
-      receptorInputRef.current?.blur()
     }
   }
 
@@ -578,17 +579,21 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                 <div className="relative">
                   <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
                   <input
-                    ref={receptorInputRef}
                     type="text"
                     role="combobox"
                     aria-expanded={receptorDropdownAbierto}
                     aria-haspopup="listbox"
                     aria-controls={idListboxReceptor}
-                    aria-activedescendant={receptorDropdownAbierto ? `${idListboxReceptor}-${receptorIdActivo || 'todos'}` : undefined}
-                    className="input pl-8 pr-8 text-sm"
-                    placeholder={receptorDropdownAbierto ? 'Nombre o cédula...' : 'Todos'}
-                    value={receptorDropdownAbierto ? filtroReceptorBusqueda : (receptorFiltroSeleccionado?.nombre ?? '')}
-                    // Defensa por si el input ya tuviera el foco (p. ej. tras Tab).
+                    aria-activedescendant={receptorDropdownAbierto && receptorIdActivo !== null ? `${idListboxReceptor}-${receptorIdActivo || 'todos'}` : undefined}
+                    className={clsx('input pl-8 pr-8 text-sm', !receptorDropdownAbierto && !!filtroReceptor && 'placeholder:text-gray-900')}
+                    // El input es siempre la caja de búsqueda; el receptor
+                    // filtrado se muestra como placeholder. Así no existe el
+                    // estado en que el input mostraba el nombre y lo tecleado
+                    // se concatenaba a él antes de salir al backend.
+                    placeholder={receptorDropdownAbierto
+                      ? 'Nombre o cédula...'
+                      : (receptorFiltroSeleccionado?.nombre ?? 'Todos')}
+                    value={filtroReceptorBusqueda}
                     onMouseDown={() => setReceptorDropdownAbierto(true)}
                     onFocus={() => setReceptorDropdownAbierto(true)}
                     onBlur={() => {
@@ -597,8 +602,11 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                       setReceptorActivoId(null)
                     }}
                     onKeyDown={manejarTeclaReceptor}
-                    // Defensa: teclear siempre deja la lista abierta.
-                    onChange={e => { setReceptorDropdownAbierto(true); setFiltroReceptorBusqueda(e.target.value); setReceptorActivoId(null) }}
+                    onChange={e => {
+                      setReceptorDropdownAbierto(true)
+                      setFiltroReceptorBusqueda(e.target.value)
+                      setReceptorActivoId(null)
+                    }}
                   />
                   {filtroReceptor && !receptorDropdownAbierto && (
                     <button
