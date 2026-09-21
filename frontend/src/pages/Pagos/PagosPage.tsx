@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useId, useRef } from 'react'
 import { pagosApi, receptoresApi, creditosApi, gestoresApi } from '@/api'
 import { formatCOP, formatFecha, formatCuentaBancaria, MESES, MOMENTOS, aniosDisponibles } from '@/utils/formatters'
 import { LoadingPage, EmptyState, Paginacion, PagoBadge, ConfirmarCreacion, ConfirmarCierreInteresPendiente, type ItemConfirmacion } from '@/components/ui'
@@ -7,7 +7,7 @@ import SelectCuentaBancaria from '@/components/ui/SelectCuentaBancaria'
 import { usePermissions } from '@/store/authStore'
 import { mensajeError, esErrorSesionExpirada } from '@/utils/apiErrors'
 import type { Pago, Receptor, Credito, Gestor } from '@/types'
-import { Check, Calendar, User, Plus, Search, DollarSign, CalendarDays, ArrowLeft, RotateCcw, ChevronUp, ChevronDown } from 'lucide-react'
+import { Check, Calendar, User, Plus, Search, DollarSign, CalendarDays, ArrowLeft, RotateCcw, ChevronUp, ChevronDown, X } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 import { useNavigate } from 'react-router-dom'
@@ -31,6 +31,11 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   const [filtroGestor, setFiltroGestor] = useState('')
   const [filtroReceptor, setFiltroReceptor] = useState('')
   const [filtroReceptorBusqueda, setFiltroReceptorBusqueda] = useState('')
+  const [receptorDropdownAbierto, setReceptorDropdownAbierto] = useState(false)
+  // Opción resaltada por teclado en el combobox de receptor.
+  const [receptorActivoId, setReceptorActivoId] = useState<string | null>(null)
+  const receptorInputRef = useRef<HTMLInputElement>(null)
+  const idListboxReceptor = `${useId()}-receptores`
   const [filtroCuentaBancaria, setFiltroCuentaBancaria] = useState('')
   const [gestores, setGestores] = useState<Gestor[]>([])
   const [page, setPage] = useState(1)
@@ -171,17 +176,69 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
     setPage(1)
   }
 
-  // El receptor filtrado se conserva en memoria para que no desaparezca del
-  // <select> cuando una búsqueda posterior lo excluye de `receptores`.
+  // El receptor filtrado se conserva en memoria para que no desaparezca de
+  // la lista cuando una búsqueda posterior lo excluye de `receptores`.
   const receptorFiltroSeleccionadoRef = useRef<Receptor | null>(null)
   const receptorFiltroActual = receptores.find(r => r.id === filtroReceptor)
   if (receptorFiltroActual) receptorFiltroSeleccionadoRef.current = receptorFiltroActual
   const receptorFiltroSeleccionado = receptorFiltroActual
     ?? (receptorFiltroSeleccionadoRef.current?.id === filtroReceptor ? receptorFiltroSeleccionadoRef.current : undefined)
   const cuentasDelReceptorFiltro = receptorFiltroSeleccionado?.cuentas_bancarias ?? []
+  // El receptor elegido debe seguir visible (y resaltado) en el desplegable
+  // aunque quede fuera de los primeros 50 que devolvió la última búsqueda.
   const receptoresFiltroOpciones = receptorFiltroSeleccionado && !receptorFiltroActual
     ? [receptorFiltroSeleccionado, ...receptores]
     : receptores
+
+  const idsReceptorNavegables = ['', ...receptoresFiltroOpciones.map(r => r.id)]
+  // Resaltado por defecto = el receptor filtrado. NO se adivina "la primera
+  // coincidencia": la lista sigue stale durante el debounce y el receptor
+  // elegido va fijado al principio, así que un índice fijo mentiría.
+  const receptorIdActivo = receptorActivoId !== null && idsReceptorNavegables.includes(receptorActivoId)
+    ? receptorActivoId
+    : (idsReceptorNavegables.includes(filtroReceptor) ? filtroReceptor : idsReceptorNavegables[0])
+
+  const seleccionarReceptor = (receptorId: string) => {
+    // Reafirmar el mismo receptor no debe limpiar el filtro de cuenta ni
+    // resetear la paginación; el <select> nativo tampoco emitía onChange.
+    if (receptorId !== filtroReceptor) handleFiltroReceptorChange(receptorId)
+    setFiltroReceptorBusqueda('')
+    setReceptorActivoId(null)
+    // Blur explícito: `onBlur` es lo único que cierra la lista, y al soltar
+    // el foco el input vuelve a mostrar el nombre del receptor elegido.
+    receptorInputRef.current?.blur()
+  }
+
+  // El <select> que este combobox reemplaza era operable con teclado.
+  const manejarTeclaReceptor = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      if (!receptorDropdownAbierto) {
+        setReceptorDropdownAbierto(true)
+        return
+      }
+      const actual = idsReceptorNavegables.indexOf(receptorIdActivo)
+      const delta = e.key === 'ArrowDown' ? 1 : -1
+      const siguiente = actual < 0
+        ? 0
+        : (actual + delta + idsReceptorNavegables.length) % idsReceptorNavegables.length
+      setReceptorActivoId(idsReceptorNavegables[siguiente])
+    } else if (e.key === 'Enter') {
+      if (!receptorDropdownAbierto) return
+      e.preventDefault()
+      // Solo confirma navegación explícita, y solo si ese receptor sigue en
+      // la lista: el refetch del debounce puede haberlo sacado.
+      if (receptorActivoId === null || !idsReceptorNavegables.includes(receptorActivoId)) return
+      seleccionarReceptor(receptorActivoId)
+    } else if (e.key === 'Escape') {
+      if (!receptorDropdownAbierto) return
+      e.preventDefault()
+      e.stopPropagation()
+      setFiltroReceptorBusqueda('')
+      setReceptorActivoId(null)
+      receptorInputRef.current?.blur()
+    }
+  }
 
   const handleSolicitarRegistrar = () => {
     // Antes de registrar, mostrar confirmación con los montos
@@ -515,21 +572,90 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
             <>
               <div>
                 <label className="label">Receptor</label>
-                <div className="relative mb-1">
-                  <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                {/* Combobox: la lista de receptores que coinciden se despliega
+                    mientras se escribe (el backend filtra `busqueda` por nombre
+                    y cédula). */}
+                <div className="relative">
+                  <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
                   <input
+                    ref={receptorInputRef}
                     type="text"
-                    className="input pl-8 text-sm"
-                    placeholder="Buscar receptor..."
-                    value={filtroReceptorBusqueda}
-                    onChange={e => setFiltroReceptorBusqueda(e.target.value)}
+                    role="combobox"
+                    aria-expanded={receptorDropdownAbierto}
+                    aria-haspopup="listbox"
+                    aria-controls={idListboxReceptor}
+                    aria-activedescendant={receptorDropdownAbierto ? `${idListboxReceptor}-${receptorIdActivo || 'todos'}` : undefined}
+                    className="input pl-8 pr-8 text-sm"
+                    placeholder={receptorDropdownAbierto ? 'Nombre o cédula...' : 'Todos'}
+                    value={receptorDropdownAbierto ? filtroReceptorBusqueda : (receptorFiltroSeleccionado?.nombre ?? '')}
+                    // Defensa por si el input ya tuviera el foco (p. ej. tras Tab).
+                    onMouseDown={() => setReceptorDropdownAbierto(true)}
+                    onFocus={() => setReceptorDropdownAbierto(true)}
+                    onBlur={() => {
+                      setReceptorDropdownAbierto(false)
+                      setFiltroReceptorBusqueda('')
+                      setReceptorActivoId(null)
+                    }}
+                    onKeyDown={manejarTeclaReceptor}
+                    // Defensa: teclear siempre deja la lista abierta.
+                    onChange={e => { setReceptorDropdownAbierto(true); setFiltroReceptorBusqueda(e.target.value); setReceptorActivoId(null) }}
                   />
+                  {filtroReceptor && !receptorDropdownAbierto && (
+                    <button
+                      type="button"
+                      title="Quitar filtro"
+                      onClick={() => handleFiltroReceptorChange('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                  {receptorDropdownAbierto && (
+                    // preventDefault en el contenedor: arrastrar la barra de
+                    // scroll no quita el foco del input ni cierra la lista.
+                    <div
+                      id={idListboxReceptor}
+                      role="listbox"
+                      className="absolute z-20 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-56 overflow-y-auto"
+                      onMouseDown={e => e.preventDefault()}
+                    >
+                      <button
+                        type="button"
+                        id={`${idListboxReceptor}-todos`}
+                        ref={el => { if (el && receptorIdActivo === '') el.scrollIntoView({ block: 'nearest' }) }}
+                        role="option"
+                        aria-selected={filtroReceptor === ''}
+                        className={clsx(
+                          'w-full text-left px-3 py-2 text-sm text-gray-500 hover:bg-primary-50 border-b border-gray-50',
+                          receptorIdActivo === '' && 'bg-primary-100',
+                        )}
+                        onClick={() => seleccionarReceptor('')}
+                      >
+                        Todos
+                      </button>
+                      {receptoresFiltroOpciones.length === 0 ? (
+                        <div className="px-3 py-2 text-sm text-gray-400">Sin resultados</div>
+                      ) : receptoresFiltroOpciones.map(r => (
+                        <button
+                          key={r.id}
+                          type="button"
+                          id={`${idListboxReceptor}-${r.id}`}
+                          ref={el => { if (el && r.id === receptorIdActivo) el.scrollIntoView({ block: 'nearest' }) }}
+                          role="option"
+                          aria-selected={r.id === filtroReceptor}
+                          className={clsx(
+                            'w-full text-left px-3 py-2 text-sm hover:bg-primary-50 border-b border-gray-50 last:border-0',
+                            r.id === filtroReceptor && 'font-medium',
+                            r.id === receptorIdActivo && 'bg-primary-100',
+                          )}
+                          onClick={() => seleccionarReceptor(r.id)}
+                        >
+                          {r.nombre}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <select className="input" value={filtroReceptor}
-                  onChange={e => handleFiltroReceptorChange(e.target.value)}>
-                  <option value="">Todos</option>
-                  {receptoresFiltroOpciones.map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}
-                </select>
               </div>
               <div>
                 <label className="label">Cuenta</label>
@@ -587,7 +713,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                       <th className="table-header">Acciones</th>
                       <th className="table-header">Cuota</th>
                       <th className="table-header">Cliente</th>
-                      <th className="table-header">Cuenta</th>
+                      <th className="table-header">Receptor / Cuenta</th>
                       <th className="table-header">Crédito</th>
                       <th className="table-header">Tipo</th>
                       <th className="table-header">Monto</th>
@@ -704,9 +830,12 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                         </td>
                         <td className="table-cell text-xs text-gray-600">
                           {p.cuenta_bancaria
-                            ? <span title={formatCuentaBancaria(p.cuenta_bancaria, p.cuenta_bancaria.receptor.nombre)}>
-                                {p.cuenta_bancaria.entidad_bancaria} · {p.cuenta_bancaria.numero_cuenta}
-                              </span>
+                            ? <div title={formatCuentaBancaria(p.cuenta_bancaria, p.cuenta_bancaria.receptor.nombre)}>
+                                <div className="font-medium text-gray-800">{p.cuenta_bancaria.receptor.nombre}</div>
+                                <div className="text-gray-500">
+                                  {p.cuenta_bancaria.entidad_bancaria} · {p.cuenta_bancaria.numero_cuenta}
+                                </div>
+                              </div>
                             : '—'}
                         </td>
                         <td className="table-cell font-mono text-xs text-gray-500">{p.numero_credito_cliente || p.credito_id.slice(0, 8) + '...'}</td>
