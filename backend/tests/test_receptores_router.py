@@ -2,7 +2,8 @@
 tests/test_receptores_router.py — Rutas base de receptores (GET/POST /receptores).
 
 Covers: listado paginado con `items/total/page/page_size/pages` y cuentas
-anidadas; filtro `busqueda` parcial e insensible a mayúsculas sobre nombre;
+anidadas; filtro `busqueda` parcial e insensible a mayúsculas sobre nombre y
+cédula, con tokens en AND;
 `page_size` > 50 -> 422; creación 201 y visible en el listado posterior;
 roles registrador/gestor -> 403 en ambas rutas. Fixtures copiadas de
 test_cuentas_bancarias_predeterminada.py.
@@ -112,6 +113,38 @@ async def test_listar_receptores_busqueda_parcial_por_nombre(client_factory, db_
     ids = [r["id"] for r in resp.json()["items"]]
     assert str(coincide.id) in ids
     assert str(no_coincide.id) not in ids
+
+
+@pytest.mark.asyncio
+async def test_listar_receptores_busqueda_parcial_por_cedula(client_factory, db_session):
+    coincide = _mk_receptor()
+    no_coincide = _mk_receptor()
+    db_session.add_all([coincide, no_coincide])
+    await db_session.flush()
+
+    client = await client_factory(_mk_user(TipoUsuario.admin))
+    resp = await client.get("/api/v1/receptores", params={"busqueda": coincide.cedula[:6]})
+
+    assert resp.status_code == 200
+    ids = [r["id"] for r in resp.json()["items"]]
+    assert str(coincide.id) in ids
+    assert str(no_coincide.id) not in ids
+
+
+@pytest.mark.asyncio
+async def test_listar_receptores_busqueda_varios_tokens_exige_todos(client_factory, db_session):
+    marca = uuid.uuid4().hex[:8]
+    coincide = _mk_receptor(f"Carolina Mattos {marca}")
+    no_coincide = _mk_receptor(f"Carolina Sanabria {marca}")
+    db_session.add_all([coincide, no_coincide])
+    await db_session.flush()
+
+    client = await client_factory(_mk_user(TipoUsuario.admin))
+    resp = await client.get("/api/v1/receptores", params={"busqueda": f"carolina mattos {marca}"})
+
+    assert resp.status_code == 200
+    ids = [r["id"] for r in resp.json()["items"]]
+    assert ids == [str(coincide.id)]
 
 
 @pytest.mark.asyncio

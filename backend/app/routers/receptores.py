@@ -4,7 +4,7 @@ import uuid
 from app.utils.fechas import ahora_bogota
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -40,7 +40,18 @@ async def listar_receptores(
         .options(selectinload(Receptor.cuentas_bancarias))
     )
     if busqueda:
-        query = query.where(Receptor.nombre.ilike(f"%{busqueda}%"))
+        # Búsqueda por palabras: cada token debe aparecer en nombre o cédula,
+        # igual que en clientes. Permite buscar nombre completo o documento.
+        terminos = [t for t in busqueda.strip().split() if t]
+        if terminos:
+            condiciones = [
+                or_(
+                    Receptor.nombre.ilike(f"%{t}%"),
+                    Receptor.cedula.ilike(f"%{t}%"),
+                )
+                for t in terminos
+            ]
+            query = query.where(and_(*condiciones))
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
     items = (await db.execute(
