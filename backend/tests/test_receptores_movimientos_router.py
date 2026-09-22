@@ -260,6 +260,42 @@ class TestRegistrarSalida:
         assert log.usuario_id == admin.id
 
 
+# ─── Interacción correccion → salida (compute-on-read, sin balance cacheado) ─
+
+class TestInteraccionCorreccionSalida:
+    @pytest.mark.asyncio
+    async def test_salida_respeta_saldo_ya_reducido_por_correccion_previa(self, client_factory, db_session):
+        """Una corrección negativa reduce el saldo disponible; el chequeo de
+        sobregiro de una salida posterior debe verlo (compute-on-read, nunca
+        un total cacheado desactualizado — ver docstring del módulo de
+        servicio). 100000 - 50000 (correccion) = 50000 disponible: 50001
+        se rechaza, 50000 exacto se acepta."""
+        admin = _mk_user(TipoUsuario.admin)
+        receptor, cuenta = await _preparar_cuenta_con_saldo(db_session, Decimal("100000.00"))
+        client = await client_factory(admin)
+
+        corr = await client.post(
+            f"{RECEPTORES_URL}/{receptor.id}/cuentas/{cuenta.id}/correcciones",
+            json={"monto": "-50000.00"},
+        )
+        assert corr.status_code == 201
+
+        rechazo = await client.post(
+            f"{RECEPTORES_URL}/{receptor.id}/cuentas/{cuenta.id}/salidas",
+            json={"monto": "50001.00"},
+        )
+        assert rechazo.status_code == 409
+
+        exacto = await client.post(
+            f"{RECEPTORES_URL}/{receptor.id}/cuentas/{cuenta.id}/salidas",
+            json={"monto": "50000.00"},
+        )
+        assert exacto.status_code == 201
+
+        saldo_final = await client.get(f"{RECEPTORES_URL}/{receptor.id}/saldo")
+        assert Decimal(str(saldo_final.json()["saldo_total"])) == Decimal("0.00")
+
+
 # ─── POST .../correcciones ──────────────────────────────────────────────────
 
 class TestRegistrarCorreccion:
