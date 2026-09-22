@@ -1,6 +1,7 @@
 """routers/receptores.py — CRUD de receptores y sus cuentas bancarias."""
 import math
 import uuid
+from typing import Optional
 from app.utils.fechas import ahora_bogota
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -21,9 +22,14 @@ from app.schemas.receptor import (
     ReceptorResponse,
     ReceptorUpdate,
 )
-from app.services import audit_service, cuenta_bancaria_service
+from app.schemas.receptor_movimiento import MovimientoResponse, SaldoReceptorResponse
+from app.services import audit_service, cuenta_bancaria_service, receptor_ledger_service
 
 router = APIRouter(prefix="/receptores", tags=["Receptores"])
+
+# item 9 (receiver-cash-balance): tupla a nivel de módulo para que sumar un
+# rol futuro (p.ej. "registrador") sea un diff de una línea (decision 3).
+ROLES_LECTURA_SALDO = ("admin", "recaudador")  # coincide con listar_receptores
 
 
 @router.get("", response_model=PaginatedResponse[ReceptorResponse])
@@ -90,6 +96,37 @@ async def crear_receptor(
     )
     await db.refresh(receptor, ["cuentas_bancarias"])
     return ReceptorResponse.model_validate(receptor)
+
+
+@router.get("/saldos", response_model=list[SaldoReceptorResponse])
+async def saldos_receptores(
+    receptor_ids: str = Query(..., description="UUIDs de receptores separados por coma"),
+    current_user: Usuario = Depends(require_role(*ROLES_LECTURA_SALDO)),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Saldo agregado por receptor, para varios receptores a la vez (usado por
+    la columna "Saldo" del listado). Es un bulk lookup, no un chequeo de
+    existencia: un receptor_id desconocido simplemente no tiene cuentas y
+    su saldo_total es 0 — la verificación 404 vive en el endpoint singular
+    GET /{receptor_id}/saldo, más abajo.
+
+    CRÍTICO: esta ruta debe registrarse ANTES de GET /{receptor_id} — si no,
+    el path param UUID de esa ruta la eclipsa e intenta parsear "saldos"
+    como UUID, devolviendo 422 en vez de despachar aquí.
+    """
+    ids: list[uuid.UUID] = []
+    for token in receptor_ids.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            ids.append(uuid.UUID(token))
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"receptor_id inválido: {token}")
+
+    resultado = await receptor_ledger_service.saldos_por_receptor(db, ids)
+    return [resultado[rid] for rid in ids]
 
 
 @router.get("/{receptor_id}", response_model=ReceptorResponse)
@@ -251,3 +288,50 @@ async def marcar_cuenta_predeterminada(
         cambios={"es_predeterminada": (str(cuenta_anterior_id), str(cuenta.id))},
     )
     return CuentaBancariaResponse.model_validate(cuenta)
+
+
+# --- Ledger de movimientos (item 9, receiver-cash-balance) ---
+
+@router.get("/{receptor_id}/saldo", response_model=SaldoReceptorResponse)
+async def saldo_receptor(
+    receptor_id: uuid.UUID,
+    current_user: Usuario = Depends(require_role(*ROLES_LECTURA_SALDO)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Saldo total del receptor y desglose por cuenta bancaria. A diferencia
+    de GET /saldos (bulk), aquí sí se exige que el receptor exista y no
+    esté borrado lógicamente."""
+    receptor = (await db.execute(
+        select(Receptor).where(Receptor.id == receptor_id, Receptor.deleted_at == None)  # noqa: E711
+    )).scalar_one_or_none()
+    if not receptor:
+        raise HTTPException(status_code=404, detail="Receptor no encontrado")
+
+    resultado = await receptor_ledger_service.saldos_por_receptor(db, [receptor_id])
+    return resultado[receptor_id]
+
+
+@router.get("/{receptor_id}/movimientos", response_model=PaginatedResponse[MovimientoResponse])
+async def movimientos_receptor(
+    receptor_id: uuid.UUID,
+    cuenta_bancaria_id: Optional[uuid.UUID] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=50),
+    current_user: Usuario = Depends(require_role(*ROLES_LECTURA_SALDO)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Historial paginado de salidas/correcciones del receptor, opcionalmente
+    acotado a una sola cuenta bancaria."""
+    receptor = (await db.execute(
+        select(Receptor).where(Receptor.id == receptor_id, Receptor.deleted_at == None)  # noqa: E711
+    )).scalar_one_or_none()
+    if not receptor:
+        raise HTTPException(status_code=404, detail="Receptor no encontrado")
+
+    items, total = await receptor_ledger_service.listar_movimientos(
+        db, receptor_id, cuenta_bancaria_id=cuenta_bancaria_id, page=page, page_size=page_size,
+    )
+    return PaginatedResponse(
+        items=items, total=total, page=page, page_size=page_size,
+        pages=math.ceil(total / page_size) if total else 0,
+    )
