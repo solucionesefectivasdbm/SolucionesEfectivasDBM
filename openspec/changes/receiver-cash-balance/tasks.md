@@ -20,7 +20,7 @@ Chain strategy: feature-branch-chain
 
 | Unit | Goal | Likely PR | Focused test command | Runtime harness | Rollback boundary |
 |------|------|-----------|----------------------|-----------------|-------------------|
-| 1 | Model + migration + schemas + service + 3 read endpoints, no UI change | PR 1 (base = tracker/feature branch) | `pytest backend/tests/test_receptor_ledger_service.py backend/tests/test_receptores_saldo_routes.py -q` | Staging Postgres: run alembic upgrade head, hit `GET /receptores/saldos` | Revert PR 1; `alembic downgrade -1` drops table+enum, zero data loss |
+| 1 | Model + migration + schemas + service + 3 read endpoints, no UI change | PR 1 (base = tracker/feature branch) | `pytest backend/tests/test_receptor_ledger_service.py backend/tests/test_receptores_saldo_router.py -q` | Staging Postgres: run alembic upgrade head, hit `GET /receptores/saldos` | Revert PR 1; `alembic downgrade -1` drops table+enum, zero data loss |
 | 2 | Salida/correccion write endpoints + frontend badge/modal | PR 2 (base = PR 1 branch) | `pytest backend/tests/test_receptores_movimientos_routes.py -q && pnpm --filter frontend test ReceptoresPage` | Staging Postgres: two concurrent salidas on same cuenta, assert exactly one succeeds | Revert PR 2 only; ledger table/data from PR 1 untouched |
 
 ## Phase 1: Backend Foundation (PR 1)

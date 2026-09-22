@@ -8,7 +8,7 @@ Give admins a reliable, per-`cuenta_bancaria_id` cash balance view derived from 
 
 ### Requirement: Compute-on-Read Balance
 
-The system MUST compute the balance for a given `cuenta_bancaria_id` on every read as: `SUM(Pago.monto WHERE cuenta_bancaria_id = X AND pagado = True) - SUM(salida.monto WHERE cuenta_bancaria_id = X) + SUM(correccion.monto WHERE cuenta_bancaria_id = X)`. The system MUST NOT persist or cache this balance on `Receptor` or `CuentaBancaria`.
+The system MUST compute the balance for a given `cuenta_bancaria_id` on every read as: `SUM(Pago.capital_pagado + Pago.interes_pagado WHERE cuenta_bancaria_id = X AND pagado = True) - SUM(salida.monto WHERE cuenta_bancaria_id = X) + SUM(correccion.monto WHERE cuenta_bancaria_id = X)`. The system MUST NOT persist or cache this balance on `Receptor` or `CuentaBancaria`.
 
 #### Scenario: Balance with mixed movement types
 
