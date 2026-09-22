@@ -229,17 +229,27 @@ Delivery strategy: `force-chained`, `stacked-to-main` — each branch is cut fro
 
 **Prerequisite (operational)**: a clean prod week after OPS-5 through OPS-8 with no `pendientes` regressions; owner confirms no rollback of PR2a/PR2b is planned.
 
+> **OPERATIONAL NOTE (2026-09-20)**: code for this PR (Phase 18, tasks 18.1-18.6) is
+> prepared ahead of the prod-week prerequisite, on branch `chore/cuenta-bancaria-cleanup`
+> cut from `feat/cuenta-bancaria-frontend` (PR3, commit `a531256`), stacked on the PR1-3
+> chain. **Do NOT merge this branch together with the rest of the chain.** It must stay
+> unmerged until OPS-9 and OPS-10 are executed and verified in prod after a clean week —
+> only then does OPS-11 (merge + deploy) happen. OPS-9/OPS-10 themselves are operational
+> (prod) and were explicitly NOT executed as part of this apply batch.
+
 - [ ] OPS-9 Re-run `POST /admin/backfill-cuentas-bancarias?dry_run=false` once more in prod as a final safety net before dropping columns
+- [ ] OPS-10a Before running the drop migration, confirm the FK constraint names in prod: `SELECT constraint_name, table_name FROM information_schema.table_constraints WHERE table_name IN ('gestores','pagos') AND constraint_type = 'FOREIGN KEY' AND constraint_name LIKE '%receptor_id%'` must return exactly `gestores_receptor_id_fkey` and `pagos_receptor_id_fkey` (the names hardcoded in `d4e5f6a7b8c9`); the Render workspace visible from this machine is NOT the prod one, so this was not verified live
 - [ ] OPS-10 Verify `SELECT count(*) FROM pagos WHERE cuenta_bancaria_id IS NULL AND receptor_id IS NOT NULL` = 0, and the same query for `gestores` = 0
 
 ### Phase 18: Cleanup
 
-- [ ] 18.1 Create `backend/alembic/versions/d4e5f6a7b8c9_drop_receptor_id_from_gestores_pagos.py`: drop FKs and `receptor_id` columns from `gestores` and `pagos`; downgrade re-adds nullable columns + FKs and repopulates via `op.execute` correlated `UPDATE ... SET receptor_id = (SELECT receptor_id FROM cuentas_bancarias WHERE id = cuenta_bancaria_id)`
-- [ ] 18.2 Modify `backend/app/models/gestor.py`, `backend/app/models/pago.py`: remove the deprecated `receptor_id` mapped columns
-- [ ] 18.3 Modify `backend/app/routers/receptores.py`: delete the temp `POST /admin/backfill-cuentas-bancarias` endpoint and its SQL Core table constructs
-- [ ] 18.4 Delete `backend/tests/test_backfill_cuentas_bancarias.py`
-- [ ] 18.5 Verify: `cd backend && venv/Scripts/python.exe -m pytest -q` — 0 failures, count = baseline minus the deleted backfill tests
-- [ ] 18.6 Verify migration round-trip on a fresh DB: `alembic upgrade head` then `downgrade -1` then `upgrade head` — clean at every step
+- [x] 18.1 Create `backend/alembic/versions/d4e5f6a7b8c9_drop_receptor_id_from_gestores_pagos.py`: drop FKs and `receptor_id` columns from `gestores` and `pagos`; downgrade re-adds nullable columns + FKs and repopulates via `op.execute` correlated `UPDATE ... SET receptor_id = (SELECT receptor_id FROM cuentas_bancarias WHERE id = cuenta_bancaria_id)`
+- [x] 18.2 Modify `backend/app/models/gestor.py`, `backend/app/models/pago.py`: remove the deprecated `receptor_id` mapped columns
+- [x] 18.3 Modify `backend/app/routers/receptores.py`: delete the temp `POST /admin/backfill-cuentas-bancarias` endpoint and its SQL Core table constructs
+- [x] 18.4 Delete `backend/tests/test_backfill_cuentas_bancarias.py`
+- [x] 18.5 Verify: `cd backend && venv/Scripts/python.exe -m pytest -q` — 0 failures, count = baseline minus the deleted backfill tests (507 - 18 deleted backfill tests + 4 new model tests = 493 passed)
+- [x] 18.6 Verify migration round-trip on a fresh DB: `alembic upgrade head` then `downgrade -1` then `upgrade head` — clean at every step (offline SQL for Postgres both directions verified; live round trip via alembic blocked on SQLite repo-wide by pre-existing non-batch migrations, see apply-progress; functional DDL/DML round trip verified via raw sqlite3 scratch DB)
+- [x] Extra (owner-approved cleanup): removed dead `ReporteDetalleGestor`, `ReporteDetalleCuenta`, `ReporteDetalleReceptor`, `ReporteResponse` from `backend/app/schemas/common.py` — confirmed unused (live `GET /reportes` uses its own `*Extendido` classes in `routers/reportes.py`)
 
 ### Operational: Prod Sequencing After PR4
 

@@ -1,4 +1,4 @@
-"""Schemas compartidos: paginación, audit log, reportes."""
+"""Schemas compartidos: paginación, audit log."""
 import uuid
 from datetime import datetime
 from typing import Generic, Optional, TypeVar
@@ -32,42 +32,3 @@ class AuditLogResponse(BaseModel):
     usuario_username: Optional[str] = None
     fecha_accion: datetime
     ip_origen: str
-
-
-class ReporteDetalleGestor(BaseModel):
-    gestor_id: uuid.UUID
-    gestor_nombre: str
-    total_recaudado: float
-    total_intereses: float
-    total_capital: float
-
-
-class ReporteDetalleCuenta(BaseModel):
-    """Sub-desglose por cuenta bancaria dentro de un receptor (PR2b lo puebla)."""
-    cuenta_bancaria_id: uuid.UUID
-    etiqueta: str
-    es_predeterminada: bool
-    total_recaudado: float
-    total_intereses: float
-    total_capital: float
-
-
-class ReporteDetalleReceptor(BaseModel):
-    receptor_id: uuid.UUID
-    receptor_nombre: str
-    total_recaudado: float
-    total_intereses: float
-    total_capital: float
-    # Poblado a partir de PR2b (receiver-bank-account-assignment); vacío hasta entonces.
-    por_cuenta: list[ReporteDetalleCuenta] = []
-
-
-class ReporteResponse(BaseModel):
-    anio: int
-    mes: int
-    momento: str
-    total_recaudado: float
-    total_intereses: float
-    total_capital: float
-    por_gestor: list[ReporteDetalleGestor]
-    por_receptor: list[ReporteDetalleReceptor]

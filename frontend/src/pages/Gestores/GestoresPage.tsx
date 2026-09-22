@@ -184,7 +184,7 @@ export default function GestoresPage() {
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input
             className="input pl-9"
-            placeholder="Buscar por nombre..."
+            placeholder="Buscar por nombre o cédula..."
             value={busqueda}
             onChange={e => { setBusqueda(e.target.value); setPage(1) }}
           />

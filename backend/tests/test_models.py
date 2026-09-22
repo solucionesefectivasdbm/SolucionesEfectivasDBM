@@ -9,8 +9,12 @@ from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import inspect
 
 from app.models.credito import Credito, Periodicidad, TipoCredito
+from app.models.gestor import Gestor
+from app.models.pago import Pago
+from app.models.receptor import Receptor
 
 
 def _make_credito(**kwargs) -> Credito:
@@ -92,3 +96,26 @@ class TestCreditoAnchorColumns:
         """Credito model exposes anchor_dia_2 as an attribute (hasattr check)."""
         credito = _make_credito(anchor_dia_1=None, anchor_dia_2=None)
         assert hasattr(credito, "anchor_dia_2")
+
+
+class TestReceptorIdDroppedFromGestorAndPago:
+    """PR4 (receiver-bank-account-assignment, decision 7/task 18.2): the
+    deprecated `receptor_id` mapped columns are removed from Gestor/Pago,
+    and Receptor keeps no `gestores`/`pagos` relationships. Fails while the
+    deprecated columns still exist (RED before 18.1/18.2)."""
+
+    def test_gestor_has_no_receptor_id_column(self):
+        columnas = {c.key for c in inspect(Gestor).columns}
+        assert "receptor_id" not in columnas
+
+    def test_pago_has_no_receptor_id_column(self):
+        columnas = {c.key for c in inspect(Pago).columns}
+        assert "receptor_id" not in columnas
+
+    def test_receptor_has_no_gestores_relationship(self):
+        relaciones = {r.key for r in inspect(Receptor).relationships}
+        assert "gestores" not in relaciones
+
+    def test_receptor_has_no_pagos_relationship(self):
+        relaciones = {r.key for r in inspect(Receptor).relationships}
+        assert "pagos" not in relaciones

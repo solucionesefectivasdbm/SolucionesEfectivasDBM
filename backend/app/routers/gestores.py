@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -45,17 +45,26 @@ async def listar_gestores(
 ):
     query = _query_con_relaciones()
 
-    if busqueda:
-        query = query.where(
-            (Gestor.nombre.ilike(f"%{busqueda}%")) | (Gestor.apellidos.ilike(f"%{busqueda}%"))
-        )
-
     # Contar sin el selectinload para eficiencia
     count_query = select(func.count(Gestor.id)).where(Gestor.deleted_at == None)  # noqa: E711
+
     if busqueda:
-        count_query = count_query.where(
-            (Gestor.nombre.ilike(f"%{busqueda}%")) | (Gestor.apellidos.ilike(f"%{busqueda}%"))
-        )
+        # Búsqueda por palabras: cada token debe aparecer en nombre, apellidos
+        # o cédula, igual que en clientes y receptores. Permite buscar nombre
+        # completo aunque cada palabra esté en columnas distintas.
+        terminos = [t for t in busqueda.strip().split() if t]
+        if terminos:
+            condiciones = [
+                or_(
+                    Gestor.nombre.ilike(f"%{t}%"),
+                    Gestor.apellidos.ilike(f"%{t}%"),
+                    Gestor.cedula.ilike(f"%{t}%"),
+                )
+                for t in terminos
+            ]
+            filtro = and_(*condiciones)
+            query = query.where(filtro)
+            count_query = count_query.where(filtro)
 
     total = (await db.execute(count_query)).scalar()
     items = (await db.execute(
