@@ -60,6 +60,39 @@ export interface Receptor {
   cuentas_bancarias: CuentaBancaria[]
 }
 
+// ─── Ledger de receptores (item 9, receiver-cash-balance) ─────────────────────
+// Saldo compute-on-read: nunca cacheado en Receptor/CuentaBancaria — ver
+// backend/app/services/receptor_ledger_service.py.
+
+export type TipoMovimiento = 'salida' | 'correccion'
+
+export interface MovimientoReceptor {
+  id: string
+  cuenta_bancaria_id: string
+  tipo: TipoMovimiento
+  monto: number
+  nota: string | null
+  usuario_id: string
+  usuario_nombre: string | null
+  created_at: string
+}
+
+export interface SaldoCuenta {
+  cuenta_bancaria_id: string
+  etiqueta: string
+  es_predeterminada: boolean
+  recaudado: number
+  salidas: number
+  correcciones: number
+  saldo: number
+}
+
+export interface SaldoReceptor {
+  receptor_id: string
+  saldo_total: number
+  por_cuenta: SaldoCuenta[]
+}
+
 // ─── Gestor ───────────────────────────────────────────────────────────────────
 
 export interface Gestor {

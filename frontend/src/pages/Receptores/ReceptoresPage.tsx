@@ -1,13 +1,16 @@
 import { useState, useEffect, useCallback } from 'react'
 import { receptoresApi } from '@/api'
-import { LoadingPage, EmptyState, Paginacion, ConfirmDelete, FormField, ConfirmarCreacion, type ItemConfirmacion } from '@/components/ui'
+import { usePermissions } from '@/store/authStore'
+import { LoadingPage, EmptyState, Paginacion, ConfirmDelete, FormField, ConfirmarCreacion, Spinner, type ItemConfirmacion } from '@/components/ui'
 import Modal from '@/components/ui/Modal'
-import type { Receptor, CuentaBancaria } from '@/types'
-import { Plus, Pencil, Trash2, Search, CreditCard } from 'lucide-react'
+import type { Receptor, CuentaBancaria, SaldoReceptor, MovimientoReceptor, TipoMovimiento } from '@/types'
+import { formatCOP, formatCuentaBancaria } from '@/utils/formatters'
+import { Plus, Pencil, Trash2, Search, CreditCard, Wallet } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 
 export default function ReceptoresPage() {
+  const perms = usePermissions()
   const [receptores, setReceptores] = useState<Receptor[]>([])
   const [total, setTotal] = useState(0); const [pages, setPages] = useState(0)
   const [page, setPage] = useState(1); const [busqueda, setBusqueda] = useState('')
@@ -25,14 +28,34 @@ export default function ReceptoresPage() {
   const [editandoCuenta, setEditandoCuenta] = useState<CuentaBancaria | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
+  // Ledger de movimientos (item 9, receiver-cash-balance)
+  const [saldosMap, setSaldosMap] = useState<Record<string, SaldoReceptor>>({})
+  const [modalMovimientos, setModalMovimientos] = useState(false)
+  const [movimientos, setMovimientos] = useState<MovimientoReceptor[]>([])
+  const [movLoading, setMovLoading] = useState(false)
+  const [movTotal, setMovTotal] = useState(0); const [movPages, setMovPages] = useState(0)
+  const [movPage, setMovPage] = useState(1)
+  const [tipoMovimiento, setTipoMovimiento] = useState<TipoMovimiento | null>(null)
+  const [modalRegistroMovimiento, setModalRegistroMovimiento] = useState(false)
+  const [modalConfirmarMovimiento, setModalConfirmarMovimiento] = useState(false)
+  const [datosMovimientoPendientes, setDatosMovimientoPendientes] = useState<any>(null)
+
   const { register, handleSubmit, reset, formState: { errors } } = useForm<any>()
   const { register: regC, handleSubmit: handleC, reset: resetC } = useForm<any>()
+  const { register: regM, handleSubmit: handleM, reset: resetM } = useForm<any>()
 
   const cargar = useCallback(async () => {
     setLoading(true)
     try {
       const res = await receptoresApi.listar({ page, busqueda })
       setReceptores(res.data.items); setTotal(res.data.total); setPages(res.data.pages)
+      const ids = res.data.items.map(r => r.id)
+      if (ids.length > 0) {
+        try {
+          const saldosRes = await receptoresApi.saldos(ids)
+          setSaldosMap(prev => ({ ...prev, ...Object.fromEntries(saldosRes.data.map(s => [s.receptor_id, s])) }))
+        } catch {}
+      }
     } catch {} finally { setLoading(false) }
   }, [page, busqueda])
 
@@ -178,6 +201,79 @@ export default function ReceptoresPage() {
     ]
   }
 
+  // ─── Ledger de movimientos (item 9, receiver-cash-balance) ────────────────
+
+  const formatFechaHora = (d: string) => new Date(d).toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' })
+
+  const cargarMovimientos = async (receptorId: string, pageNum: number) => {
+    setMovLoading(true)
+    try {
+      const res = await receptoresApi.movimientos(receptorId, { page: pageNum, page_size: 10 })
+      setMovimientos(res.data.items); setMovTotal(res.data.total); setMovPages(res.data.pages); setMovPage(pageNum)
+    } catch {} finally { setMovLoading(false) }
+  }
+
+  const abrirMovimientos = (r: Receptor) => {
+    setSeleccionado(r)
+    setModalMovimientos(true)
+    cargarMovimientos(r.id, 1)
+  }
+
+  const abrirRegistroMovimiento = (tipo: TipoMovimiento) => {
+    setTipoMovimiento(tipo)
+    resetM({})
+    setModalRegistroMovimiento(true)
+  }
+
+  const onSubmitMovimiento = (data: any) => {
+    setDatosMovimientoPendientes(data)
+    setModalRegistroMovimiento(false)
+    setModalConfirmarMovimiento(true)
+  }
+
+  const handleVolverRegistroMovimiento = () => {
+    setModalConfirmarMovimiento(false)
+    setModalRegistroMovimiento(true)
+  }
+
+  const handleConfirmarRegistrarMovimiento = async () => {
+    if (!seleccionado || !datosMovimientoPendientes || !tipoMovimiento) return
+    setSubmitting(true)
+    try {
+      const { cuenta_bancaria_id, monto, nota } = datosMovimientoPendientes
+      const payload = { monto, nota: nota || undefined }
+      if (tipoMovimiento === 'salida') {
+        await receptoresApi.registrarSalida(seleccionado.id, cuenta_bancaria_id, payload)
+      } else {
+        await receptoresApi.registrarCorreccion(seleccionado.id, cuenta_bancaria_id, payload)
+      }
+      toast.success(tipoMovimiento === 'salida' ? 'Salida registrada' : 'Corrección registrada')
+      setModalConfirmarMovimiento(false)
+      setDatosMovimientoPendientes(null)
+      setTipoMovimiento(null)
+      const saldoRes = await receptoresApi.saldo(seleccionado.id)
+      setSaldosMap(prev => ({ ...prev, [seleccionado.id]: saldoRes.data }))
+      await cargarMovimientos(seleccionado.id, 1)
+      cargar()
+    } catch (e: any) {
+      const detail = e.response?.data?.detail
+      const msg = Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error'
+      toast.error(msg)
+    }
+    finally { setSubmitting(false) }
+  }
+
+  const itemsMovimiento = (): ItemConfirmacion[] => {
+    if (!datosMovimientoPendientes || !seleccionado) return []
+    const cuenta = seleccionado.cuentas_bancarias.find(c => c.id === datosMovimientoPendientes.cuenta_bancaria_id)
+    return [
+      { label: 'Tipo', value: tipoMovimiento === 'salida' ? 'Salida' : 'Corrección' },
+      { label: 'Cuenta', value: cuenta ? formatCuentaBancaria(cuenta) : '' },
+      { label: 'Monto', value: formatCOP(datosMovimientoPendientes.monto) },
+      { label: 'Nota', value: datosMovimientoPendientes.nota || '' },
+    ]
+  }
+
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
@@ -202,6 +298,7 @@ export default function ReceptoresPage() {
               <thead><tr>
                 <th className="table-header">Nombre</th><th className="table-header">Cédula</th>
                 <th className="table-header">Teléfono</th><th className="table-header">Cuentas</th>
+                <th className="table-header">Saldo</th>
                 <th className="table-header">Acciones</th>
               </tr></thead>
               <tbody>
@@ -214,7 +311,18 @@ export default function ReceptoresPage() {
                       <span className="badge-info">{r.cuentas_bancarias?.length ?? 0} cuenta(s)</span>
                     </td>
                     <td className="table-cell">
+                      {saldosMap[r.id] ? (
+                        <span className={saldosMap[r.id].saldo_total >= 0 ? 'badge-success' : 'badge-warning'}>
+                          {formatCOP(saldosMap[r.id].saldo_total)}
+                        </span>
+                      ) : <span className="text-gray-300 text-xs">…</span>}
+                    </td>
+                    <td className="table-cell">
                       <div className="flex gap-1">
+                        <button onClick={() => abrirMovimientos(r)}
+                          className="p-1.5 bg-green-100 text-green-700 rounded-lg hover:bg-green-200" title="Ver saldo y movimientos">
+                          <Wallet size={13} />
+                        </button>
                         <button onClick={() => { setSeleccionado(r); setModalCuentas(true) }}
                           className="p-1.5 bg-primary-100 text-primary-700 rounded-lg hover:bg-primary-200" title="Ver cuentas">
                           <CreditCard size={13} />
@@ -331,6 +439,127 @@ export default function ReceptoresPage() {
           onVolver={handleVolverCuenta}
           loading={submitting}
           textoConfirmar="Confirmar y agregar"
+        />
+      </Modal>
+
+      <Modal isOpen={modalMovimientos} onClose={() => setModalMovimientos(false)}
+        title={`Saldo y movimientos de ${seleccionado?.nombre}`} size="lg">
+        <div className="space-y-4">
+          <div className="flex items-center justify-between bg-gray-50 rounded-lg p-3">
+            <span className="text-sm font-semibold text-gray-600">Saldo total</span>
+            {seleccionado && saldosMap[seleccionado.id] ? (
+              <span className={saldosMap[seleccionado.id].saldo_total >= 0 ? 'badge-success' : 'badge-warning'}>
+                {formatCOP(saldosMap[seleccionado.id].saldo_total)}
+              </span>
+            ) : <Spinner size="sm" />}
+          </div>
+
+          {seleccionado && saldosMap[seleccionado.id]?.por_cuenta.length ? (
+            <div className="space-y-2">
+              {saldosMap[seleccionado.id].por_cuenta.map(c => (
+                <div key={c.cuenta_bancaria_id} className="flex items-center justify-between text-sm px-3 py-2 border border-gray-100 rounded-lg">
+                  <span className="text-gray-600">
+                    {c.etiqueta}
+                    {c.es_predeterminada && <span className="badge-success ml-2">Predeterminada</span>}
+                  </span>
+                  <span className={c.saldo >= 0 ? 'font-semibold text-green-700' : 'font-semibold text-yellow-700'}>
+                    {formatCOP(c.saldo)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {perms.isAdmin && (
+            <div className="flex gap-2">
+              <button onClick={() => abrirRegistroMovimiento('salida')} className="btn-secondary flex-1 text-xs">
+                Registrar salida
+              </button>
+              <button onClick={() => abrirRegistroMovimiento('correccion')} className="btn-secondary flex-1 text-xs">
+                Registrar corrección
+              </button>
+            </div>
+          )}
+
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase mb-2">Historial</p>
+            {movLoading ? (
+              <div className="flex justify-center py-6"><Spinner size="sm" /></div>
+            ) : movimientos.length === 0 ? (
+              <p className="text-center text-gray-400 text-sm py-4">Sin movimientos registrados</p>
+            ) : (
+              <>
+                <table className="w-full text-xs">
+                  <thead><tr>
+                    <th className="table-header">Tipo</th><th className="table-header">Monto</th>
+                    <th className="table-header">Nota</th><th className="table-header">Usuario</th>
+                    <th className="table-header">Fecha</th>
+                  </tr></thead>
+                  <tbody>
+                    {movimientos.map((m, i) => (
+                      <tr key={m.id} className={i % 2 === 0 ? 'table-row-even' : 'table-row-odd'}>
+                        <td className="table-cell">
+                          <span className={m.tipo === 'salida' ? 'badge-warning' : 'badge-info'}>
+                            {m.tipo === 'salida' ? 'Salida' : 'Corrección'}
+                          </span>
+                        </td>
+                        <td className="table-cell font-mono">{formatCOP(m.monto)}</td>
+                        <td className="table-cell text-gray-500">{m.nota || '—'}</td>
+                        <td className="table-cell">{m.usuario_nombre || '—'}</td>
+                        <td className="table-cell whitespace-nowrap">{formatFechaHora(m.created_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <Paginacion page={movPage} pages={movPages} total={movTotal}
+                  onChange={(p) => seleccionado && cargarMovimientos(seleccionado.id, p)} />
+              </>
+            )}
+          </div>
+        </div>
+      </Modal>
+
+      <Modal isOpen={modalRegistroMovimiento} onClose={() => setModalRegistroMovimiento(false)}
+        title={tipoMovimiento === 'salida' ? 'Registrar salida' : 'Registrar corrección'} size="sm">
+        <form onSubmit={handleM(onSubmitMovimiento)} className="space-y-4">
+          <FormField label="Cuenta bancaria" required>
+            <select {...regM('cuenta_bancaria_id', { required: true })} className="input">
+              <option value="">-- Seleccionar --</option>
+              {seleccionado?.cuentas_bancarias.map(c => (
+                <option key={c.id} value={c.id}>{formatCuentaBancaria(c)}</option>
+              ))}
+            </select>
+          </FormField>
+          <FormField label="Monto" required>
+            <input
+              type="number" step="0.01"
+              min={tipoMovimiento === 'salida' ? '0.01' : undefined}
+              {...regM('monto', { required: true })}
+              className="input"
+              placeholder={tipoMovimiento === 'correccion' ? 'Ej: -15000 o 20000' : 'Ej: 300000'}
+            />
+          </FormField>
+          <FormField label="Nota (opcional)">
+            <input {...regM('nota')} className="input" maxLength={500} />
+          </FormField>
+          <div className="flex gap-3 justify-end">
+            <button type="button" onClick={() => setModalRegistroMovimiento(false)} className="btn-ghost">Cancelar</button>
+            <button type="submit" className="btn-primary">Continuar</button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal isOpen={modalConfirmarMovimiento} onClose={handleVolverRegistroMovimiento}
+        title={tipoMovimiento === 'salida' ? 'Confirmar salida' : 'Confirmar corrección'} size="md">
+        <ConfirmarCreacion
+          mensaje={tipoMovimiento === 'salida'
+            ? 'Verifique los datos de la salida antes de registrarla. Esta acción no se puede deshacer.'
+            : 'Verifique los datos de la corrección antes de registrarla. Esta acción no se puede deshacer.'}
+          items={itemsMovimiento()}
+          onConfirmar={handleConfirmarRegistrarMovimiento}
+          onVolver={handleVolverRegistroMovimiento}
+          loading={submitting}
+          textoConfirmar={tipoMovimiento === 'salida' ? 'Confirmar y registrar salida' : 'Confirmar y registrar corrección'}
         />
       </Modal>
 
