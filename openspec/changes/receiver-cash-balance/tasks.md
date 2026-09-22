@@ -39,7 +39,7 @@ Chain strategy: feature-branch-chain
 
 - [x] 2.1 Add `ROLES_SALIDA = ("admin",)`, `ROLES_CORRECCION = ("admin",)` module-level tuples in `receptores.py`.
 - [x] 2.2 RED: write tests for `POST .../salidas` and `POST .../correcciones` (201, 409 exactly-over, 201 exactly-equal, 403 recaudador/registrador/gestor, 404 foreign cuenta + 404 inexistente cuenta, negative + positive correccion ok, zero correccion rejected, no-overdraft-check on correccion, audit_log row written for both routes, correccion→salida interaction: a prior correccion correctly narrows the overdraft boundary seen by a later salida) — 18 tests in `test_receptores_movimientos_router.py`.
-- [x] 2.3 GREEN: implemented `POST /receptores/{id}/cuentas/{cuenta_id}/salidas` and `.../correcciones` in `receptores.py`, verifying cuenta ownership via `_obtener_cuenta_del_receptor` (404) and calling `audit_service.registrar_creacion`. 17/17 passing on first implementation.
+- [x] 2.3 GREEN: implemented `POST /receptores/{id}/cuentas/{cuenta_id}/salidas` and `.../correcciones` in `receptores.py`, verifying cuenta ownership via `_obtener_cuenta_del_receptor` (404) and calling `audit_service.registrar_creacion`. 17/17 passing on first implementation; 18th (triangulation) test added afterward, also green. Full suite: 576/576.
 - [ ] 2.4 Manual OPS: two concurrent salidas draining same cuenta on staging Postgres — confirm exactly one succeeds. **NOT DONE** — requires a staging Postgres environment and manual/concurrent execution outside this agent's capability (same category as 1.9's PR-opening sub-part). The mechanism itself (`SELECT ... FOR UPDATE` row lock serializing concurrent writers) was verified by compiled-SQL assertion in PR 1 (`test_for_update_presente_en_sql_compilado_postgres`) and is exercised end-to-end by every test in this file via the real service call — only the live two-connection race against a real Postgres server remains a manual step.
 
 ## Phase 3: Frontend
@@ -48,7 +48,7 @@ Chain strategy: feature-branch-chain
 - [x] 3.2 Add `receptoresApi.saldos/saldo/movimientos/registrarSalida/registrarCorreccion` to `frontend/src/api/index.ts`.
 - [x] 3.3 In `ReceptoresPage.tsx`, call `saldos(ids)` after `cargar()`, render "Saldo" badge column (green ≥0, amber <0, COP format — `badge-success`/`badge-warning`, the closest existing design-system tokens to green/amber).
 - [x] 3.4 Add `modalMovimientos` (mirrors `modalCuentas`): per-cuenta breakdown, paginated history, salida/correccion forms gated admin-only (`perms.isAdmin`), two-step `ConfirmarCreacion` confirm, 409 via `toast.error(detail)`.
-- [ ] 3.5 Open PR 2 targeting PR 1's branch. **NOT DONE** — explicit instruction to stop before push/PR for review; branch `feat/receptor-cash-balance-movimientos` ready with 2 commits off `feat/receptor-cash-balance-ledger` tip (`cc97ee0`), not pushed.
+- [ ] 3.5 Open PR 2 targeting PR 1's branch. **NOT DONE** — explicit instruction to stop before push/PR for review; branch `feat/receptor-cash-balance-movimientos` ready with commits off `feat/receptor-cash-balance-ledger` tip (`cc97ee0`), not pushed.
 
 ## Phase 4: Cleanup
 
