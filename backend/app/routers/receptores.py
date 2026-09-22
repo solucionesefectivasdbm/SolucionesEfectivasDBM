@@ -13,6 +13,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.dependencies import get_client_ip, require_role
 from app.models.receptor import CuentaBancaria, Receptor
+from app.models.receptor_movimiento import TipoMovimiento
 from app.models.usuario import Usuario
 from app.schemas.common import PaginatedResponse
 from app.schemas.receptor import (
@@ -22,14 +23,22 @@ from app.schemas.receptor import (
     ReceptorResponse,
     ReceptorUpdate,
 )
-from app.schemas.receptor_movimiento import MovimientoResponse, SaldoReceptorResponse
+from app.schemas.receptor_movimiento import (
+    CorreccionCreate,
+    MovimientoCreate,
+    MovimientoResponse,
+    SaldoReceptorResponse,
+)
 from app.services import audit_service, cuenta_bancaria_service, receptor_ledger_service
 
 router = APIRouter(prefix="/receptores", tags=["Receptores"])
 
-# item 9 (receiver-cash-balance): tupla a nivel de módulo para que sumar un
-# rol futuro (p.ej. "registrador") sea un diff de una línea (decision 3).
+# item 9 (receiver-cash-balance): tuplas a nivel de módulo para que sumar un
+# rol futuro (p.ej. "registrador" a ROLES_SALIDA) sea un diff de una línea
+# (decision 3 del design).
 ROLES_LECTURA_SALDO = ("admin", "recaudador")  # coincide con listar_receptores
+ROLES_SALIDA = ("admin",)
+ROLES_CORRECCION = ("admin",)
 
 
 @router.get("", response_model=PaginatedResponse[ReceptorResponse])
@@ -334,4 +343,91 @@ async def movimientos_receptor(
     return PaginatedResponse(
         items=items, total=total, page=page, page_size=page_size,
         pages=math.ceil(total / page_size) if total else 0,
+    )
+
+
+async def _obtener_cuenta_del_receptor(
+    db: AsyncSession, receptor_id: uuid.UUID, cuenta_id: uuid.UUID
+) -> CuentaBancaria:
+    """Verifica que `cuenta_id` pertenezca a `receptor_id` antes de escribir
+    un movimiento — mismo patrón que `actualizar_cuenta`. Cubre tanto una
+    cuenta de otro receptor como una cuenta inexistente (ambas 404)."""
+    cuenta = (await db.execute(
+        select(CuentaBancaria).where(
+            CuentaBancaria.id == cuenta_id,
+            CuentaBancaria.receptor_id == receptor_id,
+        )
+    )).scalar_one_or_none()
+    if not cuenta:
+        raise HTTPException(status_code=404, detail="Cuenta no encontrada")
+    return cuenta
+
+
+@router.post(
+    "/{receptor_id}/cuentas/{cuenta_id}/salidas",
+    response_model=MovimientoResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def registrar_salida(
+    receptor_id: uuid.UUID,
+    cuenta_id: uuid.UUID,
+    body: MovimientoCreate,
+    request: Request,
+    current_user: Usuario = Depends(require_role(*ROLES_SALIDA)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Registra una salida (retiro de efectivo) contra una cuenta bancaria
+    del receptor. El rechazo por sobregiro ocurre en el service, bajo lock
+    de fila sobre `cuentas_bancarias` (ver
+    receptor_ledger_service.registrar_movimiento)."""
+    await _obtener_cuenta_del_receptor(db, receptor_id, cuenta_id)
+
+    movimiento = await receptor_ledger_service.registrar_movimiento(
+        db, cuenta_id=cuenta_id, tipo=TipoMovimiento.salida,
+        monto=body.monto, nota=body.nota, usuario_id=current_user.id,
+    )
+    await audit_service.registrar_creacion(
+        db=db, entidad="receptor_movimientos", entidad_id=movimiento.id,
+        usuario_id=current_user.id, ip_origen=get_client_ip(request),
+    )
+    return MovimientoResponse(
+        id=movimiento.id, cuenta_bancaria_id=movimiento.cuenta_bancaria_id,
+        tipo=movimiento.tipo, monto=movimiento.monto, nota=movimiento.nota,
+        usuario_id=movimiento.usuario_id, usuario_nombre=current_user.username,
+        created_at=movimiento.created_at,
+    )
+
+
+@router.post(
+    "/{receptor_id}/cuentas/{cuenta_id}/correcciones",
+    response_model=MovimientoResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def registrar_correccion(
+    receptor_id: uuid.UUID,
+    cuenta_id: uuid.UUID,
+    body: CorreccionCreate,
+    request: Request,
+    current_user: Usuario = Depends(require_role(*ROLES_CORRECCION)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Registra una corrección manual (signo libre, nunca cero — validado en
+    el schema) contra una cuenta bancaria del receptor. Sin chequeo de
+    sobregiro (decision 4 del design): una corrección puede dejar el saldo
+    en negativo."""
+    await _obtener_cuenta_del_receptor(db, receptor_id, cuenta_id)
+
+    movimiento = await receptor_ledger_service.registrar_movimiento(
+        db, cuenta_id=cuenta_id, tipo=TipoMovimiento.correccion,
+        monto=body.monto, nota=body.nota, usuario_id=current_user.id,
+    )
+    await audit_service.registrar_creacion(
+        db=db, entidad="receptor_movimientos", entidad_id=movimiento.id,
+        usuario_id=current_user.id, ip_origen=get_client_ip(request),
+    )
+    return MovimientoResponse(
+        id=movimiento.id, cuenta_bancaria_id=movimiento.cuenta_bancaria_id,
+        tipo=movimiento.tipo, monto=movimiento.monto, nota=movimiento.nota,
+        usuario_id=movimiento.usuario_id, usuario_nombre=current_user.username,
+        created_at=movimiento.created_at,
     )

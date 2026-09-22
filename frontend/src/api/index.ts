@@ -3,6 +3,7 @@ import type {
   TokenResponse, Usuario, Gestor, Receptor, CuentaBancaria,
   Cliente, Credito, Pago, RegistrarPagoResponse, Reporte,
   AlertasVencidos, PaginatedResponse,
+  MovimientoReceptor, SaldoReceptor,
 } from '@/types'
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -50,6 +51,17 @@ export const receptoresApi = {
     api.patch<CuentaBancaria>(`/receptores/${receptorId}/cuentas/${cuentaId}`, data),
   marcarPredeterminada: (receptorId: string, cuentaId: string) =>
     api.put<CuentaBancaria>(`/receptores/${receptorId}/cuentas/${cuentaId}/predeterminada`),
+  // Ledger de movimientos (item 9, receiver-cash-balance) — saldo compute-on-read
+  saldos: (receptorIds: string[]) =>
+    api.get<SaldoReceptor[]>('/receptores/saldos', { params: { receptor_ids: receptorIds.join(',') } }),
+  saldo: (receptorId: string) =>
+    api.get<SaldoReceptor>(`/receptores/${receptorId}/saldo`),
+  movimientos: (receptorId: string, params?: { cuenta_bancaria_id?: string; page?: number; page_size?: number }) =>
+    api.get<PaginatedResponse<MovimientoReceptor>>(`/receptores/${receptorId}/movimientos`, { params }),
+  registrarSalida: (receptorId: string, cuentaId: string, data: { monto: string | number; nota?: string }) =>
+    api.post<MovimientoReceptor>(`/receptores/${receptorId}/cuentas/${cuentaId}/salidas`, data),
+  registrarCorreccion: (receptorId: string, cuentaId: string, data: { monto: string | number; nota?: string }) =>
+    api.post<MovimientoReceptor>(`/receptores/${receptorId}/cuentas/${cuentaId}/correcciones`, data),
 }
 
 // ─── Clientes ─────────────────────────────────────────────────────────────────
