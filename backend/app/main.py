@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
     deprecado en FastAPI.
     """
     from app.database import engine, Base
-    from app.models import cliente, credito, pago, gestor, receptor, audit_log, usuario, token_revocado  # noqa: F401
+    from app.models import cliente, credito, pago, gestor, receptor, audit_log, usuario, token_revocado, receptor_movimiento  # noqa: F401
     from sqlalchemy import text
 
     async with engine.begin() as conn:

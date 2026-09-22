@@ -12,3 +12,4 @@ from app.models.credito import Credito, TipoCredito, Periodicidad  # noqa: F401
 from app.models.pago import Pago, TipoCuota, DestinoExcedente  # noqa: F401
 from app.models.audit_log import AuditLog, AccionAudit  # noqa: F401
 from app.models.token_revocado import TokenRevocado  # noqa: F401
+from app.models.receptor_movimiento import MovimientoReceptor, TipoMovimiento  # noqa: F401
