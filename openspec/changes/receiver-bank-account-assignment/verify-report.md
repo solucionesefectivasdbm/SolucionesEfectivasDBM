@@ -166,3 +166,124 @@ The section above reflects the round-1 staged diff. After the round-1 Judgment D
 - Both judges: 6/6 ledger rows RESOLVED, VERDICT APPROVE. New info-level observations (single judge each, non-blocking): dry_run reports 0 for steps 3/4a/4b on a fresh database because those steps depend on steps 1/2/3 having been applied (documented in the endpoint docstring); the correlated scalar subquery is evaluated twice per row (WHERE + SET), acceptable for a one-shot admin endpoint.
 
 Final Verdict (PR1b, post-fix): PASS. 0 CRITICAL, 0 WARNING introduced by PR1b. The carried-over spec wording WARNING (PATCH vs PUT, line 22) remains outstanding from PR1a.
+
+---
+
+## PR2a/PR2b/PR3/PR4 + Full-Chain Final Verification (2026-09-21)
+
+Scope: the remaining chain (cutover, cascading filters/reports, frontend, cleanup) plus
+the whole change end-to-end, now that all code is merged to main (PRs #44, #45) and
+prod is deployed at alembic head d4e5f6a7b8c9. This section supersedes the PR1a/PR1b
+sections above only in the sense that it is the final gate before archive; it does not
+retract any prior finding.
+
+### Test Execution Evidence (independently run, not trusted from any prior claim)
+
+- Backend: cd backend && venv/Scripts/python.exe -m pytest -q -> 504 passed, 11 warnings, 0 failed.
+- Frontend: cd frontend && npx tsc --noEmit -> 0 errors, clean exit.
+- No frontend test runner exists in the repo. Phase 17 (manual checklist) is verified by
+  adversarial source-code review, not by executed tests. This is a scope limitation, not
+  a defect.
+
+### Task Completion
+
+tasks.md: 113/113 checked, 0 unchecked. Cross-checked against actual code:
+
+| Area | Evidence |
+|---|---|
+| Models clean of deprecated column | grep receptor_id in models/gestor.py and models/pago.py -> no matches |
+| Temp backfill endpoint removed | grep backfill-cuentas-bancarias in routers/receptores.py -> no matches |
+| Drop migration present | backend/alembic/versions/d4e5f6a7b8c9_drop_receptor_id_from_gestores_pagos.py exists, down_revision c3d4e5f6a7b8 |
+| PR2a/PR2b test files present | test_gestores_cuenta_bancaria.py, test_pagos_cuenta_bancaria.py, test_reportes_por_cuenta.py all exist and pass |
+| PR2b 422 cascading-filter guard implemented | routers/pagos.py raises HTTPException 422 when cuenta_bancaria_id does not belong to the given receptor_id |
+| PATCH rename | routers/pagos.py has PATCH /{pago_id}/cuenta-bancaria; old /receptor path absent |
+| Frontend selector component | frontend/src/components/ui/SelectCuentaBancaria.tsx exists |
+
+### Spec Compliance Matrix (9 requirements, 23 scenarios)
+
+| Requirement | Scenarios | Status |
+|---|---|---|
+| Default Bank Account | 5/5 pytest | PASS (verified PR1a) |
+| Gestor Account Assignment and Propagation | 2/2 pytest | PASS |
+| Payment Account Inheritance | 3/3 pytest | PASS |
+| Individual Payment Account Change | 2/2 pytest | PASS |
+| Cascading Filters on Payment Listing | 4/4 pytest | PASS |
+| Report Per-Account Sub-Breakdown | 2/2 pytest | PASS |
+| Backfill Endpoint | 2/2 pytest | PASS (verified PR1b, post-fix) |
+| Role Gates | 1/1 pytest | PASS |
+| Account Visible Wherever the Receptor Was | 3/3 manual | PASS by code review only, no automated runner |
+
+### Deviations From the Plan (explicitly flagged, not omitted)
+
+These are real departures from tasks.md's PR4 prerequisites, flagged so they are not
+silently absorbed into a PASS verdict.
+
+1. CRITICAL (process, already materialized, irreversible) - OPS-9 skipped. The final
+   safety-net backfill re-run before the drop migration was never executed. PR4
+   (chore/cuenta-bancaria-cleanup) was deliberately merged ahead of the "clean prod
+   week" prerequisite the plan required, per the explicit owner decision recorded in
+   tasks.md's own OPERATIONAL NOTE (2026-09-20). Accepted knowingly by the owner, but
+   flagged here so it is visible at the verify gate.
+
+2. CRITICAL (data loss, already occurred, irreversible) - OPS-10 skipped and now
+   unverifiable. The pre-drop check that pagos and gestores have zero rows with
+   cuenta_bancaria_id NULL and receptor_id NOT NULL was never run. Confirmed by direct
+   reading of d4e5f6a7b8c9's downgrade(): it repopulates receptor_id only through
+   cuentas_bancarias.receptor_id via the surviving cuenta_bancaria_id, so any row with
+   cuenta_bancaria_id NULL can never recover its original receptor_id on a downgrade.
+   One active, unpaid payment in prod (client be096997, credit dbe114c4, soft-deleted
+   client with an active credit -- the same orphan already flagged at OPS-4) is in
+   exactly that state; its original receptor_id is permanently lost. The 14 active
+   gestores are all recoverable. This narrows, but does not remove, the rollback
+   guarantee the proposal originally promised for PR4.
+
+3. WARNING (retrospective, satisfied) - OPS-10a. FK constraint names were not verified
+   in prod before the drop ran, but the migration hardcodes gestores_receptor_id_fkey
+   and pagos_receptor_id_fkey; post-hoc inspection confirms both names matched and the
+   drop succeeded, leaving only cuentas_bancarias_receptor_id_fkey. No outstanding risk.
+
+4. WARNING (data quality, open, owner-managed) - 6 placeholder "Por definir" accounts
+   remain in prod from the backfill. The owner already notified the client; completion
+   is externally owned. Matches spec's explicit allowance that generic accounts stay
+   visible as-is until edited -- not a spec violation.
+
+5. WARNING (test-evidence gap, structural, not a regression) - Phase 17's manual
+   checklist has no automated runner. All 3 manual-tagged spec scenarios were verified
+   by adversarial source-code review, not by an executed test, because the repo has no
+   frontend test runner at all. Per this skill's Hard Rule that a scenario is compliant
+   only when a covering test passed at runtime, these 3 scenarios carry a materially
+   weaker guarantee than the 20 pytest-tagged scenarios.
+
+6. Carried-over WARNING from PR1a/PR1b (now closed): spec.md's Default Bank Account
+   requirement text was corrected during the PR1b Judgment Day round to match the real
+   PUT endpoint and the lowest-id election rule. Re-checked now: no remaining mismatch
+   between spec, design, tasks and implementation on this point.
+
+### Design Coherence
+
+All 12 architecture decisions in design.md were implemented as specified (relationship
+removal, two-statement default flip, no ORM relationship on Pago.cuenta_bancaria_id,
+SQL-Core-only backfill, cascading filter with 422 guard, per-account report nesting,
+single grouped SelectCuentaBancaria component). No undocumented deviation was found in
+the implemented code itself beyond the operational-sequencing deviations in items 1-2
+above, which are process/timing deviations, not code-design deviations.
+
+### Final Verdict (whole change)
+
+PASS WITH WARNINGS, with 2 accepted-but-flagged CRITICAL process/data deviations.
+
+- 0 CRITICAL code defects. All 504 backend tests pass; frontend typechecks clean;
+  20/20 pytest-tagged scenarios pass at runtime; 3/3 manual scenarios pass by code
+  review only.
+- 2 CRITICAL deviations from the plan's own safety gates (OPS-9, OPS-10), both already
+  executed/irreversible, both owner-accepted, both narrowly scoped to one already-known
+  orphan payment -- process findings for the record, not blockers that further code
+  changes could prevent now.
+- 4 WARNINGs: OPS-10a retrospectively satisfied (no risk), 6 lingering placeholder
+  accounts (owner-managed, spec-permitted), manual-checklist evidence gap (structural,
+  pre-existing), and the previously-carried spec wording issue (now closed).
+- Recommendation: safe to archive. The deviations are historical facts about how PR4
+  was sequenced, not defects that further apply work could fix -- reopening sdd-apply
+  would not remediate lost receptor_id data or unexecuted prod backfill windows.
+  Archive should carry this report forward as the permanent record of the OPS-9/OPS-10
+  deviation and the orphan-payment data loss, per explicit instruction not to omit them.
