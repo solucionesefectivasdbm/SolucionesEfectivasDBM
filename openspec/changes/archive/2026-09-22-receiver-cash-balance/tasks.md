@@ -33,7 +33,7 @@ Chain strategy: feature-branch-chain
 - [x] 1.6 GREEN: implement `backend/app/services/receptor_ledger_service.py` — `saldos_por_cuenta`, `saldos_por_receptor`, `listar_movimientos`, `registrar_movimiento` (with `SELECT ... FOR UPDATE`).
 - [x] 1.7 RED: write route tests for `GET /receptores/saldos`, `GET /receptores/{id}/saldo`, `GET /receptores/{id}/movimientos` (200/403 by role, 404 unknown receptor, pagination shape).
 - [x] 1.8 **[Route-ordering task]** GREEN: add read endpoints to `backend/app/routers/receptores.py` with `ROLES_LECTURA_SALDO`. Register `GET /receptores/saldos` BEFORE `GET /receptores/{receptor_id}` — verify no 422 from UUID path-param shadowing.
-- [ ] 1.9 Run full backend suite (DONE — 558/558 passing); open PR 1 targeting the tracker/feature branch (NOT DONE — explicit instruction to stop before push/PR for review; branch `feat/receptor-cash-balance-ledger` ready with 5 commits off latest `main`, not pushed).
+- [x] 1.9 Run full backend suite (DONE — 558/558 passing); open PR 1 targeting the tracker/feature branch (DONE — PR #47 merged to main on GitHub).
 
 ## Phase 2: Write Endpoints + Tests (PR 2, base = PR 1 branch)
 
@@ -48,7 +48,7 @@ Chain strategy: feature-branch-chain
 - [x] 3.2 Add `receptoresApi.saldos/saldo/movimientos/registrarSalida/registrarCorreccion` to `frontend/src/api/index.ts`.
 - [x] 3.3 In `ReceptoresPage.tsx`, call `saldos(ids)` after `cargar()`, render "Saldo" badge column (green ≥0, amber <0, COP format — `badge-success`/`badge-warning`, the closest existing design-system tokens to green/amber).
 - [x] 3.4 Add `modalMovimientos` (mirrors `modalCuentas`): per-cuenta breakdown, paginated history, salida/correccion forms gated admin-only (`perms.isAdmin`), two-step `ConfirmarCreacion` confirm, 409 via `toast.error(detail)`.
-- [ ] 3.5 Open PR 2 targeting PR 1's branch. **NOT DONE** — explicit instruction to stop before push/PR for review; branch `feat/receptor-cash-balance-movimientos` ready with commits off `feat/receptor-cash-balance-ledger` tip (`cc97ee0`), not pushed.
+- [x] 3.5 Open PR 2 targeting PR 1's branch. (DONE — PR #48 merged to main on GitHub; PR #49 reconciled merge to main).
 
 ## Phase 4: Cleanup
 
