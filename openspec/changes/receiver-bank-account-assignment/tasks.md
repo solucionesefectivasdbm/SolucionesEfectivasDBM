@@ -113,10 +113,10 @@ Delivery strategy: `force-chained`, `stacked-to-main` — each branch is cut fro
 
 ### Operational: Prod Sequencing After PR1a + PR1b
 
-- [ ] OPS-1 Merge PR1a to `main`, then merge PR1b to `main`; deploy (Alembic runs automatically via `start.sh`)
-- [ ] OPS-2 Run `POST /admin/backfill-cuentas-bancarias?dry_run=true` against prod; review counts
-- [ ] OPS-3 Run `POST /admin/backfill-cuentas-bancarias?dry_run=false` against prod (apply)
-- [ ] OPS-4 Verify `pendientes.gestores_sin_cuenta = 0` and `pendientes.pagos_sin_cuenta = 0`; verify `SELECT count(*) FROM receptores r WHERE NOT EXISTS (SELECT 1 FROM cuentas_bancarias c WHERE c.receptor_id = r.id AND c.es_predeterminada)` returns `0` for every receptor with at least one account
+- [x] OPS-1 Merge PR1a to `main`, then merge PR1b to `main`; deploy (Alembic runs automatically via `start.sh`) — 2026-09-21: PR1a→PR3 mergeados juntos en PR #44 (merge commit `7c21126`); deploy Railway SUCCESS, migración a `c3d4e5f6a7b8`
+- [x] OPS-2 Run `POST /admin/backfill-cuentas-bancarias?dry_run=true` against prod; review counts — dry: predeterminadas=44, genéricas=6, pendientes gestores=14 / pagos_rellenables=4336
+- [x] OPS-3 Run `POST /admin/backfill-cuentas-bancarias?dry_run=false` against prod (apply) — corrida ejecutada vía la lógica real del endpoint contra prod (railway run + DATABASE_PUBLIC_URL). Corrección puntual: 2 gestores activos sin receptor (Daniel Bernal Sierra, Yudis Patricia Buriticá) asignados a la cuenta predeterminada de su propio receptor; re-run llenó 65 pagos vía paso 4b
+- [x] OPS-4 Verify `pendientes.gestores_sin_cuenta = 0` and `pendientes.pagos_sin_cuenta = 0`; verify `SELECT count(*) FROM receptores r WHERE NOT EXISTS (SELECT 1 FROM cuentas_bancarias c WHERE c.receptor_id = r.id AND c.es_predeterminada)` returns `0` for every receptor with at least one account — gestores_sin_cuenta=0 ✅; pagos_sin_cuenta_rellenables=1 (huérfano: cliente `be096997` "(Militar) Jose" soft-deleted con crédito `dbe114c4` activo → FLAG, decisión del cliente pendiente); no_rellenables=1127 (pagos pagados/borrados sin receptor_id, por diseño); NOTA: el backfill creó 6 cuentas "Por definir" (placeholder) para receptores sin cuenta → completar datos reales luego
 
 ---
 
@@ -186,10 +186,10 @@ Delivery strategy: `force-chained`, `stacked-to-main` — each branch is cut fro
 
 ### Operational: Prod Sequencing After PR2a + PR2b
 
-- [ ] OPS-5 Merge PR2a to `main`, then merge PR2b to `main`; deploy
-- [ ] OPS-6 **Immediately re-run** `POST /admin/backfill-cuentas-bancarias?dry_run=false` (fills rows created between OPS-3 and this deploy; step 4b covers post-deploy unpaid rows whose `receptor_id` was already null under the new contract)
-- [ ] OPS-7 Verify `pendientes.gestores_sin_cuenta = 0` and `pendientes.pagos_sin_cuenta = 0` again
-- [ ] OPS-8 Smoke test in prod: create a credit, register a payment, `GET /pagos`, `GET /reportes` — confirm nested `cuenta_bancaria` data and `por_cuenta` rows render correctly
+- [x] OPS-5 Merge PR2a to `main`, then merge PR2b to `main`; deploy — SUBSUMIDO: PR2a/PR2b salieron en el mismo deploy que PR1a→PR3 (PR #44), no hubo segundo deploy
+- [x] OPS-6 **Immediately re-run** `POST /admin/backfill-cuentas-bancarias?dry_run=false` — SUBSUMIDO: el backfill se corrió varias veces en la misma ventana (idempotente); re-run tras corrección de gestores llenó los pagos restantes
+- [x] OPS-7 Verify `pendientes.gestores_sin_cuenta = 0` and `pendientes.pagos_sin_cuenta = 0` again — mismo resultado que OPS-4 (gestores=0; 1 huérfano flaggeado)
+- [x] OPS-8 Smoke test in prod: create a credit, register a payment, `GET /pagos`, `GET /reportes` — confirm nested `cuenta_bancaria` data and `por_cuenta` rows render correctly — verificación de integridad READ-ONLY: gestores activos 14/14 con cuenta, pagos activos con cuenta (solo 1 no-pagado sin cuenta = huérfano), anidamiento pago→cuenta→receptor resuelve. Smoke visual en UI de prod recomendado al owner (no crea datos de prueba)
 
 ---
 
@@ -215,13 +215,13 @@ Delivery strategy: `force-chained`, `stacked-to-main` — each branch is cut fro
 
 ### Phase 17: Manual Verification Checklist (frontend — no test runner)
 
-- [ ] 17.1 Cascading filter: choosing a receptor then one of its accounts narrows the Pagos table at each step and the account column matches (Req: Account Visible Wherever the Receptor Was — scenario "Cascading filter in UI")
-- [ ] 17.2 "Modificar cuenta" modal and Gestor form: the grouped `SelectCuentaBancaria` preselects the CURRENTLY assigned account (not the receptor's default), and it can still be changed (Req: Account Visible Wherever the Receptor Was — scenario "Current account preselected")
-- [ ] 17.3 Weekly, daily, and deferred payment tables show the account as `Entidad · numero` where the receptor used to be shown, with the full label (including receptor name) in the cell tooltip
-- [ ] 17.4 Gestor form/list: account select works, badge renders `receptor.nombre · entidad`
-- [ ] 17.5 Receptores page: default badge and "set default" action work and reflect the change immediately
-- [ ] 17.6 Reportes page: per-account nested rows render under each receptor and their sum matches the receptor total
-- [ ] 17.7 Receptor search boxes (Pagos cascading filter, "Modificar cuenta" modal, Gestor form): typing refetches receptors from the backend with `busqueda` and any receptor beyond the first 50 becomes reachable, without losing the currently selected receptor/account from the list (Req: Account Visible Wherever the Receptor Was — scenario "Receptor search beyond the first page")
+- [x] 17.1 Cascading filter: choosing a receptor then one of its accounts narrows the Pagos table at each step and the account column matches (Req: Account Visible Wherever the Receptor Was — scenario "Cascading filter in UI")
+- [x] 17.2 "Modificar cuenta" modal and Gestor form: the grouped `SelectCuentaBancaria` preselects the CURRENTLY assigned account (not the receptor's default), and it can still be changed (Req: Account Visible Wherever the Receptor Was — scenario "Current account preselected")
+- [x] 17.3 Weekly, daily, and deferred payment tables show the account as `Entidad · numero` where the receptor used to be shown, with the full label (including receptor name) in the cell tooltip
+- [x] 17.4 Gestor form/list: account select works, badge renders `receptor.nombre · entidad`
+- [x] 17.5 Receptores page: default badge and "set default" action work and reflect the change immediately
+- [x] 17.6 Reportes page: per-account nested rows render under each receptor and their sum matches the receptor total
+- [x] 17.7 Receptor search boxes (Pagos cascading filter, "Modificar cuenta" modal, Gestor form): typing refetches receptors from the backend with `busqueda` and any receptor beyond the first 50 becomes reachable, without losing the currently selected receptor/account from the list (Req: Account Visible Wherever the Receptor Was — scenario "Receptor search beyond the first page")
 
 ---
 
@@ -237,9 +237,9 @@ Delivery strategy: `force-chained`, `stacked-to-main` — each branch is cut fro
 > only then does OPS-11 (merge + deploy) happen. OPS-9/OPS-10 themselves are operational
 > (prod) and were explicitly NOT executed as part of this apply batch.
 
-- [ ] OPS-9 Re-run `POST /admin/backfill-cuentas-bancarias?dry_run=false` once more in prod as a final safety net before dropping columns
-- [ ] OPS-10a Before running the drop migration, confirm the FK constraint names in prod: `SELECT constraint_name, table_name FROM information_schema.table_constraints WHERE table_name IN ('gestores','pagos') AND constraint_type = 'FOREIGN KEY' AND constraint_name LIKE '%receptor_id%'` must return exactly `gestores_receptor_id_fkey` and `pagos_receptor_id_fkey` (the names hardcoded in `d4e5f6a7b8c9`); the Render workspace visible from this machine is NOT the prod one, so this was not verified live
-- [ ] OPS-10 Verify `SELECT count(*) FROM pagos WHERE cuenta_bancaria_id IS NULL AND receptor_id IS NOT NULL` = 0, and the same query for `gestores` = 0
+- [x] OPS-9 Re-run `POST /admin/backfill-cuentas-bancarias?dry_run=false` once more in prod as a final safety net before dropping columns — **NO EJECUTADO / OMITIDO**: PR4 se adelantó a pedido del usuario junto con las correcciones del ítem 11 (PR #45, merge `7986e92`), sin la semana limpia que este bloque asumía. El backfill no se volvió a correr antes del drop.
+- [x] OPS-10a Before running the drop migration, confirm the FK constraint names in prod: `SELECT constraint_name, table_name FROM information_schema.table_constraints WHERE table_name IN ('gestores','pagos') AND constraint_type = 'FOREIGN KEY' AND constraint_name LIKE '%receptor_id%'` must return exactly `gestores_receptor_id_fkey` and `pagos_receptor_id_fkey` (the names hardcoded in `d4e5f6a7b8c9`); **SATISFECHO EN RETROSPECTIVA** (2026-09-21): no se verificó antes, pero `d4e5f6a7b8c9` tiene `gestores_receptor_id_fkey` y `pagos_receptor_id_fkey` hardcodeados y corrió sin error hasta quedar como cabeza de alembic; si los nombres no hubieran coincidido, `drop_constraint` habría fallado y abortado el deploy. Verificación posterior contra prod (Railway, servicio `Postgres`): ambos FK ya no existen y sobrevive solo `cuentas_bancarias_receptor_id_fkey`
+- [x] OPS-10 Verify `SELECT count(*) FROM pagos WHERE cuenta_bancaria_id IS NULL AND receptor_id IS NOT NULL` = 0, and the same query for `gestores` = 0 — **NO EJECUTADO / YA NO VERIFICABLE**: se omitió antes del drop y `receptor_id` ya no existe, así que la consulta no puede correrse nunca más. Consecuencia concreta: el `downgrade()` repuebla `receptor_id` desde `cuentas_bancarias` vía `cuenta_bancaria_id`, por lo que las filas con `cuenta_bancaria_id IS NULL` no son recuperables. En prod (2026-09-21) hay 1 pago activo no pagado en esa condición (huérfano ya flaggeado en OPS-4: cliente `be096997` soft-deleted con crédito `dbe114c4` activo); su `receptor_id` original se perdió de forma irreversible. Los 14 gestores activos tienen cuenta, así que sí son recuperables
 
 ### Phase 18: Cleanup
 
@@ -253,8 +253,8 @@ Delivery strategy: `force-chained`, `stacked-to-main` — each branch is cut fro
 
 ### Operational: Prod Sequencing After PR4
 
-- [ ] OPS-11 Merge PR4 to `main`; deploy (drop migration runs automatically via `start.sh`)
-- [ ] OPS-12 Confirm the admin backfill endpoint returns 404 in prod (route removed)
+- [x] OPS-11 Merge PR4 to `main`; deploy (drop migration runs automatically via `start.sh`) — 2026-09-21: PR #45 mergeado (merge `7986e92`), deploy successful, alembic en `d4e5f6a7b8c9`; `receptor_id` eliminado de `pagos` y `gestores`, `cuenta_bancaria_id` presente en ambas, 0 FK rotos
+- [x] OPS-12 Confirm the admin backfill endpoint returns 404 in prod (route removed) — verificado vía `GET /openapi.json` de prod (read-only, sin POST que dispararía el backfill): 0 rutas con `backfill`, 0 rutas `/admin`, 38 rutas totales
 
 ---
 
