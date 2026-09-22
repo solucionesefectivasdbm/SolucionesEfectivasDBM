@@ -10,11 +10,14 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import inspect
+from sqlalchemy.exc import IntegrityError
 
 from app.models.credito import Credito, Periodicidad, TipoCredito
 from app.models.gestor import Gestor
 from app.models.pago import Pago
 from app.models.receptor import Receptor
+from app.models.receptor_movimiento import MovimientoReceptor, TipoMovimiento
+from app.models.usuario import TipoUsuario, Usuario
 
 
 def _make_credito(**kwargs) -> Credito:
@@ -119,3 +122,101 @@ class TestReceptorIdDroppedFromGestorAndPago:
     def test_receptor_has_no_pagos_relationship(self):
         relaciones = {r.key for r in inspect(Receptor).relationships}
         assert "pagos" not in relaciones
+
+
+def _mk_usuario(**kwargs) -> Usuario:
+    defaults = dict(
+        id=uuid.uuid4(), username=f"user{uuid.uuid4().hex[:8]}", password_hash="x",
+        telefono="3000000000", tipo_usuario=TipoUsuario.admin,
+    )
+    defaults.update(kwargs)
+    return Usuario(**defaults)
+
+
+def _mk_movimiento(cuenta_bancaria_id, usuario_id, **kwargs) -> MovimientoReceptor:
+    defaults = dict(
+        id=uuid.uuid4(), cuenta_bancaria_id=cuenta_bancaria_id, usuario_id=usuario_id,
+        tipo=TipoMovimiento.salida, monto=Decimal("100.00"), nota=None,
+    )
+    defaults.update(kwargs)
+    return MovimientoReceptor(**defaults)
+
+
+class TestMovimientoReceptor:
+    """item 9 (receiver-cash-balance): `MovimientoReceptor` is the
+    append-only ledger row (`salida`/`correccion`). No AuditMixin —
+    immutable, mirrors AuditLog: no deleted_at, no updated_at. The CHECK
+    constraint enforces sign-by-tipo at the DB level. SQLite DOES enforce
+    CHECK constraints (unlike FOR UPDATE, which it silently ignores), so
+    this is a real behavioral test, not a structural one.
+    """
+
+    def test_model_exposes_expected_fields(self):
+        cuenta_id, usuario_id = uuid.uuid4(), uuid.uuid4()
+        m = _mk_movimiento(
+            cuenta_id, usuario_id, tipo=TipoMovimiento.correccion,
+            monto=Decimal("-15.00"), nota="ajuste conteo físico",
+        )
+        assert m.cuenta_bancaria_id == cuenta_id
+        assert m.tipo == TipoMovimiento.correccion
+        assert m.monto == Decimal("-15.00")
+        assert m.nota == "ajuste conteo físico"
+        assert m.usuario_id == usuario_id
+
+    def test_model_has_no_audit_mixin_fields(self):
+        """Immutable ledger row: no soft-delete, no update tracking."""
+        columnas = {c.key for c in inspect(MovimientoReceptor).columns}
+        assert "deleted_at" not in columnas
+        assert "updated_at" not in columnas
+
+    @pytest.mark.asyncio
+    async def test_salida_monto_positivo_persiste(self, db_session):
+        m = _mk_movimiento(uuid.uuid4(), uuid.uuid4(), tipo=TipoMovimiento.salida, monto=Decimal("50.00"))
+        db_session.add(m)
+        await db_session.flush()
+        assert m.created_at is not None
+
+    @pytest.mark.asyncio
+    async def test_check_constraint_rechaza_salida_monto_cero(self, db_session):
+        m = _mk_movimiento(uuid.uuid4(), uuid.uuid4(), tipo=TipoMovimiento.salida, monto=Decimal("0.00"))
+        db_session.add(m)
+        with pytest.raises(IntegrityError):
+            await db_session.flush()
+
+    @pytest.mark.asyncio
+    async def test_check_constraint_rechaza_salida_monto_negativo(self, db_session):
+        m = _mk_movimiento(uuid.uuid4(), uuid.uuid4(), tipo=TipoMovimiento.salida, monto=Decimal("-10.00"))
+        db_session.add(m)
+        with pytest.raises(IntegrityError):
+            await db_session.flush()
+
+    @pytest.mark.asyncio
+    async def test_check_constraint_rechaza_correccion_monto_cero(self, db_session):
+        m = _mk_movimiento(uuid.uuid4(), uuid.uuid4(), tipo=TipoMovimiento.correccion, monto=Decimal("0.00"))
+        db_session.add(m)
+        with pytest.raises(IntegrityError):
+            await db_session.flush()
+
+    @pytest.mark.asyncio
+    async def test_check_constraint_acepta_correccion_negativa(self, db_session):
+        m = _mk_movimiento(uuid.uuid4(), uuid.uuid4(), tipo=TipoMovimiento.correccion, monto=Decimal("-25.00"))
+        db_session.add(m)
+        await db_session.flush()
+        assert m.monto == Decimal("-25.00")
+
+
+class TestUsuarioMovimientosReceptorBackref:
+    """design.md: `Usuario` gets `movimientos_receptor` (mirrors `audit_logs`)."""
+
+    @pytest.mark.asyncio
+    async def test_usuario_expone_movimientos_receptor(self, db_session):
+        usuario = _mk_usuario()
+        db_session.add(usuario)
+        await db_session.flush()
+
+        movimiento = _mk_movimiento(uuid.uuid4(), usuario.id, tipo=TipoMovimiento.salida, monto=Decimal("30.00"))
+        db_session.add(movimiento)
+        await db_session.flush()
+
+        await db_session.refresh(usuario, ["movimientos_receptor"])
+        assert movimiento in usuario.movimientos_receptor

@@ -48,3 +48,6 @@ class Usuario(AuditMixin, Base):
     audit_logs: Mapped[list["AuditLog"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
         "AuditLog", back_populates="usuario"
     )
+    movimientos_receptor: Mapped[list["MovimientoReceptor"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
+        "MovimientoReceptor", back_populates="usuario"
+    )
