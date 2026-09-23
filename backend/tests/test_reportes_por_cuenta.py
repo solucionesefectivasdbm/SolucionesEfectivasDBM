@@ -23,6 +23,7 @@ from app.main import app
 from app.models.cliente import Cliente
 from app.models.credito import Credito, Periodicidad, TipoCredito
 from app.models.pago import Pago, TipoCuota
+from app.models.pago_reparto import PagoReparto, TipoDestinatario
 from app.models.receptor import CuentaBancaria, Receptor, TipoCuenta
 from app.models.usuario import TipoUsuario, Usuario
 
@@ -81,6 +82,23 @@ def _mk_pago_pagado(
     )
 
 
+def _repartos_para(*pagos: Pago) -> list[PagoReparto]:
+    """payment-multi-recipient (item 10, PR2): `reportes.py` ahora lee de
+    `pago_repartos`, no de `Pago.cuenta_bancaria_id` directo. Estos fixtures
+    arman el `Pago` a mano (sin pasar por `PagoService`), así que necesitan
+    la fila de reparto por defecto (100% a `cuenta_bancaria_id`) para que
+    las aserciones de recaudado no queden en 0 — mismo criterio que
+    `pago_reparto_service.crear_reparto_por_defecto`."""
+    filas = []
+    for p in pagos:
+        if p.pagado and p.cuenta_bancaria_id and (p.capital_pagado + p.interes_pagado) > Decimal("0.00"):
+            filas.append(PagoReparto(
+                id=uuid.uuid4(), pago_id=p.id, tipo_destinatario=TipoDestinatario.cuenta_bancaria,
+                cuenta_bancaria_id=p.cuenta_bancaria_id, monto=p.capital_pagado + p.interes_pagado,
+            ))
+    return filas
+
+
 @pytest_asyncio.fixture
 async def client_admin_db(db_session):
     admin = MagicMock(spec=Usuario)
@@ -122,6 +140,8 @@ async def test_subtotales_suman_al_receptor(client_admin_db: AsyncClient, db_ses
     pago_b = _mk_pago_pagado(credito_b.id, cuenta_b.id, Decimal("40.00"), Decimal("10.00"))
     db_session.add_all([pago_a, pago_b])
     await db_session.flush()
+    db_session.add_all(_repartos_para(pago_a, pago_b))
+    await db_session.flush()
 
     resp = await client_admin_db.get(REPORTES_URL, params={"anio": 2026, "mes": 2, "momento": "m3"})
     assert resp.status_code == 200, resp.text
@@ -153,6 +173,8 @@ async def test_totales_receptor_iguales_a_formula_previa(client_admin_db: AsyncC
     await db_session.flush()
     pago = _mk_pago_pagado(credito.id, cuenta.id, Decimal("83.33"), Decimal("16.67"))
     db_session.add(pago)
+    await db_session.flush()
+    db_session.add_all(_repartos_para(pago))
     await db_session.flush()
 
     # Fórmula previa al cambio (acumulación por pago, en float):
@@ -207,6 +229,8 @@ async def test_totales_receptor_se_acumulan_por_pago_no_por_cuenta(client_admin_
     for p in pagos:
         db_session.add(p)
         await db_session.flush()
+    db_session.add_all(_repartos_para(*pagos))
+    await db_session.flush()
 
     capital_rec = 0.0
     intereses_rec = 0.0
@@ -251,9 +275,14 @@ async def test_orden_determinista_por_receptor_y_por_cuenta(client_admin_db: Asy
     creditos = [_mk_credito(c.id) for c in clientes]
     db_session.add_all(creditos)
     await db_session.flush()
+    pagos_orden = []
     for credito, cuenta in zip(creditos, [cuenta_z, cuenta_zeta_b, cuenta_alfa]):
-        db_session.add(_mk_pago_pagado(credito.id, cuenta.id, Decimal("10.00"), Decimal("1.00")))
+        pago = _mk_pago_pagado(credito.id, cuenta.id, Decimal("10.00"), Decimal("1.00"))
+        db_session.add(pago)
         await db_session.flush()
+        pagos_orden.append(pago)
+    db_session.add_all(_repartos_para(*pagos_orden))
+    await db_session.flush()
 
     resp = await client_admin_db.get(REPORTES_URL, params={"anio": 2026, "mes": 2, "momento": "m3"})
     assert resp.status_code == 200, resp.text
@@ -282,6 +311,8 @@ async def test_pagos_sin_cuenta_excluidos(client_admin_db: AsyncClient, db_sessi
     pago_con = _mk_pago_pagado(credito_con.id, cuenta.id, Decimal("50.00"), Decimal("10.00"))
     pago_sin = _mk_pago_pagado(credito_sin.id, None, Decimal("999.00"), Decimal("999.00"))
     db_session.add_all([pago_con, pago_sin])
+    await db_session.flush()
+    db_session.add_all(_repartos_para(pago_con, pago_sin))
     await db_session.flush()
 
     resp = await client_admin_db.get(REPORTES_URL, params={"anio": 2026, "mes": 2, "momento": "m3"})

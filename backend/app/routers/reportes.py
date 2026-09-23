@@ -1,4 +1,6 @@
 """routers/reportes.py — Reportes financieros por período."""
+from decimal import ROUND_HALF_UP, Decimal
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,10 +12,13 @@ from app.models.cliente import Cliente
 from app.models.credito import Credito
 from app.models.gestor import Gestor
 from app.models.pago import Pago
+from app.models.pago_reparto import PagoReparto, TipoDestinatario
 from app.models.receptor import CuentaBancaria, Receptor
 from app.models.usuario import Usuario
 from app.services.cuenta_bancaria_service import etiqueta_cuenta
 from app.utils.momentos import get_periodo_momento
+
+_Q2 = Decimal("0.01")
 
 
 # ─── Schemas del reporte ─────────────────────────────────────────────────────
@@ -130,10 +135,26 @@ async def generar_reporte(
                 por_gestor_map[key]["intereses_pend"] += float(pago.interes_a_pagar - pago.interes_pagado)
 
     # Receptor.derivado.vía.cuenta_bancaria (decision 9/10): `Pago.receptor_id`
-    # está deprecado desde PR2a y nunca se lee. Se agrega primero por
-    # `cuenta_bancaria_id` y luego se agrupa por el receptor de cada cuenta —
-    # una sola query precarga cuenta+receptor de todas las cuentas en juego.
-    cuenta_ids = {p.cuenta_bancaria_id for p in todos if p.cuenta_bancaria_id}
+    # está deprecado desde PR2a y nunca se lee. payment-multi-recipient
+    # (item 10, PR2): para el lado RECAUDADO, la cuenta ya no viene de
+    # `Pago.cuenta_bancaria_id` directo (un pago repartido puede tener esa
+    # columna en None, ver `pago_reparto_service.aplicar_herencia`) — viene
+    # de `pago_repartos` activos tipo cuenta_bancaria. El lado PENDIENTE
+    # sigue leyendo la columna legacy: un pago pendiente todavía no tiene
+    # repartos (invariante I1).
+    pago_por_id = {p.id: p for p in pagados}
+    filas_repartos: list[PagoReparto] = []
+    if pago_por_id:
+        filas_repartos = (await db.execute(
+            select(PagoReparto).where(
+                PagoReparto.pago_id.in_(pago_por_id.keys()),
+                PagoReparto.deleted_at == None,  # noqa: E711
+                PagoReparto.tipo_destinatario == TipoDestinatario.cuenta_bancaria,
+            )
+        )).scalars().all()
+
+    cuenta_ids = {p.cuenta_bancaria_id for p in pendientes if p.cuenta_bancaria_id}
+    cuenta_ids |= {r.cuenta_bancaria_id for r in filas_repartos}
     cuentas_map: dict = {}
     if cuenta_ids:
         filas_cuentas = (await db.execute(
@@ -143,18 +164,10 @@ async def generar_reporte(
         )).all()
         cuentas_map = {cuenta.id: (cuenta, receptor) for cuenta, receptor in filas_cuentas}
 
-    # Los totales del receptor se acumulan pago a pago (misma fórmula y orden
-    # que antes de PR2b: byte-idénticos en float); los subtotales por cuenta
-    # se acumulan aparte en el mismo recorrido.
     por_receptor_map: dict = {}
     por_cuenta_map: dict = {}
-    for pago in todos:
-        if not pago.cuenta_bancaria_id:
-            continue
-        cuenta_receptor = cuentas_map.get(pago.cuenta_bancaria_id)
-        if not cuenta_receptor:
-            continue
-        cuenta, receptor = cuenta_receptor
+
+    def _fila(cuenta: CuentaBancaria, receptor: Receptor) -> tuple[str, str]:
         rkey = str(receptor.id)
         if rkey not in por_receptor_map:
             por_receptor_map[rkey] = {
@@ -174,20 +187,52 @@ async def generar_reporte(
                 "capital_pend": 0.0, "intereses_pend": 0.0,
             }
             por_receptor_map[rkey]["cuentas"].append(por_cuenta_map[key])
-        if pago.pagado:
-            capital = float(pago.capital_pagado)
-            intereses = float(pago.interes_pagado)
-            por_receptor_map[rkey]["capital_rec"] += capital
-            por_receptor_map[rkey]["intereses_rec"] += intereses
-            por_cuenta_map[key]["capital_rec"] += capital
-            por_cuenta_map[key]["intereses_rec"] += intereses
-        else:
-            capital = float(pago.capital_a_pagar - pago.capital_pagado)
-            intereses = float(pago.interes_a_pagar - pago.interes_pagado)
-            por_receptor_map[rkey]["capital_pend"] += capital
-            por_receptor_map[rkey]["intereses_pend"] += intereses
-            por_cuenta_map[key]["capital_pend"] += capital
-            por_cuenta_map[key]["intereses_pend"] += intereses
+        return rkey, key
+
+    # Pendiente: sigue viniendo de Pago.cuenta_bancaria_id directo (un pago
+    # pendiente no tiene repartos todavía). Misma fórmula que antes de PR2.
+    for pago in pendientes:
+        if not pago.cuenta_bancaria_id:
+            continue
+        cuenta_receptor = cuentas_map.get(pago.cuenta_bancaria_id)
+        if not cuenta_receptor:
+            continue
+        cuenta, receptor = cuenta_receptor
+        rkey, key = _fila(cuenta, receptor)
+        capital = float(pago.capital_a_pagar - pago.capital_pagado)
+        intereses = float(pago.interes_a_pagar - pago.interes_pagado)
+        por_receptor_map[rkey]["capital_pend"] += capital
+        por_receptor_map[rkey]["intereses_pend"] += intereses
+        por_cuenta_map[key]["capital_pend"] += capital
+        por_cuenta_map[key]["intereses_pend"] += intereses
+
+    # Recaudado: viene de pago_repartos (item 10) — cada cuenta recibe la
+    # porción de capital/interés proporcional a su parte del monto total del
+    # pago. Para el caso común (1 solo reparto, sin split), la proporción es
+    # EXACTAMENTE 1 por invariante I1 — capital/interés byte-idénticos al
+    # pago, cero cambio de comportamiento. Un split real prorratea; el
+    # redondeo de ±0.01 por cuenta se tolera igual que la acumulación float
+    # ya existente (ver test_totales_receptor_se_acumulan_por_pago_no_por_cuenta).
+    for reparto in filas_repartos:
+        cuenta_receptor = cuentas_map.get(reparto.cuenta_bancaria_id)
+        if not cuenta_receptor:
+            continue
+        pago = pago_por_id[reparto.pago_id]
+        total_pago = pago.capital_pagado + pago.interes_pagado
+        if total_pago <= Decimal("0.00"):
+            continue
+        proporcion = reparto.monto / total_pago
+        capital_compartido = (pago.capital_pagado * proporcion).quantize(_Q2, rounding=ROUND_HALF_UP)
+        interes_compartido = (pago.interes_pagado * proporcion).quantize(_Q2, rounding=ROUND_HALF_UP)
+
+        cuenta, receptor = cuenta_receptor
+        rkey, key = _fila(cuenta, receptor)
+        capital = float(capital_compartido)
+        intereses = float(interes_compartido)
+        por_receptor_map[rkey]["capital_rec"] += capital
+        por_receptor_map[rkey]["intereses_rec"] += intereses
+        por_cuenta_map[key]["capital_rec"] += capital
+        por_cuenta_map[key]["intereses_rec"] += intereses
 
     # Orden determinista (el SELECT no lleva ORDER BY): receptores por nombre
     # y luego id; cuentas por etiqueta y luego id. `por_gestor` no cambia.

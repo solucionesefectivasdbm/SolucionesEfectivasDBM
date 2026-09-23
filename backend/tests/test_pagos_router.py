@@ -14,6 +14,7 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 from unittest.mock import MagicMock
+from sqlalchemy import select
 
 from app.database import get_db
 from app.dependencies import get_current_user
@@ -21,6 +22,8 @@ from app.main import app
 from app.models.cliente import Cliente
 from app.models.credito import Credito, TipoCredito, Periodicidad
 from app.models.pago import Pago, TipoCuota
+from app.models.pago_reparto import PagoReparto, TipoDestinatario
+from app.models.receptor import CuentaBancaria, Receptor, TipoCuenta
 from app.models.usuario import TipoUsuario, Usuario
 from app.utils.fechas import hoy_bogota
 
@@ -205,3 +208,157 @@ class TestAlertasExcluyenCreditosSaldados:
         assert r.status_code == 200, r.text
         ids = [p["credito_id"] for p in r.json()]
         assert str(credito.id) not in ids
+
+
+# ─── payment-multi-recipient (item 10, PR2): filtro EXISTS + repartos batched ──
+
+
+def _mk_receptor() -> Receptor:
+    return Receptor(
+        id=uuid.uuid4(), nombre=f"Receptor {uuid.uuid4().hex[:6]}",
+        cedula=str(uuid.uuid4().int)[:10], telefono="3000000000",
+    )
+
+
+def _mk_cuenta(receptor_id: uuid.UUID, *, etiqueta="A") -> CuentaBancaria:
+    return CuentaBancaria(
+        id=uuid.uuid4(), receptor_id=receptor_id, entidad_bancaria=etiqueta,
+        tipo_cuenta=TipoCuenta.ahorros, numero_cuenta=f"{etiqueta}1",
+        es_predeterminada=False,
+    )
+
+
+def _mk_pago_pagado(credito_id: uuid.UUID, cuenta_bancaria_id, **overrides) -> Pago:
+    base = dict(
+        id=uuid.uuid4(), credito_id=credito_id, numero_cuota=1,
+        tipo_cuota=TipoCuota.programada, monto_a_pagar=Decimal("100.00"),
+        capital_a_pagar=Decimal("60.00"), interes_a_pagar=Decimal("40.00"),
+        capital_pagado=Decimal("60.00"), interes_pagado=Decimal("40.00"),
+        momento="m1", fecha_maxima=date(2026, 6, 1), pagado=True,
+        validado_recaudador=True, cuenta_bancaria_id=cuenta_bancaria_id,
+    )
+    base.update(overrides)
+    return Pago(**base)
+
+
+def _mk_reparto(pago_id: uuid.UUID, cuenta_bancaria_id: uuid.UUID, monto: Decimal) -> PagoReparto:
+    return PagoReparto(
+        id=uuid.uuid4(), pago_id=pago_id, tipo_destinatario=TipoDestinatario.cuenta_bancaria,
+        cuenta_bancaria_id=cuenta_bancaria_id, monto=monto,
+    )
+
+
+class TestFiltroExistsRepartos:
+    """Req: Cascading Filters on Payment Listing (delta) — 'Split payment
+    matches multiple account filters' / 'no duplicate rows'. Un pago
+    repartido ya no tiene una única `Pago.cuenta_bancaria_id` confiable
+    (puede quedar en la cuenta A, o en None tras `aplicar_herencia`) — el
+    filtro tiene que mirar `pago_repartos`, no la columna legacy."""
+
+    @pytest.mark.asyncio
+    async def test_split_matchea_por_la_cuenta_que_no_es_la_legacy(self, client_admin, db_session):
+        cliente = _mk_cliente()
+        db_session.add(cliente)
+        await db_session.flush()
+        credito = _mk_credito(cliente.id, saldo_capital=Decimal("500.00"))
+        db_session.add(credito)
+        await db_session.flush()
+
+        receptor_a, receptor_b = _mk_receptor(), _mk_receptor()
+        cuenta_a = _mk_cuenta(receptor_a.id, etiqueta="A")
+        cuenta_b = _mk_cuenta(receptor_b.id, etiqueta="B")
+        db_session.add_all([receptor_a, receptor_b, cuenta_a, cuenta_b])
+        await db_session.flush()
+
+        # Pago.cuenta_bancaria_id sigue apuntando a A (valor legacy, como
+        # quedaría tras el default de PR1) pero el reparto real es 60/40
+        # entre A y B — simula el estado post PUT /repartos.
+        pago = _mk_pago_pagado(credito.id, cuenta_a.id)
+        db_session.add(pago)
+        await db_session.flush()
+        db_session.add_all([
+            _mk_reparto(pago.id, cuenta_a.id, Decimal("60.00")),
+            _mk_reparto(pago.id, cuenta_b.id, Decimal("40.00")),
+        ])
+        await db_session.flush()
+
+        # Filtrar por B (la cuenta que NO coincide con Pago.cuenta_bancaria_id)
+        # solo puede encontrar este pago vía EXISTS sobre pago_repartos.
+        r = await client_admin.get(
+            "/api/v1/pagos", params={"anio": 2026, "mes": 6, "cuenta_bancaria_id": str(cuenta_b.id)}
+        )
+        assert r.status_code == 200, r.text
+        ids = {item["id"] for item in r.json()["items"]}
+        assert ids == {str(pago.id)}
+
+        # Y por receptor_b también.
+        r2 = await client_admin.get(
+            "/api/v1/pagos", params={"anio": 2026, "mes": 6, "receptor_id": str(receptor_b.id)}
+        )
+        assert r2.status_code == 200, r2.text
+        ids2 = {item["id"] for item in r2.json()["items"]}
+        assert ids2 == {str(pago.id)}
+
+    @pytest.mark.asyncio
+    async def test_split_entre_dos_cuentas_del_mismo_receptor_no_duplica_fila(self, client_admin, db_session):
+        """'no duplicate rows' — dos cuentas del receptor filtrado coinciden
+        con el MISMO pago; debe aparecer una sola vez."""
+        cliente = _mk_cliente()
+        db_session.add(cliente)
+        await db_session.flush()
+        credito = _mk_credito(cliente.id, saldo_capital=Decimal("500.00"))
+        db_session.add(credito)
+        await db_session.flush()
+
+        receptor = _mk_receptor()
+        cuenta_a = _mk_cuenta(receptor.id, etiqueta="A")
+        cuenta_b = _mk_cuenta(receptor.id, etiqueta="B")
+        db_session.add_all([receptor, cuenta_a, cuenta_b])
+        await db_session.flush()
+
+        pago = _mk_pago_pagado(credito.id, cuenta_a.id)
+        db_session.add(pago)
+        await db_session.flush()
+        db_session.add_all([
+            _mk_reparto(pago.id, cuenta_a.id, Decimal("60.00")),
+            _mk_reparto(pago.id, cuenta_b.id, Decimal("40.00")),
+        ])
+        await db_session.flush()
+
+        r = await client_admin.get(
+            "/api/v1/pagos", params={"anio": 2026, "mes": 6, "receptor_id": str(receptor.id)}
+        )
+        assert r.status_code == 200, r.text
+        ids = [item["id"] for item in r.json()["items"]]
+        assert ids == [str(pago.id)]
+        assert r.json()["total"] == 1
+
+    @pytest.mark.asyncio
+    async def test_listado_incluye_repartos_batched(self, client_admin, db_session):
+        """Segunda mitad de la task 2.10: `repartos` viaja en cada item del
+        listado (batched, sin N+1)."""
+        cliente = _mk_cliente()
+        db_session.add(cliente)
+        await db_session.flush()
+        credito = _mk_credito(cliente.id, saldo_capital=Decimal("500.00"))
+        db_session.add(credito)
+        await db_session.flush()
+
+        receptor = _mk_receptor()
+        cuenta_a = _mk_cuenta(receptor.id, etiqueta="A")
+        db_session.add_all([receptor, cuenta_a])
+        await db_session.flush()
+
+        pago = _mk_pago_pagado(credito.id, cuenta_a.id)
+        db_session.add(pago)
+        await db_session.flush()
+        db_session.add(_mk_reparto(pago.id, cuenta_a.id, Decimal("100.00")))
+        await db_session.flush()
+
+        r = await client_admin.get("/api/v1/pagos", params={"anio": 2026, "mes": 6})
+        assert r.status_code == 200, r.text
+        item = next(i for i in r.json()["items"] if i["id"] == str(pago.id))
+        assert len(item["repartos"]) == 1
+        assert item["repartos"][0]["cuenta_bancaria_id"] == str(cuenta_a.id)
+        assert item["repartos"][0]["monto"] == "100.00"
+        assert "·" in item["repartos"][0]["etiqueta"]
