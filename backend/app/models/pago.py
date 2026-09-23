@@ -92,3 +92,9 @@ class Pago(AuditMixin, Base):
     credito: Mapped["Credito"] = relationship(  # type: ignore[name-defined]  # noqa: F821
         "Credito", back_populates="pagos"
     )
+    # payment-multi-recipient (item 10): lazy="noload" — el reparto se carga
+    # siempre explícito y batched (pago_reparto_service.repartos_por_pago en
+    # PR2), nunca lazy-loaded fila por fila (evita N+1 en listados).
+    repartos: Mapped[list["PagoReparto"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
+        "PagoReparto", back_populates="pago", lazy="noload"
+    )

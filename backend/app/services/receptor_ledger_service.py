@@ -2,21 +2,29 @@
 services/receptor_ledger_service.py — Saldo por cuenta bancaria (item 9).
 
 DECISIÓN TÉCNICA: el saldo NUNCA se persiste — se calcula on-read a partir
-de `Pago` (recaudo) + `receptor_movimientos` (salidas/correcciones). Esto es
-un invariante obligatorio, lección directa de los incidentes de drift de
-saldo_capital/saldo_intereses (PRs #30-#33, #36-#39): un total cacheado
-eventualmente se desincroniza de su fuente.
+de `pago_repartos` (recaudo) + `receptor_movimientos` (salidas/correcciones).
+Esto es un invariante obligatorio, lección directa de los incidentes de
+drift de saldo_capital/saldo_intereses (PRs #30-#33, #36-#39): un total
+cacheado eventualmente se desincroniza de su fuente.
 
-`saldos_por_cuenta` hace 2 queries agrupadas (recaudado desde Pago; salidas
-+ correcciones desde MovimientoReceptor agrupado también por tipo) — nunca
-un loop Python por fila, nunca N+1. `registrar_movimiento` toma un lock de
-fila (`SELECT ... FOR UPDATE` sobre `cuentas_bancarias`) antes de leer el
-saldo, para serializar salidas concurrentes sobre la misma cuenta. El
-statement del lock está extraído en `_select_cuenta_for_update` (función
-pura, sin `db`) para poder verificar en un test que compila con `FOR UPDATE`
-contra Postgres sin depender de una DB Postgres real — SQLite (la DB de
-test) ignora `FOR UPDATE` silenciosamente y daría un falso verde si solo se
-probara por ejecución.
+payment-multi-recipient (item 10): el término "recaudado" se rediseñó para
+leer de `pago_repartos` (join a `Pago`) en vez de `Pago.cuenta_bancaria_id`
+directo — un pago repartido entre N destinatarios aporta a cada cuenta solo
+su porción, sin doble conteo, y las filas tipo `cliente` quedan excluidas
+por construcción (su `cuenta_bancaria_id` es NULL). La migración de
+backfill (f6a7b8c9d0e1) crea una fila al 100% por cada pago histórico ya
+pagado, así que el total no cambia para ningún pago sin split manual.
+
+`saldos_por_cuenta` hace 2 queries agrupadas (recaudado desde pago_repartos
+JOIN Pago; salidas + correcciones desde MovimientoReceptor agrupado también
+por tipo) — nunca un loop Python por fila, nunca N+1. `registrar_movimiento`
+toma un lock de fila (`SELECT ... FOR UPDATE` sobre `cuentas_bancarias`)
+antes de leer el saldo, para serializar salidas concurrentes sobre la misma
+cuenta. El statement del lock está extraído en `_select_cuenta_for_update`
+(función pura, sin `db`) para poder verificar en un test que compila con
+`FOR UPDATE` contra Postgres sin depender de una DB Postgres real — SQLite
+(la DB de test) ignora `FOR UPDATE` silenciosamente y daría un falso verde
+si solo se probara por ejecución.
 """
 import uuid
 from decimal import Decimal
@@ -27,6 +35,7 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.pago import Pago
+from app.models.pago_reparto import PagoReparto
 from app.models.receptor import CuentaBancaria
 from app.models.receptor_movimiento import MovimientoReceptor, TipoMovimiento
 from app.models.usuario import Usuario
@@ -59,21 +68,30 @@ def _as_decimal(valor) -> Decimal:
 async def saldos_por_cuenta(db: AsyncSession, cuenta_ids: list[uuid.UUID]) -> dict[uuid.UUID, SaldoCuenta]:
     """saldo(cuenta) = recaudado - salidas + correcciones. Dos queries
     agrupadas por cuenta_bancaria_id; cuentas sin ningún movimiento no
-    aparecen en ninguna de las dos y se completan en 0.00 abajo."""
+    aparecen en ninguna de las dos y se completan en 0.00 abajo.
+
+    "recaudado" viene de `pago_repartos` (item 10), no de
+    `Pago.cuenta_bancaria_id` directo: así un pago repartido entre N
+    destinatarios aporta a cada cuenta solo su porción, sin doble conteo.
+    Filtra por `deleted_at IS NULL` en AMBOS lados (reparto Y pago) — un
+    reparto editado/reemplazado (soft-deleted) o un pago borrado
+    lógicamente no deben aportar al saldo."""
     if not cuenta_ids:
         return {}
 
     recaudado_rows = (await db.execute(
         select(
-            Pago.cuenta_bancaria_id,
-            func.coalesce(func.sum(Pago.capital_pagado + Pago.interes_pagado), CERO),
+            PagoReparto.cuenta_bancaria_id,
+            func.coalesce(func.sum(PagoReparto.monto), CERO),
         )
+        .join(Pago, PagoReparto.pago_id == Pago.id)
         .where(
-            Pago.cuenta_bancaria_id.in_(cuenta_ids),
+            PagoReparto.cuenta_bancaria_id.in_(cuenta_ids),
+            PagoReparto.deleted_at == None,  # noqa: E711
             Pago.pagado == True,  # noqa: E712
             Pago.deleted_at == None,  # noqa: E711
         )
-        .group_by(Pago.cuenta_bancaria_id)
+        .group_by(PagoReparto.cuenta_bancaria_id)
     )).all()
     recaudado_map = {cid: _as_decimal(total) for cid, total in recaudado_rows}
 

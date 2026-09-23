@@ -44,7 +44,7 @@ from app.schemas.pago import (
     RegistrarPagoResponse,
     ValidarPagoRequest,
 )
-from app.services import audit_service
+from app.services import audit_service, pago_reparto_service
 from app.services.credito_service import credito_operativamente_abierto
 from app.services.cuenta_bancaria_service import obtener_cuenta_o_404
 from app.services.pago_service import PagoService
@@ -905,17 +905,27 @@ async def modificar_cuenta_bancaria_pago(
     La cuenta puede pertenecer a un receptor distinto (assumption 2). No
     reescribe otros pagos ya existentes, pero la siguiente cuota que se genere
     al pagar este pago hereda su `cuenta_bancaria_id` (encadenamiento).
+
+    payment-multi-recipient (item 10): en un pago YA PAGADO, sincroniza
+    pago_repartos — borra lógicamente el/los reparto(s) activos y crea una
+    única fila al 100% hacia la nueva cuenta (invariante I1). Un pago
+    pendiente no tiene repartos todavía; no-op en ese caso.
     """
-    pago, _ = await _get_pago_con_credito(db, pago_id)
+    pago, _ = await _get_pago_con_credito(db, pago_id, lock=True)
     cuenta = await obtener_cuenta_o_404(db, body.cuenta_bancaria_id)
 
     cuenta_anterior = pago.cuenta_bancaria_id
     pago.cuenta_bancaria_id = body.cuenta_bancaria_id
 
+    repartos_antes, repartos_despues = await pago_reparto_service.reemplazar_por_cuenta_unica(db, pago)
+
     await audit_service.registrar_actualizacion_campos(
         db=db, entidad="pagos", entidad_id=pago.id,
         usuario_id=current_user.id, ip_origen=get_client_ip(request),
-        cambios={"cuenta_bancaria_id": (str(cuenta_anterior), str(body.cuenta_bancaria_id))},
+        cambios={
+            "cuenta_bancaria_id": (str(cuenta_anterior), str(body.cuenta_bancaria_id)),
+            "pago_repartos": (repartos_antes, repartos_despues),
+        },
     )
     await db.flush()
 
