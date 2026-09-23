@@ -108,3 +108,126 @@ SUGGESTION: None.
 ## Verdict
 
 PASS WITH WARNINGS (1 non-blocking WARNING, 0 CRITICAL). PR1 (tasks 1.1-1.10) is complete, correctly scoped, spec-compliant, and independently verified with passing runtime evidence (645/645 backend tests, including 10/10 unedited regression tests). Task 1.11 deferral to PR3 is a legitimate, explicitly-instructed scope boundary, not a gap. No Phase 2/3 scope leakage detected. Safe to push branch and open PR1.
+
+
+---
+
+# Verification Report -- reportes-cartera-vencida-y-rango-fechas (PR2 scope)
+
+**Change**: reportes-cartera-vencida-y-rango-fechas
+**Scope verified**: Phase 2 (PR2) only -- tasks 2.1-2.9, on branch feat/reportes-cartera-vencida (stacked on feat/reportes-rango-fechas), commit fa8757b, not pushed. PR1 findings above stand unchanged.
+**Mode**: Full artifact set (spec/design/tasks) + apply-progress with TDD evidence + independent spec date-arithmetic recomputation.
+
+## Task Completeness (Phase 2)
+
+| Task | Status | Evidence |
+|---|---|---|
+| 2.1 RED membership scenarios | Done | test_reportes_cartera_vencida.py -- 3 tests (included/excluded/paid-excluded) |
+| 2.2 RED totals/gestor/no-receptor | Done | 2 tests |
+| 2.3 RED deferral/future-clamp scenarios | Done | 3 tests |
+| 2.4 RED D6/D8 guards | Done | 3 tests (soft-delete, closed credit, gestor-less) + 2 extra shared-validation smoke tests |
+| 2.5 GREEN Pydantic models | Done | CarteraVencidaGestor/CarteraVencidaResponse, no por_receptor field |
+| 2.6 GREEN endpoint | Done | generar_reporte_cartera_vencida, single outer-join query, D4/D5/D6 wired correctly |
+| 2.7 GREEN Decimal accumulation | Done | total_capital/total_intereses accumulate as Decimal, float() only at response construction |
+| 2.8 GREEN por_gestor sort + total check | Done | sorted by (gestor_nombre, gestor_id); grand-total-equals-sum asserted in test |
+| 2.9 Full cartera test file green | Done | 13/13 passing |
+
+No unchecked task in PR2 scope.
+
+## Independent Test Execution
+
+    backend/venv/Scripts/python.exe -m pytest backend/tests -q
+    -> 658 passed, 0 failed, 11 warnings in 4.15s
+
+Matches the apply report exactly (645 PR1 baseline + 13 new). Warnings are the same pre-existing set (AsyncMock coroutine, jose utcnow deprecation) -- none newly introduced. Confirms the apply agent claim.
+
+Note: bare pytest -q from repo root fails via a pre-existing root-level test_all.py sys.exit() -- confirmed as an unrelated repo quirk, correctly worked around by scoping to backend/tests.
+
+## Spec Scenario -> Test Mapping (Phase 2 scenarios)
+
+Read test_reportes_cartera_vencida.py in full (437 lines, 13 tests). All assertions are genuine (exact numeric/date/order checks), not tautological.
+
+| Scenario | Test | Genuine? |
+|---|---|---|
+| Included when entrada-en-mora falls in the window | test_incluido_cuando_entrada_en_mora_cae_en_la_ventana | Yes -- exact totals (100.0/80.0/20.0) |
+| Excluded when entrada-en-mora falls outside the window | test_excluido_cuando_entrada_en_mora_cae_fuera_de_la_ventana | Yes -- same payment, narrower window, asserts 0 count/0 total/empty por_gestor |
+| Paid payments are never included | test_pago_pagado_nunca_se_incluye | Yes |
+| Totals and gestor breakdown present | test_totales_y_desglose_por_gestor | Yes -- 2 gestores, per-gestor subtotals, explicit sum equals grand total assertion, order check (Ana before Beto) |
+| No receptor breakdown in the response | test_sin_desglose_por_receptor | Yes -- asserts por_receptor key absent |
+| Deferred payment disappears from a past window on re-query | test_pago_aplazado_desaparece_de_ventana_pasada_al_reconsultar | Yes -- before/after re-query against the SAME window, non-trivial |
+| Window entirely in the future returns an empty report | test_ventana_totalmente_futura_retorna_reporte_vacio | Yes -- includes a payment that WOULD match the raw window but is excluded by the D5 clamp; also asserts fecha_fin equals 2026-09-23 (clamped) |
+| Window partially in the future is clamped, not rejected | test_ventana_parcialmente_futura_se_recorta_no_se_rechaza | Yes -- two payments, one inside the clamped portion (included) and one only inside the raw/unclamped window (excluded), proving the clamp is real |
+| D6: soft-deleted cuota excluded | test_cuota_soft_deleted_excluida | Yes |
+| D6: operationally-closed credit excluded | test_credito_saldado_excluido | Yes -- zero-balance credit, activo still True, confirms credito_operativamente_abierto is used (not just activo) |
+| D8: gestor-less cuota in totals, absent from por_gestor | test_cuota_sin_gestor_cuenta_en_totales_pero_no_en_desglose | Yes -- asserts cantidad_cuotas 1, total_vencido 100.0, por_gestor empty simultaneously |
+| Shared validation (momento mode resolves) | test_modo_momento_resuelve_la_ventana_en_cartera_vencida | Yes, smoke-level but legitimate |
+| Shared validation (neither mode 422) | test_ningun_modo_es_rechazado_en_cartera_vencida | Yes |
+
+All 13 scenarios have real covering tests, all passing at runtime.
+
+
+## Independent Date-Arithmetic Investigation (spec discrepancy)
+
+Apply agent flagged that the spec Deferred payment scenario states fecha_maxima=2026-09-10 gives fecha_entrada_mora=2026-09-15, but the canonical function allegedly produces 2026-09-14.
+
+Independently recomputed by hand, tracing the actual canonical chain in backend/app/utils/momentos.py:
+
+- get_momento(date(2026, 9, 10)): day 10, 5 <= 10 <= 13, m3.
+- get_mes_momento(date(2026, 9, 10)): day 10 > 4, returns (2026, 9).
+- get_periodo_momento(2026, 9, m3): inicio 2026-09-05, fin 2026-09-13.
+- fecha_entrada_mora = fin + 1 day = 2026-09-14.
+
+Confirmed: the apply agent is correct. The spec parenthetical 2026-09-15 is wrong; the canonical value is 2026-09-14.
+
+Fix applied: corrected openspec/changes/reportes-cartera-vencida-y-rango-fechas/specs/reportes/spec.md line 124, replacing 2026-09-15 with 2026-09-14. This is a low-risk documentation correction -- the THEN-clause does not independently re-assert this number, so the fix does not change scope or requirement semantics.
+
+Internal-consistency re-check after the fix:
+- Window bound: scenario window is 2026-09-01 to 2026-09-30. 2026-09-14 is inside it.
+- Later deferred to 2026-10-12 claim: independently recomputed -- get_momento(2026-10-12) day 12, m3; get_mes_momento gives (2026,10); get_periodo_momento(2026,10,m3) gives (2026-10-05, 2026-10-13); fecha_entrada_mora equals 2026-10-14. That is outside the 2026-09-01/2026-09-30 window -- the spec claim holds and required no correction.
+
+Test trustworthiness: test_pago_aplazado_desaparece_de_ventana_pasada_al_reconsultar does NOT hardcode the spec formerly-wrong 2026-09-15 value anywhere -- its inline comment already correctly states fecha_entrada_mora=2026-09-14, and its assertions only check counts, not the literal entrada-mora date. The test was trustworthy before and after the spec-text fix; only the spec illustrative doc text needed correcting.
+
+## fecha_fin Clamping -- Implementation and Test Check
+
+Confirmed in code: CarteraVencidaResponse.fecha_fin is populated as fin_efectivo = min(fecha_fin, hoy_bogota()) (reportes.py L441, L500), not the raw resolver_ventana output. Both future-window tests explicitly assert the clamped value (fecha_fin equals 2026-09-23), which independently proves the response really returns the clamped date rather than the raw requested fecha_hasta.
+
+Doc-clarity note (non-blocking, does not affect verdict): this clamping behavior is stated in design.md Interfaces contract inline comment and now also in the model own docstring in reportes.py, but the spec THEN-clauses for the two future-window scenarios describe the cartera contents being empty/clamped without explicitly stating that the response fecha_fin field itself reflects the clamp. SUGGESTION: a future sdd-spec pass could add one line to those two scenarios THEN-clauses making this explicit, for readers who only consult spec.md.
+
+
+## Deviation 1 Algebraic Soundness Check (no explicit future-window branch)
+
+Independently verified fecha_limite_mora (momentos.py L146-187) is monotonic non-decreasing in its input hoy: it maps hoy to the start-date of the momento (m1..m5) window containing hoy, and momento boundaries partition the calendar into a non-decreasing sequence of step intervals with no overlap or reordering (confirmed by reading the day-threshold branches: 1-4 goes to prior month m2 start, 5-13 to m3 start, 14-18 to m4 start, 19-24 to m5 start, 25-29 to m1 start, 30+ to m2 start -- each branch output date increases or stays flat as hoy increases within/across months).
+
+Given monotonicity: if fecha_inicio is greater than fin_efectivo (window entirely in the future after the D5 clamp), then fecha_inicio minus 1 is greater than or equal to fin_efectivo, so fecha_limite_mora(fecha_inicio minus 1) is greater than or equal to fecha_limite_mora(fin_efectivo), meaning lo is greater than or equal to hi in bounds_entrada_mora output. The SQL predicate fecha_maxima >= lo AND fecha_maxima < hi is then unsatisfiable for any date, producing a naturally empty result set -- no special-case branch is needed. Confirmed algebraically sound, not just trusted from the apply agent claim.
+
+## AGENTS.md Convention Check
+
+- SQLAlchemy 2.x async: await db.execute(query) on an AsyncSession, consistent with the rest of the codebase.
+- Decimal for money: confirmed -- total_capital/total_intereses/per-gestor capital/intereses accumulate as Decimal; float() conversion happens only inside the CarteraVencidaGestor/CarteraVencidaResponse construction calls (reportes.py L489-491, L505-507), matching D7 and the AGENTS.md rule.
+- Single query, no N+1: confirmed -- one select(Pago, Gestor) with joins to Credito, Cliente, and outerjoin to Gestor, all guards in the WHERE clause; per-gestor aggregation happens in-memory over the single result set, not via per-row queries.
+- Soft delete: Pago.deleted_at is None guard present.
+- No audit_service concern -- read-only endpoint.
+- No password/password_hash logging -- not applicable.
+
+## Scope Leakage Check
+
+    git diff feat/reportes-rango-fechas..feat/reportes-cartera-vencida --stat
+     backend/app/routers/reportes.py                    | 127 +++++-
+     backend/tests/conftest.py                          |   1 +
+     backend/tests/test_reportes_cartera_vencida.py     | 437 +++++++++++++++++++++
+     openspec/changes/.../tasks.md                      |  18 +-
+     4 files changed, 573 insertions(+), 10 deletions(-)
+
+Exactly the 4 expected files (3 backend + tasks.md checkbox flips). No frontend files touched. Confirms no Phase 3 leakage.
+
+## Issues
+
+CRITICAL: None.
+WARNING: None blocking. (Carried forward from PR1: 1 WARNING on TestBoundsEntradaMora documentation-vs-literal-design-text deviation -- unaffected by PR2, still non-blocking.)
+SUGGESTION: 1 -- spec.md future-window scenarios could explicitly state in their THEN-clauses that the response fecha_fin field itself is clamped (currently only in design.md and code docstrings), for readers who only consult spec.md. Non-blocking.
+
+Fixed during this verify pass: spec.md date-arithmetic typo (2026-09-15 to 2026-09-14) in the Deferred payment disappears from a past window on re-query scenario, confirmed via independent hand-computation of the canonical fecha_entrada_mora chain. Test file already used the correct value and required no change.
+
+## Verdict
+
+PASS WITH WARNINGS (0 new CRITICAL, 0 new blocking WARNING, 1 non-blocking SUGGESTION, plus 1 pre-existing non-blocking WARNING carried from PR1). PR2 (tasks 2.1-2.9) is complete, correctly scoped, spec-compliant (after the spec-text date fix applied in this pass), and independently verified with passing runtime evidence (658/658 backend tests, 13/13 new cartera-vencida tests). Decimal/async/single-query/soft-delete AGENTS.md conventions all confirmed. No Phase 3 (frontend) scope leakage. Safe to push feat/reportes-cartera-vencida and open a stacked PR2 (base = feat/reportes-rango-fechas).
