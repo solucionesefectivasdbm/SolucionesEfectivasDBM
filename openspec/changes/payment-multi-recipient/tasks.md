@@ -133,4 +133,5 @@ Two blind judges reviewed the frozen 4-file diff (native `gentle-ai` review agai
 ## Phase 4: Cleanup
 
 - [x] 4.1 Update `openspec/changes/payment-multi-recipient/design.md` Open Questions: confirm prod Postgres ≥13 (`gen_random_uuid()`) — done 2026-09-22, prod runs PostgreSQL 18 (Railway). Note the accepted no-overdraft-check parity with item 9 decision 2.
-- [ ] 4.2 Confirm `receiver-bank-account-assignment` spec delta and `receptor-ledger` spec delta both reflect the shipped behavior; archive-ready.
+- [x] 4.2 Confirm `receiver-bank-account-assignment` spec delta and `receptor-ledger` spec delta both reflect the shipped behavior; archive-ready.
+  - Evidence: `specs/pago-repartos/spec.md` "Split Integrity Validation" corrected to state exact `Decimal` equality (was stale `_validar_split` TOL wording). `specs/receiver-bank-account-assignment/spec.md`'s "REMOVED Requirements" section (incorrectly said the legacy PATCH must 404/405) rewritten as a second `MODIFIED Requirement` — "Individual Payment Account Change" — documenting that PR1 kept the endpoint, syncs `pago_repartos`, and uses the `lock=True` fix from the PR1 Judgment Day finding, with 2 new scenarios. `specs/receptor-ledger/spec.md` reviewed — already accurate, no changes needed.

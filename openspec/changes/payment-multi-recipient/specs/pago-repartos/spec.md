@@ -37,8 +37,10 @@ each with `tipo_destinatario` (`cuenta_bancaria` | `cliente`), a
 
 The system MUST enforce, at write time (create, edit, or delete of any
 `pago_reparto` row), that the sum of `pago_repartos.monto` for a `Pago`
-equals `capital_pagado + interes_pagado` within the existing `_validar_split`
-TOL tolerance.
+equals `capital_pagado + interes_pagado` EXACTLY, using `Decimal` — not the
+`_validar_split` helper's `±0.01` (`TOL`) tolerance. That tolerance exists
+only to absorb float-input noise on `_validar_split`'s own inputs; the
+ledger has no such noise source and must match the paid total byte-for-byte.
 
 #### Scenario: Split sums correctly
 

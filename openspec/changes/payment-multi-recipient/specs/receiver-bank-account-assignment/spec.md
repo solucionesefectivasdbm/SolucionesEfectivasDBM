@@ -54,9 +54,31 @@ list.
 - WHEN listed with `receptor_id = R2`
 - THEN the payment is returned even though it was not exclusively R2's
 
-## REMOVED Requirements
-
 ### Requirement: Individual Payment Account Change
 
-(Reason: a payment can now have 0..N recipients instead of exactly one, so a single-field account PATCH no longer models the domain.)
-(Migration: replaced by the `pago_repartos` split create/edit/delete operations defined in the `pago-repartos` capability. The old `PATCH /pagos/{id}/cuenta-bancaria` path MUST return 404 or 405.)
+`PATCH /pagos/{id}/cuenta-bancaria` on a PAID `Pago` MUST remain available
+(not removed — shipped decision, PR1) and MUST stay a single-recipient
+convenience path: it replaces the payment's active `pago_repartos` set with
+one row for 100% of the amount to the new `cuenta_bancaria_id`, keeping
+invariant I1. It MUST use the same row lock (`_get_pago_con_credito(...,
+lock=True)`) as every other payment-mutating endpoint, to prevent two
+concurrent PATCH calls from leaving two active repartos for the same `Pago`
+(Judgment Day finding, PR1). On a PENDING `Pago` it continues to just set
+`Pago.cuenta_bancaria_id` directly, unchanged from before this capability.
+(Previously: a payment always had exactly one recipient, so this PATCH was
+the only way to reassign it. Multi-recipient splits now go through
+`PUT /pagos/{id}/repartos` in the `pago-repartos` capability instead; this
+PATCH is kept as the single-recipient shortcut.)
+
+#### Scenario: PATCH on a paid payment replaces its repartos with one row
+
+- GIVEN a paid `Pago` with an active reparto to cuenta_bancaria A
+- WHEN `PATCH /pagos/{id}/cuenta-bancaria` sets the account to cuenta_bancaria B
+- THEN the reparto to A is soft-deleted
+- AND a new active reparto to B for 100% of the paid amount is created
+
+#### Scenario: PATCH on a pending payment is unchanged
+
+- GIVEN a pending (unpaid) `Pago`
+- WHEN `PATCH /pagos/{id}/cuenta-bancaria` sets a new account
+- THEN `Pago.cuenta_bancaria_id` is updated directly and no `pago_repartos` row is created
