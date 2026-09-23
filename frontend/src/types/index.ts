@@ -177,6 +177,7 @@ export interface Pago {
   tipo_credito?: TipoCredito | null
   vencido: boolean
   en_mora: boolean
+  repartos: RepartoResponse[]
 }
 
 export interface RegistrarPagoResponse {
@@ -184,6 +185,26 @@ export interface RegistrarPagoResponse {
   requiere_decision: boolean
   excedente: number | null
   mensaje: string
+}
+
+// ─── Repartos de pago (item 10, payment-multi-recipient) ──────────────────────
+// Split de un Pago YA PAGADO entre N destinatarios (cuentas bancarias y/o
+// clientes existentes) — ver backend/app/schemas/pago_reparto.py. El backend
+// valida que `tipo_destinatario` y el id correspondiente sean mutuamente
+// exclusivos; el frontend replica esa regla al armar cada fila.
+
+export type TipoDestinatario = 'cuenta_bancaria' | 'cliente'
+
+export interface RepartoItem {
+  tipo_destinatario: TipoDestinatario
+  cuenta_bancaria_id: string | null
+  cliente_id: string | null
+  monto: number
+}
+
+export interface RepartoResponse extends RepartoItem {
+  id: string
+  etiqueta: string
 }
 
 // ─── Reporte ──────────────────────────────────────────────────────────────────

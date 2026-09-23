@@ -4,6 +4,7 @@ import type {
   Cliente, Credito, Pago, RegistrarPagoResponse, Reporte,
   AlertasVencidos, PaginatedResponse,
   MovimientoReceptor, SaldoReceptor,
+  RepartoItem, RepartoResponse,
 } from '@/types'
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -137,6 +138,15 @@ export const pagosApi = {
 
   modificarCuentaBancaria: (pagoId: string, cuenta_bancaria_id: string) =>
     api.patch<Pago>(`/pagos/${pagoId}/cuenta-bancaria`, { cuenta_bancaria_id }),
+
+  // Repartos de pago (item 10, payment-multi-recipient) — solo para pagos
+  // YA PAGADOS. `reemplazarRepartos` envía el set completo (create/edit/
+  // delete se hacen todos vía PUT, nunca por fila individual).
+  obtenerRepartos: (pagoId: string) =>
+    api.get<RepartoResponse[]>(`/pagos/${pagoId}/repartos`),
+
+  reemplazarRepartos: (pagoId: string, repartos: RepartoItem[]) =>
+    api.put<RepartoResponse[]>(`/pagos/${pagoId}/repartos`, { repartos }),
 
   noProgramado: (creditoId: string, data: object) =>
     api.post<Pago>(`/pagos/no-programado/${creditoId}`, data),

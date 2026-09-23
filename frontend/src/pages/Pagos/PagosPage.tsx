@@ -4,6 +4,7 @@ import { formatCOP, formatFecha, formatCuentaBancaria, MESES, MOMENTOS, aniosDis
 import { LoadingPage, EmptyState, Paginacion, PagoBadge, ConfirmarCreacion, ConfirmarCierreInteresPendiente, type ItemConfirmacion } from '@/components/ui'
 import Modal from '@/components/ui/Modal'
 import SelectCuentaBancaria from '@/components/ui/SelectCuentaBancaria'
+import RepartoPagoModal from '@/components/pagos/RepartoPagoModal'
 import { usePermissions } from '@/store/authStore'
 import { mensajeError, esErrorSesionExpirada } from '@/utils/apiErrors'
 import type { Pago, Receptor, Credito, Gestor } from '@/types'
@@ -53,6 +54,9 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   const [modalExcedente, setModalExcedente] = useState(false)
   const [modalFecha, setModalFecha] = useState(false)
   const [modalCuentaBancaria, setModalCuentaBancaria] = useState(false)
+  // payment-multi-recipient (item 10, PR3): modal de reparto multi-destinatario
+  // para pagos YA PAGADOS. Pagos pendientes siguen usando modalCuentaBancaria.
+  const [modalReparto, setModalReparto] = useState(false)
   const [modalConfirmarNoProgramado, setModalConfirmarNoProgramado] = useState(false)
   const [modalTipoValidacion, setModalTipoValidacion] = useState(false)
   const [pagoAValidar, setPagoAValidar] = useState<Pago | null>(null)
@@ -155,12 +159,14 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   // handler: only the latest response is applied.
   const receptoresCuentaSeqRef = useRef(0)
   useEffect(() => {
-    if (!modalCuentaBancaria) return
+    // También se carga para modalReparto (item 10, PR3): RepartoPagoModal
+    // reusa esta misma lista + handleBusquedaReceptoresCuenta.
+    if (!modalCuentaBancaria && !modalReparto) return
     const seq = ++receptoresCuentaSeqRef.current
     receptoresApi.listar({ page: 1 })
       .then(r => { if (seq === receptoresCuentaSeqRef.current) setReceptoresCuenta(r.data.items) })
       .catch(() => {})
-  }, [modalCuentaBancaria])
+  }, [modalCuentaBancaria, modalReparto])
 
   const handleBusquedaReceptoresCuenta = useCallback((busqueda: string) => {
     const seq = ++receptoresCuentaSeqRef.current
@@ -813,14 +819,21 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                                 <Calendar size={14} />
                               </button>
                             )}
-                            {/* Modificar cuenta bancaria */}
+                            {/* Modificar cuenta bancaria — un pago YA PAGADO abre el
+                                reparto multi-destinatario (item 10, PR3); uno
+                                pendiente sigue usando el modal de cuenta única,
+                                porque PUT /pagos/{id}/repartos exige pagado=True. */}
                             {!p.es_proyectada && perms.canValidarPago && (
                               <button
                                 title="Modificar cuenta"
                                 onClick={() => {
                                   setPagoSeleccionado(p)
-                                  setNuevaCuentaBancaria(p.cuenta_bancaria_id ?? '')
-                                  setModalCuentaBancaria(true)
+                                  if (p.pagado) {
+                                    setModalReparto(true)
+                                  } else {
+                                    setNuevaCuentaBancaria(p.cuenta_bancaria_id ?? '')
+                                    setModalCuentaBancaria(true)
+                                  }
                                 }}
                                 className="p-1.5 bg-gray-500 text-white rounded-lg hover:opacity-90 transition-opacity"
                               >
@@ -1086,6 +1099,16 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
           </div>
         </div>
       </Modal>
+
+      {/* Modal: Reparto de pago pagado (item 10, PR3) */}
+      <RepartoPagoModal
+        isOpen={modalReparto}
+        onClose={() => setModalReparto(false)}
+        pago={pagoSeleccionado}
+        receptores={receptoresCuenta}
+        onBusquedaReceptores={handleBusquedaReceptoresCuenta}
+        onSaved={() => { setModalReparto(false); cargarPagos(false) }}
+      />
 
       {/* Modal: Pago no programado */}
       <Modal isOpen={modalNoProgramado} onClose={() => setModalNoProgramado(false)} title="Pago No Programado">

@@ -24,7 +24,9 @@ Chain strategy: stacked-to-main
 | 2 | Split schemas, GET/PUT `/repartos`, inheritance rule, EXISTS filter, `reportes.py` rewrite | PR 2 | `pytest backend/tests/test_pago_reparto_router.py backend/tests/test_pagos_router.py backend/tests/test_reportes.py -q` | Staging: PUT a 2-recipient split, confirm `GET /pagos?receptor_id=` matches once and revenue report splits correctly | Revert PR 2 only; PR 1's default-row behavior and ledger keep working |
 | 3 | Frontend `RepartoPagoModal.tsx` + `PagosPage.tsx` integration | PR 3 | TypeScript build (`npm run build` in `frontend/`) — no test runner in repo | Manual: open a paid pago, split across 2 recipients, confirm submit disabled until remainder is 0 | Revert PR 3 only; backend split API from PR 2 unaffected |
 
-## Phase 1: Model, Migration & Default Reparto (PR 1)
+## Phase 1: Model, Migration & Default Reparto (PR 1) — COMPLETE 2026-09-22
+
+**PR1 actual (2026-09-22)**: production code landed at 341 changed lines (close to the ~350 estimate), but total changed lines including Strict-TDD test code reached 764 (341 production + 423 tests, across 4 new files + 8 modified files). See apply-progress for the full breakdown — flagged as a risk for the post-apply review routing (likely crosses the 400-line "Hot path" tier).
 
 - [x] 1.1 Create `backend/app/models/pago_reparto.py`: `TipoDestinatario` enum, `PagoReparto(AuditMixin, Base)` with `pago_id`, `tipo_destinatario`, `cuenta_bancaria_id`, `cliente_id`, `monto`, CHECK `ck_pago_repartos_monto_positivo`, CHECK `ck_pago_repartos_destinatario`.
 - [x] 1.2 Add `Pago.repartos` relationship (`lazy="noload"`) in `backend/app/models/pago.py`; register model in `backend/app/models/__init__.py`.
@@ -102,13 +104,31 @@ Two blind judges reviewed the frozen 11-file diff (native `gentle-ai` review aga
 
 Full suite re-run after fixes: `pytest -q` → 624 passed, 0 failed.
 
-## Phase 3: Frontend (PR 3)
+## Phase 3: Frontend (PR 3) — COMPLETE 2026-09-22 (pending manual QA)
 
-- [ ] 3.1 Add `TipoDestinatario`, `RepartoItem`, `RepartoResponse` types to `frontend/src/types/index.ts`; add `repartos` to the `Pago` type.
-- [ ] 3.2 Add `pagosApi.obtenerRepartos(id)` / `pagosApi.reemplazarRepartos(id, items)` to `frontend/src/api/index.ts`.
-- [ ] 3.3 Create `frontend/src/components/pagos/RepartoPagoModal.tsx`: recipient search (`SelectCuentaBancaria` for accounts, `clientesApi.listar({busqueda})` for clients), per-row `monto` input, live "asignado / restante" indicator, submit disabled until remainder is 0.
-- [ ] 3.4 In `frontend/src/pages/Pagos/PagosPage.tsx`, route paid pagos' "Modificar cuenta" action to `RepartoPagoModal`; pending pagos keep the existing single-cuenta modal.
-- [ ] 3.5 Verify TypeScript build passes (`npm run build` in `frontend/`); manual smoke test of a 2-recipient split against the PR 2 API.
+**PR3 actual (2026-09-22)**: 370 changed lines (59 insertions/5 deletions across 3 modified files + 306-line new `RepartoPagoModal.tsx`), close to the ~350 estimate, no test code (frontend has no test runner). Within the Medium-risk budget.
+
+- [x] 3.1 Add `TipoDestinatario`, `RepartoItem`, `RepartoResponse` types to `frontend/src/types/index.ts`; add `repartos` to the `Pago` type.
+  - Evidence: types added verbatim per design.md's Interfaces block (`RepartoResponse extends RepartoItem` adding `id`/`etiqueta`). `Pago.repartos: RepartoResponse[]` is non-optional, matching the backend's `PagoResponse.repartos: list[RepartoResponse] = []` default (always present — confirmed by reading `_pago_row_a_dict` in `backend/app/routers/pagos.py`, which always sets `"repartos": []` even before the batched overwrite).
+- [x] 3.2 Add `pagosApi.obtenerRepartos(id)` / `pagosApi.reemplazarRepartos(id, items)` to `frontend/src/api/index.ts`.
+  - Evidence: `GET /pagos/{id}/repartos` → `RepartoResponse[]`; `PUT /pagos/{id}/repartos` sends `{ repartos: RepartoItem[] }`, matching `ReemplazarRepartosRequest` and the router signatures verified by reading `backend/app/schemas/pago_reparto.py` and `backend/app/routers/pagos.py` directly (not assumed).
+- [x] 3.3 Create `frontend/src/components/pagos/RepartoPagoModal.tsx`: recipient search (`SelectCuentaBancaria` for accounts, `clientesApi.listar({busqueda})` for clients), per-row `monto` input, live "asignado / restante" indicator, submit disabled until remainder is 0.
+  - Evidence: per-row `tipo_destinatario` toggle (cuenta_bancaria/cliente); `SelectCuentaBancaria` reused as-is for accounts; new self-contained `BuscadorCliente` subcomponent for clients (debounced `clientesApi.listar({busqueda})`, 300ms, "cancelado" race-guard matching this file's existing effect pattern) — selection is always by id from search results, free text is never sent (spec.md "Free-text client recipient rejected"). Live "Asignado / Restante" indicator (green when balanced, amber when short, red when over). Submit gated on: exact balance (compared in rounded cents to sidestep JS float noise — backend's exact-`Decimal` check remains the sole authority), every row having a selected destinatario and `monto > 0`, no duplicate destinatario across rows, and at least 1 row (the last row cannot be deleted). Loads existing repartos via `pagosApi.obtenerRepartos` on open; falls back to one empty row if a paid pago somehow has none yet.
+- [x] 3.4 In `frontend/src/pages/Pagos/PagosPage.tsx`, route paid pagos' "Modificar cuenta" action to `RepartoPagoModal`; pending pagos keep the existing single-cuenta modal.
+  - Evidence: the existing button's `onClick` now branches on `p.pagado` (paid → `setModalReparto(true)`; pending → unchanged `modalCuentaBancaria` flow, byte-identical to before). The `receptoresCuenta` loader effect was extended to also fire when `modalReparto` opens, reusing the exact same list + `handleBusquedaReceptoresCuenta` callback as the legacy modal (no new receptor-loading logic introduced, per design's "reuse the same style/conventions").
+- [x] 3.5 Verify TypeScript build passes (`npm run build` in `frontend/`); manual smoke test of a 2-recipient split against the PR 2 API.
+  - Evidence: `npx tsc --noEmit` → exit 0, no errors. `npm run build` (`tsc && vite build`) → exit 0, `✓ built in 22.36s`, 1661 modules transformed, no new warnings.
+  - **Manual UI smoke test performed 2026-09-22** (local backend `uvicorn` + `vite` dev server, non-prod local DB, browser automation): opened "Repartir Pago" on a paid pago (`Cuota #4`, $50.000). **Found and fixed a CRITICAL bug**: `totalObjetivo = pago.capital_pagado + pago.interes_pagado` (line 109) did plain `+` on the two fields — the backend serializes `Decimal` as JSON strings (`"50000.00"`, `"0.00"`), so this was **string concatenation** (`"50000.00"+"0.00"` → `"50000.000.00"`), not addition. That garbled string became `NaN` the moment it was compared against `asignado` (a number), permanently failing the `balanceado` check and disabling "Guardar reparto" for every possible input — `tsc` passed because the `Pago` type declares these fields as `number`, a type contract the runtime JSON payload doesn't honor. Fixed with `Number(pago.capital_pagado) + Number(pago.interes_pagado)`. Re-tested after the fix: single-recipient split (100% to one cuenta) saved successfully end-to-end (`PUT /pagos/{id}/repartos` → 200, toast "Reparto actualizado", list refreshed showing the new cuenta), and the live indicator correctly updated through "Restante" (amber) → "Cuadrado" (green) as a second/third row was added (verified up to a 2-cuenta + button-add-third-row state before ending the session). Backend was not touched — this was a pure frontend arithmetic bug.
+  - Full backend suite re-run after the fix (unaffected, frontend-only change): `pytest -q` → 624 passed, 0 failed.
+
+### Judgment Day (PR3) — 2026-09-22, 1 finding fixed
+
+Two blind judges reviewed the frozen 4-file diff (native `gentle-ai` review again `ambiguous`/`lineage_selection_required` — substituted with Judgment Day). Both judges independently converged on the SAME WARNING, no CRITICAL from either:
+
+- **WARNING (both judges, corroborated)**: the "duplicate destinatario" check built a key from `tipo_destinatario:id` without excluding empty ids, so two freshly-added blank rows of the same type (the normal flow of clicking "Agregar destinatario" before filling it in) collided on the same key and showed the red "Hay destinatarios duplicados" warning even though nothing had been selected yet. Never blocked saving (`filasCompletas` already gates that correctly) — a misleading UX message only. **Fixed**: `idsDestinatarios` now filters out empty-id rows before the duplicate check (`RepartoPagoModal.tsx`).
+- Both judges independently confirmed the already-known `totalObjetivo` `Number()` fix was correctly in place, and found no other Decimal-string arithmetic bugs, no stale-closure/race bugs in the `obtenerRepartos`/`BuscadorCliente` effects, correct request/response shape matching against the live backend, and correct error handling via `mensajeError`/toast.
+
+`npx tsc --noEmit` re-run after the fix: exit 0, no errors.
 
 ## Phase 4: Cleanup
 
