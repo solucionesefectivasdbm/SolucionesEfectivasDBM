@@ -58,7 +58,7 @@ Chain strategy: stacked-to-main
 - [x] 3.4 Add date inputs (`type="date"`, `YYYY-MM-DD` string state) following the `AuditoriaPage` pattern for interval mode.
 - [x] 3.5 Split rendering into `IngresosReporteView` and `CarteraVencidaReporteView` per D10 container/presentational split; clear the current report when report type changes.
 - [x] 3.6 Verify `npx tsc --noEmit` passes with no type errors.
-- [ ] 3.7 Manual check: momento mode Ingresos unchanged visually; interval mode both reports; Cartera Vencida shows totals + por-gestor with no por-receptor section. — NOT PERFORMED: no dev server available in this apply session (sandboxed, no safe way to start one). Outstanding manual browser check for the user before merging PR3.
+- [x] 3.7 Manual check: momento mode Ingresos unchanged visually; interval mode both reports; Cartera Vencida shows totals + por-gestor with no por-receptor section. — DONE 2026-09-23 via browser (backend :8000 + frontend :5173 on branch `feat/reportes-frontend-tipo-y-rango`): all 4 combos (Ingresos/Cartera Vencida × momento/intervalo) generated successfully, network requests confirmed 200 (`/reportes/ingresos?fecha_desde=...&fecha_hasta=...`, `/reportes/cartera-vencida?fecha_desde=...`, `/reportes/cartera-vencida?anio=...&mes=...&momento=...`), Cartera Vencida view has no por-receptor section, no console errors. Switching filter mode (momento↔intervalo) preserved the current report as designed; switching report type cleared it (D10).
 
 ## Phase 4: Spec/Docs cleanup
 

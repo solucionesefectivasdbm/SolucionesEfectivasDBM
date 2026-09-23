@@ -231,3 +231,66 @@ Fixed during this verify pass: spec.md date-arithmetic typo (2026-09-15 to 2026-
 ## Verdict
 
 PASS WITH WARNINGS (0 new CRITICAL, 0 new blocking WARNING, 1 non-blocking SUGGESTION, plus 1 pre-existing non-blocking WARNING carried from PR1). PR2 (tasks 2.1-2.9) is complete, correctly scoped, spec-compliant (after the spec-text date fix applied in this pass), and independently verified with passing runtime evidence (658/658 backend tests, 13/13 new cartera-vencida tests). Decimal/async/single-query/soft-delete AGENTS.md conventions all confirmed. No Phase 3 (frontend) scope leakage. Safe to push feat/reportes-cartera-vencida and open a stacked PR2 (base = feat/reportes-rango-fechas).
+
+---
+
+# Verification Report — reportes-cartera-vencida-y-rango-fechas (PR3 scope, addendum)
+
+**Change**: reportes-cartera-vencida-y-rango-fechas
+**Scope verified**: Phase 3 (PR3) tasks 3.1-3.6 + deferred task 1.11 (frontend). Task 3.7 (manual browser check) is a documented-pending human step, not treated as a verification failure.
+**Commit**: `054e450` on `feat/reportes-frontend-tipo-y-rango` (stacked on `feat/reportes-cartera-vencida`), not pushed.
+
+**Verdict**: PASS WITH WARNINGS (0 CRITICAL, 0 blocking WARNING, 1 documented-pending item, 1 non-blocking SUGGESTION carried from PR2)
+
+## Task completeness
+
+1.11, 3.1-3.6 all checked in `tasks.md` and independently verified against code. 3.7 correctly left unchecked with an accurate reason note (no dev server available in the sandboxed apply session) — documented outstanding human step, not a silent omission.
+
+## Build evidence
+
+`cd frontend && npx tsc --noEmit` — independently re-run by this verify pass. **Exit code 0, zero type errors.** Matches design.md's designated frontend verification command ("No test infra. Verify with `npx tsc --noEmit` and a manual check.").
+
+## Code inspection
+
+- **ReportesPage.tsx**: report-type selector (Ingresos / Cartera Vencida) and filter-mode selector (Por momento / Por intervalo) present and functional. Momento mode reuses existing `MOMENTOS`/`MESES`/`aniosDisponibles` dropdowns unchanged. Interval mode date inputs (`type="date"`, `className="input"`, `label` wrapper, `fecha_desde`/`fecha_hasta` field names) match `AuditoriaPage.tsx`'s pattern exactly, line-for-line structure. Report state cleared on `tipoReporte` change (D10 compliance) via `cambiarTipoReporte`. Error handling: `catch (e: any)` + `e.response?.data?.detail ?? fallback` — matches AGENTS.md convention.
+- **CarteraVencidaReporteView.tsx**: renders totals ("Total Vencido" card) + "Cuotas Vencidas" stat + por-gestor table. Grepped for receptor-related JSX — zero matches. No por-receptor section, matching spec.
+- **IngresosReporteView.tsx**: extracted verbatim from prior inline JSX, typed with `ReporteIngresos`, no behavior change.
+
+## Type-drift check (frontend vs backend, field-for-field)
+
+Compared `backend/app/routers/reportes.py` Pydantic models against `frontend/src/types/index.ts` directly:
+- `ReporteResponseExtendido` ↔ `ReporteIngresos`: exact match (13 fields, optional `anio`/`mes`/`momento`, required `fecha_inicio`/`fecha_fin`).
+- `ReporteDetalleGestorExtendido`/`ReporteDetalleCuentaExtendido`/`ReporteDetalleReceptorExtendido` ↔ `ReporteDetalleGestor`/`ReporteDetalleCuenta`/`ReporteDetalleReceptor`: exact field match (shorter frontend names retained by design, shapes fixed).
+- `CarteraVencidaGestor` ↔ `CarteraVencidaGestor`: exact match, same name both sides.
+- `CarteraVencidaResponse` ↔ `ReporteCarteraVencida`: exact match, no `por_receptor` on either side.
+
+No silent drift found — this was the highest-risk area per scope and it is clean.
+
+## API layer check
+
+`reportesApi.ingresos()` → `GET /reportes/ingresos`, `reportesApi.carteraVencida()` → `GET /reportes/cartera-vencida`. `FiltroReporte` union (`{anio,mes,momento} | {fecha_desde,fecha_hasta}`) enforces the mutually-exclusive momento/interval contract at the TS level per design's Interfaces snippet.
+
+## Scope leakage check
+
+`git diff feat/reportes-cartera-vencida..feat/reportes-frontend-tipo-y-rango --stat` → exactly 6 files: `frontend/src/api/index.ts`, `CarteraVencidaReporteView.tsx` (new), `IngresosReporteView.tsx` (new), `ReportesPage.tsx`, `types/index.ts`, `tasks.md`. Zero backend files touched.
+
+## Stale-type-removal blast-radius check
+
+Repo-wide grep for `\bReporte\b` → only `ReportesPage.tsx` and `types/index.ts` match (both define/consume the new types). No other file imported the old `Reporte` type — removal is safe.
+
+## Correction of a stale claim carried by the apply agent
+
+The PR3 apply agent's handback claimed the spec.md `fecha_entrada_mora` date slip (2026-09-15 vs 2026-09-14) was "carried over from PR2, unresolved." This is **false**: `openspec/changes/reportes-cartera-vencida-y-rango-fechas/specs/reportes/spec.md` line 124 already reads `2026-09-14`. It was found and fixed during PR2's verify pass (commit `9a6ac52`, part of `feat/reportes-cartera-vencida`'s history, which PR3 branches from). Not re-flagged as pending; recorded here as a documentation correction only.
+
+## Issues
+
+- CRITICAL: none.
+- WARNING: none new (1 non-blocking SUGGESTION carried from PR2's verify pass, re: spec THEN-clauses could state `fecha_fin` clamping more explicitly — unrelated to PR3, still open).
+- SUGGESTION: none new for PR3.
+
+## Outstanding (non-blocking, documented)
+
+- Task 3.7: manual browser check — outstanding for the user/orchestrator before merging PR3.
+- Phase 4 (4.1-4.2): docs/spec traceability check — no code, not started.
+
+**Next recommended**: code-level PR3 is clean and mergeable pending task 3.7's manual browser check; `sdd-archive` should wait for that human step and Phase 4 completion.
