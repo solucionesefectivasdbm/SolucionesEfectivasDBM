@@ -11,7 +11,7 @@ aparecerán pagos con fecha_maxima entre el 30 de enero y el 4 de febrero.
 
 Los tests unitarios de este módulo son OBLIGATORIOS.
 """
-from datetime import date
+from datetime import date, timedelta
 
 
 def get_momento(fecha: date) -> str:
@@ -194,6 +194,57 @@ def en_mora(fecha_maxima: date, hoy: date) -> bool:
     que contiene `hoy`.
     """
     return fecha_maxima < fecha_limite_mora(hoy)
+
+
+def fecha_entrada_mora(fecha_maxima: date) -> date:
+    """
+    overdue-evaluation: Derived Entrada-en-Mora Date (reportes-cartera-
+    vencida-y-rango-fechas, design D3).
+
+    Retorna el día inmediatamente posterior al cierre del momento (m1..m5)
+    que contiene `fecha_maxima`, es decir, el día en que un pago no pagado
+    con esa `fecha_maxima` entra en mora.
+
+    Reutiliza get_mes_momento/get_momento/get_periodo_momento — la misma
+    clasificación de momento que ya usa en_mora() — en vez de una fórmula
+    de fechas independiente, para quedar consistente con en_mora() en cada
+    frontera (incluyendo cruce de mes, cruce de año y febrero) por
+    construcción.
+
+    Args:
+        fecha_maxima: La fecha máxima de pago de una cuota no pagada.
+
+    Returns:
+        La fecha en la que esa cuota entra en mora.
+    """
+    anio, mes = get_mes_momento(fecha_maxima)
+    momento = get_momento(fecha_maxima)
+    _, fin = get_periodo_momento(anio, mes, momento)
+    return fin + timedelta(days=1)
+
+
+def bounds_entrada_mora(inicio: date, fin: date) -> tuple[date, date]:
+    """
+    reportes-cartera-vencida-y-rango-fechas, design D4.
+
+    Retorna (lo, hi) tal que `lo <= fecha_maxima < hi` es equivalente a
+    `inicio <= fecha_entrada_mora(fecha_maxima) <= fin`, para cualquier
+    fecha_maxima. Permite filtrar cartera vencida con un rango SQL sobre
+    `fecha_maxima` en vez de calcular fecha_entrada_mora fila por fila.
+
+    La fecha de entrada en mora solo avanza cuando fecha_maxima avanza, así
+    que "fecha de entrada en [inicio, fin]" equivale a "fecha_maxima en
+    [limite(inicio - 1 día), limite(fin))" — el mismo tipo de rango que ya
+    usa /alertas/vencidos vía fecha_limite_mora(), indexable y sin N+1.
+
+    Args:
+        inicio: Primer día (inclusive) de la ventana de entrada en mora.
+        fin: Último día (inclusive) de la ventana de entrada en mora.
+
+    Returns:
+        Tupla (lo, hi): lo es inclusive, hi es exclusive.
+    """
+    return fecha_limite_mora(inicio - timedelta(days=1)), fecha_limite_mora(fin)
 
 
 def flags_mora(fecha_maxima: date, pagado: bool, hoy: date, limite: date) -> dict:

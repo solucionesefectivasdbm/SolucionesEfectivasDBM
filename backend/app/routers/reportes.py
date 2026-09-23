@@ -1,7 +1,8 @@
 """routers/reportes.py — Reportes financieros por período."""
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
@@ -61,9 +62,13 @@ class ReporteDetalleReceptorExtendido(BaseModel):
 
 
 class ReporteResponseExtendido(BaseModel):
-    anio: int
-    mes: int
-    momento: str
+    # anio/mes/momento son None en modo por intervalo (D9). fecha_inicio/
+    # fecha_fin son aditivos y siempre vienen llenos, en ambos modos.
+    anio: int | None = None
+    mes: int | None = None
+    momento: str | None = None
+    fecha_inicio: date
+    fecha_fin: date
     total_recaudado: float
     total_intereses_recaudados: float
     total_capital_recaudado: float
@@ -75,20 +80,97 @@ class ReporteResponseExtendido(BaseModel):
     por_receptor: list[ReporteDetalleReceptorExtendido]
 
 
+# ─── Ventana (por momento o por intervalo) ────────────────────────────────────
+
+def resolver_ventana(
+    anio: int | None,
+    mes: int | None,
+    momento: str | None,
+    fecha_desde: date | None,
+    fecha_hasta: date | None,
+) -> tuple[date, date]:
+    """
+    reportes-cartera-vencida-y-rango-fechas, design D2 (Requirement: Two
+    Mutually Exclusive Filter Modes). Resuelve la ventana (fecha_inicio,
+    fecha_fin) de un reporte a partir de los query params, en uno de dos
+    modos mutuamente excluyentes:
+
+    - "por momento": `anio` + `mes` + `momento`, los tres juntos.
+    - "por intervalo": `fecha_desde` + `fecha_hasta`, los dos juntos.
+
+    Valida ANTES de tocar la base de datos: ambos modos completos, ambos
+    modos parciales, o ningún modo -> HTTPException(422) y no se ejecuta
+    ninguna consulta. Un `momento` inválido también es 422 (antes de este
+    cambio causaba un `ValueError` sin capturar -> 500).
+
+    Vive en el router (no en utils/momentos.py) porque valida entrada HTTP;
+    momentos.py se mantiene como lógica de fechas pura.
+    """
+    momento_campos = (anio, mes, momento)
+    intervalo_campos = (fecha_desde, fecha_hasta)
+    momento_dado = any(c is not None for c in momento_campos)
+    intervalo_dado = any(c is not None for c in intervalo_campos)
+    momento_completo = all(c is not None for c in momento_campos)
+    intervalo_completo = all(c is not None for c in intervalo_campos)
+
+    if momento_dado and not momento_completo:
+        raise HTTPException(
+            status_code=422, detail="anio, mes y momento deben enviarse juntos"
+        )
+    if intervalo_dado and not intervalo_completo:
+        raise HTTPException(
+            status_code=422, detail="fecha_desde y fecha_hasta deben enviarse juntos"
+        )
+    if momento_completo and intervalo_completo:
+        raise HTTPException(
+            status_code=422,
+            detail="Use un solo modo de filtro: por momento o por intervalo, no ambos",
+        )
+    if momento_completo:
+        try:
+            return get_periodo_momento(anio, mes, momento)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if intervalo_completo:
+        if fecha_desde > fecha_hasta:
+            raise HTTPException(
+                status_code=422,
+                detail="fecha_desde no puede ser posterior a fecha_hasta",
+            )
+        return fecha_desde, fecha_hasta
+
+    raise HTTPException(
+        status_code=422,
+        detail="Debe especificar anio+mes+momento o fecha_desde+fecha_hasta",
+    )
+
+
 # ─── Router ───────────────────────────────────────────────────────────────────
 
 router = APIRouter(prefix="/reportes", tags=["Reportes"])
 
 
-@router.get("", response_model=ReporteResponseExtendido)
-async def generar_reporte(
-    anio: int = Query(...),
-    mes: int = Query(..., ge=1, le=12),
-    momento: str = Query(...),
+@router.get("/ingresos", response_model=ReporteResponseExtendido)
+@router.get("", response_model=ReporteResponseExtendido, include_in_schema=False)
+async def generar_reporte_ingresos(
+    anio: int | None = Query(None),
+    mes: int | None = Query(None, ge=1, le=12),
+    momento: str | None = Query(None),
+    fecha_desde: date | None = Query(None),
+    fecha_hasta: date | None = Query(None),
     current_user: Usuario = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ):
-    fecha_inicio, fecha_fin = get_periodo_momento(anio, mes, momento)
+    """
+    Reporte de ingresos por ventana de fechas, por momento (m1..m5) o por
+    intervalo (`fecha_desde`/`fecha_hasta`) — ver `resolver_ventana`.
+
+    `GET /reportes` (sin sufijo) es un alias oculto de este mismo handler
+    (design D1): mismo comportamiento en modo por momento, para que los
+    clientes existentes seguir funcionando sin cambios mientras se despliega
+    el frontend que consume `/reportes/ingresos`.
+    """
+    fecha_inicio, fecha_fin = resolver_ventana(anio, mes, momento, fecha_desde, fecha_hasta)
 
     todos_query = (
         select(Pago)
@@ -288,6 +370,8 @@ async def generar_reporte(
         anio=anio,
         mes=mes,
         momento=momento,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
         total_recaudado=total_recaudado,
         total_intereses_recaudados=total_intereses_rec,
         total_capital_recaudado=total_capital_rec,
