@@ -1100,7 +1100,12 @@ async def alertas_proximos_vencer(
     limite = hoy + timedelta(days=dias)
 
     query = (
-        select(Pago)
+        select(
+            Pago,
+            Cliente.nombre.label("cliente_nombre"),
+            Cliente.apellidos.label("cliente_apellidos"),
+            Credito.numero_credito_cliente.label("numero_credito_cliente"),
+        )
         .join(Credito, Pago.credito_id == Credito.id)
         .join(Cliente, Credito.cliente_id == Cliente.id)
         .where(
@@ -1119,8 +1124,16 @@ async def alertas_proximos_vencer(
         if gestor:
             query = query.where(Cliente.gestor_id == gestor.id)
 
-    pagos = (await db.execute(query.order_by(Pago.fecha_maxima))).scalars().all()
-    return [PagoResponse.model_validate(p) for p in pagos]
+    rows = (await db.execute(query.order_by(Pago.fecha_maxima))).all()
+    return [
+        PagoResponse.model_validate(row.Pago).model_copy(
+            update={
+                "cliente_nombre": f"{row.cliente_nombre} {row.cliente_apellidos}",
+                "numero_credito_cliente": row.numero_credito_cliente,
+            }
+        )
+        for row in rows
+    ]
 
 
 @router.get("/alertas/vencidos")
@@ -1139,7 +1152,12 @@ async def alertas_vencidos(
     limite = fecha_limite_mora(hoy)
 
     query = (
-        select(Pago)
+        select(
+            Pago,
+            Cliente.nombre.label("cliente_nombre"),
+            Cliente.apellidos.label("cliente_apellidos"),
+            Credito.numero_credito_cliente.label("numero_credito_cliente"),
+        )
         .join(Credito, Pago.credito_id == Credito.id)
         .join(Cliente, Credito.cliente_id == Cliente.id)
         .where(
@@ -1157,17 +1175,24 @@ async def alertas_vencidos(
         if gestor:
             query = query.where(Cliente.gestor_id == gestor.id)
 
-    pagos = (await db.execute(query.order_by(Pago.fecha_maxima))).scalars().all()
-    total_mora = sum(p.monto_a_pagar - p.capital_pagado - p.interes_pagado for p in pagos)
+    rows = (await db.execute(query.order_by(Pago.fecha_maxima))).all()
+    total_mora = sum(
+        row.Pago.monto_a_pagar - row.Pago.capital_pagado - row.Pago.interes_pagado
+        for row in rows
+    )
 
     return {
-        "total_pagos_vencidos": len(pagos),
+        "total_pagos_vencidos": len(rows),
         "total_monto_mora": float(total_mora),
         "pagos": [
-            PagoResponse.model_validate(p).model_copy(
-                update=flags_mora(p.fecha_maxima, p.pagado, hoy, limite)
+            PagoResponse.model_validate(row.Pago).model_copy(
+                update={
+                    **flags_mora(row.Pago.fecha_maxima, row.Pago.pagado, hoy, limite),
+                    "cliente_nombre": f"{row.cliente_nombre} {row.cliente_apellidos}",
+                    "numero_credito_cliente": row.numero_credito_cliente,
+                }
             )
-            for p in pagos
+            for row in rows
         ],
     }
 

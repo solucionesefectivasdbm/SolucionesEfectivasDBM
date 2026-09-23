@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import toast from 'react-hot-toast'
 import { pagosApi, clientesApi, creditosApi } from '@/api'
 import { formatCOP, formatFecha } from '@/utils/formatters'
 import { StatCard, LoadingPage } from '@/components/ui'
@@ -30,7 +31,7 @@ export default function DashboardPage() {
         setTotalClientes(cl.data.total)
         setTotalCreditos(cr.data.total)
         setSaldoCartera(cartera.data.saldo_capital)
-      } catch {}
+      } catch (e: any) { toast.error(e.response?.data?.detail || 'Error al cargar el panel de control') }
       finally { setLoading(false) }
     }
     cargar()
@@ -95,14 +96,16 @@ export default function DashboardPage() {
           {proximos.length === 0 ? (
             <p className="text-center text-gray-400 text-sm py-8">Sin pagos próximos a vencer ✓</p>
           ) : (
-            <div className="space-y-2">
-              {proximos.slice(0, 8).map((p) => (
+            <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+              {proximos.map((p) => (
                 <div key={p.id} className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
                   <div>
-                    <p className="text-sm font-medium text-gray-700">Cuota #{p.numero_cuota}</p>
-                    <p className="text-xs text-gray-400">Vence: {formatFecha(p.fecha_maxima)}</p>
+                    <p className="text-sm font-medium text-gray-700">{p.cliente_nombre ?? 'Cliente'}</p>
+                    <p className="text-xs text-gray-400">
+                      Crédito #{p.numero_credito_cliente ?? '-'} · Cuota #{p.numero_cuota} · Vence: {formatFecha(p.fecha_maxima)}
+                    </p>
                   </div>
-                  <p className="text-sm font-bold text-primary-600">{formatCOP(p.monto_a_pagar)}</p>
+                  <p className="text-sm font-bold text-primary-600 shrink-0 ml-3">{formatCOP(p.monto_a_pagar)}</p>
                 </div>
               ))}
             </div>
@@ -123,14 +126,16 @@ export default function DashboardPage() {
                 <span className="text-sm font-medium text-danger">Total atrasado</span>
                 <span className="font-black text-danger">{formatCOP(vencidos.total_monto_mora)}</span>
               </div>
-              <div className="space-y-2">
-                {vencidos.pagos.slice(0, 6).map((p) => (
+              <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                {vencidos.pagos.map((p) => (
                   <div key={p.id} className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
                     <div>
-                      <p className="text-sm font-medium text-gray-700">Cuota #{p.numero_cuota}</p>
-                      <p className="text-xs text-gray-400">Venció: {formatFecha(p.fecha_maxima)}</p>
+                      <p className="text-sm font-medium text-gray-700">{p.cliente_nombre ?? 'Cliente'}</p>
+                      <p className="text-xs text-gray-400">
+                        Crédito #{p.numero_credito_cliente ?? '-'} · Cuota #{p.numero_cuota} · Venció: {formatFecha(p.fecha_maxima)}
+                      </p>
                     </div>
-                    <div className="text-right">
+                    <div className="text-right shrink-0 ml-3">
                       <p className="text-sm font-bold text-danger">{formatCOP(p.monto_a_pagar)}</p>
                     </div>
                   </div>
