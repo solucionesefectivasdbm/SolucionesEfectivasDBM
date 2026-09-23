@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useId, useRef } from 'react'
 import { pagosApi, receptoresApi, creditosApi, gestoresApi } from '@/api'
 import { formatCOP, formatFecha, formatCuentaBancaria, MESES, MOMENTOS, aniosDisponibles } from '@/utils/formatters'
-import { LoadingPage, EmptyState, Paginacion, PagoBadge, ConfirmarCreacion, ConfirmarCierreInteresPendiente, type ItemConfirmacion } from '@/components/ui'
+import { LoadingPage, EmptyState, Paginacion, PagoBadge, ConfirmarCreacion, ConfirmarCierreInteresPendiente, ConfirmDelete, type ItemConfirmacion } from '@/components/ui'
 import Modal from '@/components/ui/Modal'
 import SelectCuentaBancaria from '@/components/ui/SelectCuentaBancaria'
 import RepartoPagoModal from '@/components/pagos/RepartoPagoModal'
@@ -85,6 +85,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   const [esAplazamiento, setEsAplazamiento] = useState(false)
   const [nuevaCuentaBancaria, setNuevaCuentaBancaria] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [pagoADesvalidar, setPagoADesvalidar] = useState<Pago | null>(null)
 
   // En las variantes semanal, diario y aplazados, momento es opcional (o no
   // aplica) → filtros siempre completos.
@@ -362,13 +363,13 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
     }
   }
 
-  const handleDesvalidar = async (pago: Pago) => {
-    if (submitting) return
-    if (!confirm(`¿Revertir el check de la cuota #${pago.numero_cuota} de ${pago.cliente_nombre}?`)) return
+  const handleDesvalidar = async () => {
+    if (!pagoADesvalidar || submitting) return
     setSubmitting(true)
     try {
-      await pagosApi.desvalidar(pago.id)
+      await pagosApi.desvalidar(pagoADesvalidar.id)
       toast.success('Check revertido')
+      setPagoADesvalidar(null)
       cargarPagos(false)
     } catch (e: any) {
       const msg = mensajeError(e, 'No se pudo revertir el check')
@@ -782,7 +783,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                             {!p.es_proyectada && perms.canValidarPago && !p.pagado && p.validado_recaudador && (
                               <button
                                 title="Revertir check"
-                                onClick={() => handleDesvalidar(p)}
+                                onClick={() => setPagoADesvalidar(p)}
                                 disabled={submitting}
                                 className="p-1.5 bg-orange-500 text-white rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50"
                               >
@@ -1197,6 +1198,21 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
           onVolver={handleVolverNoProgramado}
           loading={submitting}
           textoConfirmar="Confirmar y registrar"
+        />
+      </Modal>
+
+      {/* Modal: Revertir check. Reemplaza window.confirm() — bloqueado
+          silenciosamente en iOS/Android cuando la app corre como PWA
+          instalada (modo standalone), que es como suelen usarla los
+          recaudadores en el celular. */}
+      <Modal isOpen={pagoADesvalidar !== null} onClose={() => setPagoADesvalidar(null)} title="Revertir check" size="sm">
+        <ConfirmDelete
+          message={`¿Revertir el check de la cuota #${pagoADesvalidar?.numero_cuota} de ${pagoADesvalidar?.cliente_nombre}?`}
+          onConfirm={handleDesvalidar}
+          onCancel={() => setPagoADesvalidar(null)}
+          loading={submitting}
+          confirmLabel="Revertir"
+          loadingLabel="Revirtiendo..."
         />
       </Modal>
 
