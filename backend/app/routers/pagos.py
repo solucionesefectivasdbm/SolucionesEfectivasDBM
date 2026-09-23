@@ -19,7 +19,7 @@ from decimal import Decimal
 from typing import Annotated, NoReturn, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
@@ -30,6 +30,7 @@ from app.models.cliente import Cliente
 from app.models.credito import Credito, Periodicidad
 from app.models.gestor import Gestor
 from app.models.pago import Pago, TipoCuota
+from app.models.pago_reparto import PagoReparto
 from app.models.receptor import CuentaBancaria, Receptor
 from app.models.usuario import TipoUsuario, Usuario
 from app.schemas.common import PaginatedResponse
@@ -44,6 +45,7 @@ from app.schemas.pago import (
     RegistrarPagoResponse,
     ValidarPagoRequest,
 )
+from app.schemas.pago_reparto import ReemplazarRepartosRequest, RepartoResponse
 from app.services import audit_service, pago_reparto_service
 from app.services.credito_service import credito_operativamente_abierto
 from app.services.cuenta_bancaria_service import obtener_cuenta_o_404
@@ -105,6 +107,11 @@ def _pago_row_a_dict(row, hoy: date, limite: date) -> dict:
         "es_proyectada": False,
         "razon_bloqueo": None,
         "tipo_credito": row.tipo_credito,
+        # payment-multi-recipient (item 10, PR2): default vacío — el
+        # listado (`listar_pagos`) lo sobrescribe en batch para los items de
+        # la página; `listar_pagos_aplazados` y otros sitios que no lo
+        # hacen se quedan con la lista vacía, no con un campo faltante.
+        "repartos": [],
         **flags_mora(row.fecha_maxima, row.pagado, hoy, limite),
     }
 
@@ -331,16 +338,36 @@ async def listar_pagos(
         query, current_user=current_user, db=db, gestor_id=gestor_id,
         cliente_id=cliente_id, busqueda=busqueda,
     )
-    if receptor_id:
-        # `Pago.receptor_id` está deprecado (decision 7, nunca se lee desde
-        # PR2a): se resuelve vía las cuentas bancarias del receptor.
-        query = query.where(
-            Pago.cuenta_bancaria_id.in_(
-                select(CuentaBancaria.id).where(CuentaBancaria.receptor_id == receptor_id)
+    if receptor_id or cuenta_bancaria_id:
+        # payment-multi-recipient (item 10, PR2): un pago PAGADO ya no tiene
+        # una `Pago.cuenta_bancaria_id` confiable como "la" cuenta (puede
+        # haber quedado en una sola de varias, o en None tras un reparto
+        # multi-destinatario — ver `aplicar_herencia`). La fuente de verdad
+        # es `pago_repartos`; se usa EXISTS (no JOIN) para no duplicar filas
+        # cuando 2 cuentas del receptor filtrado coinciden con el mismo pago
+        # (design.md 'List filter'). Un pago PENDIENTE todavía no tiene
+        # repartos (invariante I1) — sigue matcheando por la columna legacy.
+        if cuenta_bancaria_id:
+            # `cuenta_bancaria_id` siempre acota al conjunto de 1 sola
+            # cuenta, incluso si `receptor_id` también viene (ya validado
+            # arriba que esa cuenta pertenece al receptor).
+            cuentas_scope = select(CuentaBancaria.id).where(CuentaBancaria.id == cuenta_bancaria_id)
+        else:
+            cuentas_scope = select(CuentaBancaria.id).where(CuentaBancaria.receptor_id == receptor_id)
+
+        reparto_coincide = exists(
+            select(PagoReparto.id).where(
+                PagoReparto.pago_id == Pago.id,
+                PagoReparto.deleted_at == None,  # noqa: E711
+                PagoReparto.cuenta_bancaria_id.in_(cuentas_scope),
             )
         )
-    if cuenta_bancaria_id:
-        query = query.where(Pago.cuenta_bancaria_id == cuenta_bancaria_id)
+        query = query.where(
+            or_(
+                reparto_coincide,
+                and_(Pago.pagado == False, Pago.cuenta_bancaria_id.in_(cuentas_scope)),  # noqa: E712
+            )
+        )
     if solo_periodicidad:
         query = query.where(Credito.periodicidad == solo_periodicidad)
 
@@ -396,6 +423,17 @@ async def listar_pagos(
     total = len(todos)
     inicio = (page - 1) * page_size
     page_items = todos[inicio : inicio + page_size]
+
+    # payment-multi-recipient (item 10, PR2): carga batched (1 query, sin
+    # N+1) de los repartos de los pagos REALES de esta página. Las filas
+    # virtuales nunca tienen reparto (es_proyectada=True se salta acá y
+    # se queda con el default `[]` de `_pago_row_a_dict`).
+    ids_reales_pagina = [x["id"] for x in page_items if not x.get("es_proyectada")]
+    if ids_reales_pagina:
+        repartos_map = await pago_reparto_service.repartos_por_pago(db, ids_reales_pagina)
+        for x in page_items:
+            if not x.get("es_proyectada"):
+                x["repartos"] = repartos_map.get(x["id"], [])
 
     items = [PagoResponse.model_validate(x) for x in page_items]
 
@@ -935,6 +973,71 @@ async def modificar_cuenta_bancaria_pago(
     resumen = CuentaBancariaResumen.model_validate(cuenta)
     respuesta = PagoResponse.model_validate(pago).model_copy(update={"cuenta_bancaria": resumen})
     return respuesta
+
+
+@router.get("/{pago_id}/repartos", response_model=list[RepartoResponse])
+async def obtener_repartos_pago(
+    pago_id: uuid.UUID,
+    current_user: Usuario = Depends(require_role("admin", "recaudador")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Repartos activos de un pago (payment-multi-recipient, item 10, PR2)."""
+    pago, _ = await _get_pago_con_credito(db, pago_id)
+    mapa = await pago_reparto_service.repartos_por_pago(db, [pago.id])
+    return [RepartoResponse.model_validate(d) for d in mapa.get(pago.id, [])]
+
+
+@router.put("/{pago_id}/repartos", response_model=list[RepartoResponse])
+async def reemplazar_repartos_pago(
+    pago_id: uuid.UUID,
+    body: ReemplazarRepartosRequest,
+    request: Request,
+    current_user: Usuario = Depends(require_role("admin", "recaudador")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Reemplaza el set completo de repartos de un pago YA PAGADO
+    (payment-multi-recipient, item 10, PR2). Lockea el crédito
+    (`lock=True`) por la misma razón que el PATCH legacy de cuenta bancaria
+    (Judgment Day PR1, hallazgo CRITICAL): dos PUT concurrentes sobre el
+    mismo pago podrían, sin el lock, dejar más de un set de repartos activo
+    a la vez.
+
+    Tras reemplazar, aplica la regla de herencia (`aplicar_herencia`): con
+    2+ destinatarios, limpia `pago.cuenta_bancaria_id` y, si corresponde, la
+    cuenta heredada de la siguiente cuota pendiente (design.md 'Inheritance').
+    """
+    pago, _ = await _get_pago_con_credito(db, pago_id, lock=True)
+
+    try:
+        repartos_antes, repartos_despues = await pago_reparto_service.reemplazar_repartos(
+            db, pago, body.repartos,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    cuenta_anterior, h, siguientes_afectados = await pago_reparto_service.aplicar_herencia(
+        db, pago, repartos_despues,
+    )
+
+    cambios_pago: dict = {"repartos": (repartos_antes, repartos_despues)}
+    if cuenta_anterior != h:
+        cambios_pago["cuenta_bancaria_id"] = (str(cuenta_anterior), str(h))
+    await audit_service.registrar_actualizacion_campos(
+        db=db, entidad="pagos", entidad_id=pago.id,
+        usuario_id=current_user.id, ip_origen=get_client_ip(request),
+        cambios=cambios_pago,
+    )
+    for siguiente_id in siguientes_afectados:
+        await audit_service.registrar_actualizacion_campos(
+            db=db, entidad="pagos", entidad_id=siguiente_id,
+            usuario_id=current_user.id, ip_origen=get_client_ip(request),
+            cambios={"cuenta_bancaria_id": (str(cuenta_anterior), "None")},
+        )
+    await db.flush()
+
+    mapa = await pago_reparto_service.repartos_por_pago(db, [pago.id])
+    return [RepartoResponse.model_validate(d) for d in mapa.get(pago.id, [])]
 
 
 @router.post("/no-programado/{credito_id}", response_model=PagoResponse, status_code=201)

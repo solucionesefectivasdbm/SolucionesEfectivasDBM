@@ -6,6 +6,7 @@ from pydantic import BaseModel, field_validator
 
 from app.models.credito import TipoCredito
 from app.models.pago import TipoCuota, DestinoExcedente
+from app.schemas.pago_reparto import RepartoResponse
 from app.schemas.receptor import CuentaBancariaResumen
 
 
@@ -48,6 +49,11 @@ class PagoResponse(BaseModel):
     # model_validate(ORM) que no recalcula estos flags.
     vencido: bool = False
     en_mora: bool = False
+    # payment-multi-recipient (item 10, PR2): destinatarios del reparto de
+    # este pago. Vacío por default — cubre filas virtuales/proyectadas (que
+    # nunca tienen reparto) y cualquier sitio que no lo cargue explícito
+    # (GET /pagos lo carga batched; ver pago_reparto_service.repartos_por_pago).
+    repartos: list[RepartoResponse] = []
 
     @field_validator("veces_aplazado", mode="before")
     @classmethod

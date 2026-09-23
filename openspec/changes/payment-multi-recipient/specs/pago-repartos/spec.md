@@ -95,15 +95,14 @@ prior value is required; the original value is not preserved in history.
 - WHEN an admin deletes one and reallocates the other to preserve the sum
 - THEN only the remaining reparto persists
 
-### Requirement: No Account Inheritance After Split
+### Requirement: Account Inheritance Only From a Single Cuenta Recipient
 
-When the immediately prior `Pago` for a credito was split across more than
-one recipient — regardless of recipient type (cuenta, cliente, or a mix) —
-`generar_siguiente_cuota` MUST NOT copy any account onto the next
-installment; the next `Pago.cuenta_bancaria_id` MUST be null pending explicit
-selection. Existing inheritance behavior (per the
-receiver-bank-account-assignment spec) is unchanged for a payment with
-exactly one recipient.
+`generar_siguiente_cuota` MUST copy an account onto the next installment
+ONLY when the immediately prior `Pago` for the credito has exactly one
+active reparto recipient AND that recipient is of type `cuenta_bancaria`.
+Every other case MUST leave the next `Pago.cuenta_bancaria_id` null pending
+explicit selection: 2+ recipients of any type (cuenta+cuenta, cuenta+cliente,
+cliente+cliente), and a single recipient of type `cliente`.
 
 #### Scenario: Prior payment split across two accounts
 
@@ -123,6 +122,14 @@ exactly one recipient.
 - GIVEN a paid `Pago` with a single `cuenta_bancaria_id` and no `pago_repartos` rows
 - WHEN `generar_siguiente_cuota` creates the next installment
 - THEN existing inheritance behavior (per the receiver-bank-account-assignment spec) is unchanged
+
+#### Scenario: Prior payment's sole recipient is a client, not an account
+
+- GIVEN a paid `Pago` whose only active reparto is to an existing `Cliente`
+  (no `cuenta_bancaria` recipient at all)
+- WHEN `generar_siguiente_cuota` creates the next installment
+- THEN the new `Pago.cuenta_bancaria_id` is null — there is no account to
+  inherit, even though the split had only one recipient
 
 ### Requirement: Revenue Reports Attribute Split Pagos Per Cuenta
 
