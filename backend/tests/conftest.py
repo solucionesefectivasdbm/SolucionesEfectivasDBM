@@ -70,6 +70,7 @@ def fijar_hoy(monkeypatch):
         monkeypatch.setattr("app.routers.pagos.hoy_bogota", lambda: d)
         monkeypatch.setattr("app.routers.clientes.hoy_bogota", lambda: d)
         monkeypatch.setattr("app.routers.creditos.hoy_bogota", lambda: d)
+        monkeypatch.setattr("app.routers.reportes.hoy_bogota", lambda: d)
 
     return _fijar
 

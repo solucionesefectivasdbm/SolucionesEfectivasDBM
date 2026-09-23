@@ -16,8 +16,10 @@ from app.models.pago import Pago
 from app.models.pago_reparto import PagoReparto, TipoDestinatario
 from app.models.receptor import CuentaBancaria, Receptor
 from app.models.usuario import Usuario
+from app.services.credito_service import credito_operativamente_abierto
 from app.services.cuenta_bancaria_service import etiqueta_cuenta
-from app.utils.momentos import get_periodo_momento
+from app.utils.fechas import hoy_bogota
+from app.utils.momentos import bounds_entrada_mora, get_periodo_momento
 
 _Q2 = Decimal("0.01")
 
@@ -78,6 +80,31 @@ class ReporteResponseExtendido(BaseModel):
     total_esperado: float
     por_gestor: list[ReporteDetalleGestorExtendido]
     por_receptor: list[ReporteDetalleReceptorExtendido]
+
+
+class CarteraVencidaGestor(BaseModel):
+    gestor_id: str
+    gestor_nombre: str
+    cantidad_cuotas: int
+    total_vencido: float
+    total_capital_vencido: float
+    total_intereses_vencidos: float
+
+
+class CarteraVencidaResponse(BaseModel):
+    # fecha_fin ya viene recortada a hoy cuando la ventana solicitada se
+    # extiende al futuro (design D5) — nunca es la fecha_fin cruda que
+    # devuelve resolver_ventana.
+    fecha_inicio: date
+    fecha_fin: date
+    anio: int | None = None
+    mes: int | None = None
+    momento: str | None = None
+    cantidad_cuotas: int
+    total_vencido: float
+    total_capital_vencido: float
+    total_intereses_vencidos: float
+    por_gestor: list[CarteraVencidaGestor]  # sin por_receptor (Req: cuotas no recibidas)
 
 
 # ─── Ventana (por momento o por intervalo) ────────────────────────────────────
@@ -381,4 +408,102 @@ async def generar_reporte_ingresos(
         total_esperado=total_recaudado + total_pendiente,
         por_gestor=por_gestor,
         por_receptor=por_receptor,
+    )
+
+
+@router.get("/cartera-vencida", response_model=CarteraVencidaResponse)
+async def generar_reporte_cartera_vencida(
+    anio: int | None = Query(None),
+    mes: int | None = Query(None, ge=1, le=12),
+    momento: str | None = Query(None),
+    fecha_desde: date | None = Query(None),
+    fecha_hasta: date | None = Query(None),
+    current_user: Usuario = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    reportes-cartera-vencida-y-rango-fechas: cartera vencida es event-based
+    sobre `fecha_entrada_mora` (design D4), no sobre `hoy_bogota()` como
+    corte de inclusión — salvo el recorte de ventana futura (D5, ver abajo).
+    Reutiliza `resolver_ventana` (mismo modo por momento/por intervalo que
+    Ingresos) y los mismos guards que `/pagos/alertas/vencidos`:
+    `pagado == False`, `deleted_at IS NULL`, `credito_operativamente_abierto()`
+    (D6).
+
+    D5: la ventana efectiva se recorta a `min(fecha_fin, hoy)`. Como
+    `bounds_entrada_mora` traduce esa ventana a un rango `[lo, hi)` sobre
+    `fecha_maxima` y `fecha_limite_mora` es monótona no decreciente, una
+    `fecha_inicio` posterior a `fin_efectivo` produce `lo >= hi` — el rango
+    queda vacío sin necesitar un caso especial para "ventana totalmente
+    futura".
+    """
+    fecha_inicio, fecha_fin = resolver_ventana(anio, mes, momento, fecha_desde, fecha_hasta)
+    fin_efectivo = min(fecha_fin, hoy_bogota())
+    lo, hi = bounds_entrada_mora(fecha_inicio, fin_efectivo)
+
+    query = (
+        select(Pago, Gestor)
+        .join(Credito, Pago.credito_id == Credito.id)
+        .join(Cliente, Credito.cliente_id == Cliente.id)
+        .outerjoin(Gestor, Cliente.gestor_id == Gestor.id)
+        .where(
+            Pago.pagado == False,  # noqa: E712
+            Pago.deleted_at == None,  # noqa: E711
+            Pago.fecha_maxima >= lo,
+            Pago.fecha_maxima < hi,
+            credito_operativamente_abierto(),
+        )
+    )
+    filas = (await db.execute(query)).all()
+
+    total_capital = Decimal("0.00")
+    total_intereses = Decimal("0.00")
+    por_gestor_map: dict = {}
+
+    for pago, gestor in filas:
+        pendiente_capital = pago.capital_a_pagar - pago.capital_pagado
+        pendiente_intereses = pago.interes_a_pagar - pago.interes_pagado
+        total_capital += pendiente_capital
+        total_intereses += pendiente_intereses
+
+        if gestor is not None:
+            key = str(gestor.id)
+            if key not in por_gestor_map:
+                por_gestor_map[key] = {
+                    "gestor_id": key,
+                    "gestor_nombre": f"{gestor.nombre} {gestor.apellidos}",
+                    "cantidad": 0,
+                    "capital": Decimal("0.00"),
+                    "intereses": Decimal("0.00"),
+                }
+            por_gestor_map[key]["cantidad"] += 1
+            por_gestor_map[key]["capital"] += pendiente_capital
+            por_gestor_map[key]["intereses"] += pendiente_intereses
+
+    por_gestor = sorted(
+        (
+            CarteraVencidaGestor(
+                gestor_id=v["gestor_id"],
+                gestor_nombre=v["gestor_nombre"],
+                cantidad_cuotas=v["cantidad"],
+                total_vencido=float(v["capital"] + v["intereses"]),
+                total_capital_vencido=float(v["capital"]),
+                total_intereses_vencidos=float(v["intereses"]),
+            )
+            for v in por_gestor_map.values()
+        ),
+        key=lambda g: (g.gestor_nombre, g.gestor_id),
+    )
+
+    return CarteraVencidaResponse(
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fin_efectivo,
+        anio=anio,
+        mes=mes,
+        momento=momento,
+        cantidad_cuotas=len(filas),
+        total_vencido=float(total_capital + total_intereses),
+        total_capital_vencido=float(total_capital),
+        total_intereses_vencidos=float(total_intereses),
+        por_gestor=por_gestor,
     )

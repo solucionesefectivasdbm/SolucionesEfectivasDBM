@@ -40,15 +40,15 @@ Chain strategy: stacked-to-main
 
 ## Phase 2: PR2 — Cartera Vencida endpoint
 
-- [ ] 2.1 RED: create `backend/tests/test_reportes_cartera_vencida.py` covering spec scenarios `Included when entrada-en-mora falls in the window`, `Excluded when entrada-en-mora falls outside the window`, `Paid payments are never included`.
-- [ ] 2.2 RED: add scenarios `Totals and gestor breakdown present`, `No receptor breakdown in the response` to the same test file.
-- [ ] 2.3 RED: add scenarios `Deferred payment disappears from a past window on re-query`, `Window entirely in the future returns an empty report`, `Window partially in the future is clamped, not rejected` (D5 clamp).
-- [ ] 2.4 RED: add coverage for D6 guards — soft-deleted cuota excluded, operationally-closed credit excluded — and D8 gestor-less cuota counted in totals but absent from `por_gestor`.
-- [ ] 2.5 GREEN: define `CarteraVencidaGestor` and `CarteraVencidaResponse` Pydantic models in `backend/app/routers/reportes.py` per the Interfaces contract.
-- [ ] 2.6 GREEN: implement `GET /reportes/cartera-vencida` — `resolver_ventana` → `fin_efectivo = min(fecha_fin, hoy_bogota())` (D5) → `bounds_entrada_mora` SQL filter (D4) → guards `pagado==False`, `deleted_at IS NULL`, `credito_operativamente_abierto()` (D6) → single `select(Pago, Gestor)` outer join (D8).
-- [ ] 2.7 GREEN: accumulate `pendiente = (capital_a_pagar-capital_pagado)+(interes_a_pagar-interes_pagado)` as `Decimal`, convert to `float` only at response build (D7, AGENTS.md Decimal rule).
-- [ ] 2.8 GREEN: sort `por_gestor` by `(gestor_nombre, gestor_id)`; verify grand total equals sum of per-gestor subtotals.
-- [ ] 2.9 Run full `test_reportes_cartera_vencida.py` and confirm all RED tests from 2.1-2.4 are now GREEN.
+- [x] 2.1 RED: create `backend/tests/test_reportes_cartera_vencida.py` covering spec scenarios `Included when entrada-en-mora falls in the window`, `Excluded when entrada-en-mora falls outside the window`, `Paid payments are never included`.
+- [x] 2.2 RED: add scenarios `Totals and gestor breakdown present`, `No receptor breakdown in the response` to the same test file.
+- [x] 2.3 RED: add scenarios `Deferred payment disappears from a past window on re-query`, `Window entirely in the future returns an empty report`, `Window partially in the future is clamped, not rejected` (D5 clamp).
+- [x] 2.4 RED: add coverage for D6 guards — soft-deleted cuota excluded, operationally-closed credit excluded — and D8 gestor-less cuota counted in totals but absent from `por_gestor`.
+- [x] 2.5 GREEN: define `CarteraVencidaGestor` and `CarteraVencidaResponse` Pydantic models in `backend/app/routers/reportes.py` per the Interfaces contract.
+- [x] 2.6 GREEN: implement `GET /reportes/cartera-vencida` — `resolver_ventana` → `fin_efectivo = min(fecha_fin, hoy_bogota())` (D5) → `bounds_entrada_mora` SQL filter (D4) → guards `pagado==False`, `deleted_at IS NULL`, `credito_operativamente_abierto()` (D6) → single `select(Pago, Gestor)` outer join (D8).
+- [x] 2.7 GREEN: accumulate `pendiente = (capital_a_pagar-capital_pagado)+(interes_a_pagar-interes_pagado)` as `Decimal`, convert to `float` only at response build (D7, AGENTS.md Decimal rule).
+- [x] 2.8 GREEN: sort `por_gestor` by `(gestor_nombre, gestor_id)`; verify grand total equals sum of per-gestor subtotals.
+- [x] 2.9 Run full `test_reportes_cartera_vencida.py` and confirm all RED tests from 2.1-2.4 are now GREEN.
 
 ## Phase 3: PR3 — Frontend
 
