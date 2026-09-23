@@ -207,14 +207,22 @@ export interface RepartoResponse extends RepartoItem {
   etiqueta: string
 }
 
-// ─── Reporte ──────────────────────────────────────────────────────────────────
+// ─── Reporte: Ingresos ──────────────────────────────────────────────────────
+// reportes-cartera-vencida-y-rango-fechas (PR3, task 3.1): reemplaza el
+// `Reporte` legado (tenía `total_intereses`/`total_capital` y sin campos de
+// pendiente) por el shape real que devuelve `ReporteResponseExtendido` en
+// `backend/app/routers/reportes.py` (design D9). `anio`/`mes`/`momento` son
+// `null` en modo por intervalo; `fecha_inicio`/`fecha_fin` siempre vienen.
 
 export interface ReporteDetalleGestor {
   gestor_id: string
   gestor_nombre: string
   total_recaudado: number
-  total_intereses: number
-  total_capital: number
+  total_intereses_recaudados: number
+  total_capital_recaudado: number
+  total_pendiente: number
+  total_intereses_pendientes: number
+  total_capital_pendiente: number
 }
 
 export interface ReporteDetalleCuenta {
@@ -233,20 +241,56 @@ export interface ReporteDetalleReceptor {
   receptor_id: string
   receptor_nombre: string
   total_recaudado: number
-  total_intereses: number
-  total_capital: number
+  total_intereses_recaudados: number
+  total_capital_recaudado: number
+  total_pendiente: number
+  total_intereses_pendientes: number
+  total_capital_pendiente: number
   por_cuenta: ReporteDetalleCuenta[]
 }
 
-export interface Reporte {
-  anio: number
-  mes: number
-  momento: string
+export interface ReporteIngresos {
+  anio: number | null
+  mes: number | null
+  momento: string | null
+  fecha_inicio: string
+  fecha_fin: string
   total_recaudado: number
-  total_intereses: number
-  total_capital: number
+  total_intereses_recaudados: number
+  total_capital_recaudado: number
+  total_pendiente: number
+  total_intereses_pendientes: number
+  total_capital_pendiente: number
+  total_esperado: number
   por_gestor: ReporteDetalleGestor[]
   por_receptor: ReporteDetalleReceptor[]
+}
+
+// ─── Reporte: Cartera Vencida ───────────────────────────────────────────────
+// Mirrors `CarteraVencidaResponse` in `backend/app/routers/reportes.py`. No
+// `por_receptor` — cartera vencida son cuotas no recibidas (spec: "No
+// receptor breakdown in the response").
+
+export interface CarteraVencidaGestor {
+  gestor_id: string
+  gestor_nombre: string
+  cantidad_cuotas: number
+  total_vencido: number
+  total_capital_vencido: number
+  total_intereses_vencidos: number
+}
+
+export interface ReporteCarteraVencida {
+  fecha_inicio: string
+  fecha_fin: string
+  anio: number | null
+  mes: number | null
+  momento: string | null
+  cantidad_cuotas: number
+  total_vencido: number
+  total_capital_vencido: number
+  total_intereses_vencidos: number
+  por_gestor: CarteraVencidaGestor[]
 }
 
 // ─── Paginación ───────────────────────────────────────────────────────────────

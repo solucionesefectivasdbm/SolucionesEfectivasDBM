@@ -36,7 +36,7 @@ Chain strategy: stacked-to-main
 - [x] 1.8 GREEN: generalize the `/reportes` handler into `/reportes/ingresos` in `backend/app/routers/reportes.py`, using `resolver_ventana`; keep `anio/mes/momento` `Optional`, add additive `fecha_inicio/fecha_fin` fields per D9.
 - [x] 1.9 Add `GET /reportes` as a hidden alias (`include_in_schema=False`) on the same handler per D1.
 - [x] 1.10 Verify existing `test_reportes*.py` files pass unmodified (regression proof for D1) — run full backend suite for this module.
-- [ ] 1.11 Update `frontend/src/api/index.ts` `reportesApi.ingresos(params: FiltroReporte)` call signature to accept momento-or-interval params (backend-facing only; UI wiring is PR3). — DEFERRED: orchestrator scoped this apply batch as "backend-only" for PR1 (per apply prompt's AGENTS.md-conventions note); moving to PR3 batch alongside the rest of the frontend API/type work (task 3.2) to keep PR1 a clean backend-only diff.
+- [x] 1.11 Update `frontend/src/api/index.ts` `reportesApi.ingresos(params: FiltroReporte)` call signature to accept momento-or-interval params (backend-facing only; UI wiring is PR3). — Done in PR3 alongside task 3.2 (see Phase 3).
 
 ## Phase 2: PR2 — Cartera Vencida endpoint
 
@@ -52,15 +52,15 @@ Chain strategy: stacked-to-main
 
 ## Phase 3: PR3 — Frontend
 
-- [ ] 3.1 Replace stale `Reporte` type in `frontend/src/types/index.ts` with `ReporteIngresos` and `ReporteCarteraVencida` matching the backend response shapes (fixes existing `total_intereses`/missing-pending-fields drift).
-- [ ] 3.2 Add `FiltroReporte` union type and `reportesApi.carteraVencida(params)` to `frontend/src/api/index.ts`; finalize `reportesApi.ingresos` typing started in 1.11.
-- [ ] 3.3 In `frontend/src/pages/Reportes/ReportesPage.tsx`, add report-type selector (Ingresos / Cartera Vencida) and filter-mode selector (Por momento / Por intervalo), reusing the `MOMENTOS` dropdown for momento mode.
-- [ ] 3.4 Add date inputs (`type="date"`, `YYYY-MM-DD` string state) following the `AuditoriaPage` pattern for interval mode.
-- [ ] 3.5 Split rendering into `IngresosReporteView` and `CarteraVencidaReporteView` per D10 container/presentational split; clear the current report when report type changes.
-- [ ] 3.6 Verify `npx tsc --noEmit` passes with no type errors.
-- [ ] 3.7 Manual check: momento mode Ingresos unchanged visually; interval mode both reports; Cartera Vencida shows totals + por-gestor with no por-receptor section.
+- [x] 3.1 Replace stale `Reporte` type in `frontend/src/types/index.ts` with `ReporteIngresos` and `ReporteCarteraVencida` matching the backend response shapes (fixes existing `total_intereses`/missing-pending-fields drift).
+- [x] 3.2 Add `FiltroReporte` union type and `reportesApi.carteraVencida(params)` to `frontend/src/api/index.ts`; finalize `reportesApi.ingresos` typing started in 1.11.
+- [x] 3.3 In `frontend/src/pages/Reportes/ReportesPage.tsx`, add report-type selector (Ingresos / Cartera Vencida) and filter-mode selector (Por momento / Por intervalo), reusing the `MOMENTOS` dropdown for momento mode.
+- [x] 3.4 Add date inputs (`type="date"`, `YYYY-MM-DD` string state) following the `AuditoriaPage` pattern for interval mode.
+- [x] 3.5 Split rendering into `IngresosReporteView` and `CarteraVencidaReporteView` per D10 container/presentational split; clear the current report when report type changes.
+- [x] 3.6 Verify `npx tsc --noEmit` passes with no type errors.
+- [x] 3.7 Manual check: momento mode Ingresos unchanged visually; interval mode both reports; Cartera Vencida shows totals + por-gestor with no por-receptor section. — DONE 2026-09-23 via browser (backend :8000 + frontend :5173 on branch `feat/reportes-frontend-tipo-y-rango`): all 4 combos (Ingresos/Cartera Vencida × momento/intervalo) generated successfully, network requests confirmed 200 (`/reportes/ingresos?fecha_desde=...&fecha_hasta=...`, `/reportes/cartera-vencida?fecha_desde=...`, `/reportes/cartera-vencida?anio=...&mes=...&momento=...`), Cartera Vencida view has no por-receptor section, no console errors. Switching filter mode (momento↔intervalo) preserved the current report as designed; switching report type cleared it (D10).
 
 ## Phase 4: Spec/Docs cleanup
 
-- [ ] 4.1 Confirm `openspec/specs/overdue-evaluation/spec.md` delta (already drafted) merges cleanly — no additional action if already applied.
-- [ ] 4.2 Confirm `openspec/changes/reportes-cartera-vencida-y-rango-fechas/specs/reportes/spec.md` scenarios are all covered by tasks 1.5, 1.7, 2.1-2.4 (traceability check, no code change).
+- [x] 4.1 Confirmed `specs/overdue-evaluation/spec.md` delta merges cleanly into `openspec/specs/overdue-evaluation/spec.md`: ADDED requirement "Derived Entrada-en-Mora Date" is a new section (no title collision); the delta's `## Non-Goals (Updated)` list is a direct drop-in replacement for the main spec's Non-Goals bullet (only removes "report changes", nothing else changes) — no conflicting requirement titles, straightforward merge for `sdd-archive`.
+- [x] 4.2 Confirmed all 14 scenarios in `specs/reportes/spec.md` are covered by implemented tests: Two Mutually Exclusive Filter Modes (4 scenarios) → `test_reportes_intervalo.py` (task 1.5); Ingresos Report Structure Unchanged (2 scenarios) → `test_reportes_intervalo.py` + regression suite (tasks 1.7, 1.10); Cartera Vencida Event-Based (3), Totals/Por-Gestor/No-Receptor (2), Live/Non-Historical incl. 2 clamp scenarios (3) → `test_reportes_cartera_vencida.py` (tasks 2.1-2.3). Guard-level tests (soft-delete, operationally-closed, gestor-less) in task 2.4 are implementation coverage beyond the spec's own scenarios, not a gap. Total: 22 tests across both files ≥ 14 spec scenarios — full traceability, no orphaned scenario.

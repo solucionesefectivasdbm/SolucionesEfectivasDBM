@@ -1,7 +1,8 @@
 import { api } from './axios'
 import type {
   TokenResponse, Usuario, Gestor, Receptor, CuentaBancaria,
-  Cliente, Credito, Pago, RegistrarPagoResponse, Reporte,
+  Cliente, Credito, Pago, RegistrarPagoResponse,
+  ReporteIngresos, ReporteCarteraVencida,
   AlertasVencidos, PaginatedResponse,
   MovimientoReceptor, SaldoReceptor,
   RepartoItem, RepartoResponse,
@@ -159,9 +160,18 @@ export const pagosApi = {
 }
 
 // ─── Reportes ─────────────────────────────────────────────────────────────────
+// reportes-cartera-vencida-y-rango-fechas: dos modos de filtro mutuamente
+// excluyentes (design D2/D9) — por momento o por intervalo de fechas. Ambos
+// endpoints comparten el mismo shape de params (backend: `resolver_ventana`).
+export type FiltroReporte =
+  | { anio: number; mes: number; momento: string }
+  | { fecha_desde: string; fecha_hasta: string }
+
 export const reportesApi = {
-  generar: (params: { anio: number; mes: number; momento: string }) =>
-    api.get<Reporte>('/reportes', { params }),
+  ingresos: (params: FiltroReporte) =>
+    api.get<ReporteIngresos>('/reportes/ingresos', { params }),
+  carteraVencida: (params: FiltroReporte) =>
+    api.get<ReporteCarteraVencida>('/reportes/cartera-vencida', { params }),
 }
 
 // ─── Auditoría ────────────────────────────────────────────────────────────────
