@@ -29,6 +29,7 @@ from app.models.audit_log import AccionAudit, AuditLog
 from app.models.cliente import Cliente
 from app.models.credito import Credito, Periodicidad, TipoCredito
 from app.models.pago import Pago, TipoCuota
+from app.models.pago_reparto import PagoReparto, TipoDestinatario
 from app.models.receptor import CuentaBancaria, Receptor, TipoCuenta
 from app.models.receptor_movimiento import MovimientoReceptor
 from app.models.usuario import TipoUsuario, Usuario
@@ -89,7 +90,12 @@ def _mk_credito(cliente_id: uuid.UUID) -> Credito:
 
 async def _preparar_cuenta_con_saldo(db_session, monto: Decimal) -> tuple[Receptor, CuentaBancaria]:
     """Crea receptor + cuenta + un Pago pagado (todo capital, cero interés,
-    por simplicidad) que deja exactamente `monto` de saldo inicial."""
+    por simplicidad) que deja exactamente `monto` de saldo inicial.
+
+    payment-multi-recipient (item 10): `saldos_por_cuenta` lee de
+    `pago_repartos`, no de `Pago.cuenta_bancaria_id` directo — se crea
+    también la fila de reparto al 100% que `crear_reparto_por_defecto`
+    generaría en producción, si no el saldo inicial quedaría en 0."""
     receptor = _mk_receptor()
     cuenta = _mk_cuenta(receptor.id)
     db_session.add_all([receptor, cuenta])
@@ -100,7 +106,7 @@ async def _preparar_cuenta_con_saldo(db_session, monto: Decimal) -> tuple[Recept
     credito = _mk_credito(cliente.id)
     db_session.add(credito)
     await db_session.flush()
-    db_session.add(Pago(
+    pago = Pago(
         id=uuid.uuid4(), credito_id=credito.id, numero_cuota=1,
         tipo_cuota=TipoCuota.programada, monto_a_pagar=monto,
         capital_a_pagar=monto, interes_a_pagar=Decimal("0.00"),
@@ -108,8 +114,15 @@ async def _preparar_cuenta_con_saldo(db_session, monto: Decimal) -> tuple[Recept
         momento="m3", fecha_maxima=date(2026, 2, 10),
         pagado=True, validado_recaudador=True, es_ultimo_pago=False,
         cuenta_bancaria_id=cuenta.id,
-    ))
+    )
+    db_session.add(pago)
     await db_session.flush()
+    if monto > Decimal("0.00"):
+        db_session.add(PagoReparto(
+            id=uuid.uuid4(), pago_id=pago.id, tipo_destinatario=TipoDestinatario.cuenta_bancaria,
+            cuenta_bancaria_id=cuenta.id, monto=monto,
+        ))
+        await db_session.flush()
     return receptor, cuenta
 
 

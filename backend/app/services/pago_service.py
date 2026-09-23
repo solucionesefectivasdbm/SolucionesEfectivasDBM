@@ -29,6 +29,7 @@ from app.services.credito_service import (
     esta_saldado,
     generar_siguiente_cuota,
 )
+from app.services.pago_reparto_service import crear_reparto_por_defecto
 
 
 TOL = Decimal("0.01")
@@ -216,6 +217,11 @@ class PagoService:
         pago.pagado = True
         pago.fecha_pago_real = fecha_hoy
 
+        # payment-multi-recipient (item 10): fila de reparto por defecto al
+        # 100% hacia pago.cuenta_bancaria_id (invariante I1). No-op si no hay
+        # cuenta asignada.
+        await crear_reparto_por_defecto(db, pago)
+
         PagoService._aplicar_reduccion_saldos(credito, request.capital_pagado, request.interes_pagado)
 
         if esta_saldado(credito):
@@ -258,6 +264,11 @@ class PagoService:
         pago.interes_pagado = request.interes_pagado
         pago.pagado = True
         pago.fecha_pago_real = fecha_hoy
+
+        # payment-multi-recipient (item 10): fila de reparto por defecto al
+        # 100% hacia pago.cuenta_bancaria_id (invariante I1). No-op si no hay
+        # cuenta asignada.
+        await crear_reparto_por_defecto(db, pago)
 
         faltante = (pago.monto_a_pagar - monto_pagado).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
@@ -337,6 +348,11 @@ class PagoService:
         pago.pagado = True
         pago.fecha_pago_real = fecha_hoy
         pago.es_excedente_a = destino
+
+        # payment-multi-recipient (item 10): fila de reparto por defecto al
+        # 100% hacia pago.cuenta_bancaria_id, ya incluyendo el excedente
+        # (invariante I1). No-op si no hay cuenta asignada.
+        await crear_reparto_por_defecto(db, pago)
 
         # Reconstruir los montos de reducción desde el desglose esperado de la cuota
         # más el excedente dirigido por destino.  pago.capital_pagado/interes_pagado
@@ -425,6 +441,11 @@ class PagoService:
         )
         db.add(pago)
         await db.flush()  # Asegura que pago.id esté disponible
+
+        # payment-multi-recipient (item 10): fila de reparto por defecto al
+        # 100% hacia pago.cuenta_bancaria_id (invariante I1). No-op si no hay
+        # cuenta asignada. Requiere pago.id, por eso va después del flush.
+        await crear_reparto_por_defecto(db, pago)
 
         # 4. Verificar cierre por saldo — el early return se decide con
         # `esta_saldado`, NUNCA con el booleano de `cerrar_credito`. Si se

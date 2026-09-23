@@ -20,6 +20,7 @@ from sqlalchemy.dialects import postgresql
 from app.models.cliente import Cliente
 from app.models.credito import Credito, Periodicidad, TipoCredito
 from app.models.pago import Pago, TipoCuota
+from app.models.pago_reparto import PagoReparto, TipoDestinatario
 from app.models.receptor import CuentaBancaria, Receptor, TipoCuenta
 from app.models.receptor_movimiento import MovimientoReceptor, TipoMovimiento
 from app.models.usuario import TipoUsuario, Usuario
@@ -105,6 +106,12 @@ async def _preparar_cuenta(db_session, **cuenta_kwargs) -> tuple[Receptor, Cuent
 
 
 async def _agregar_pago(db_session, cuenta_id: uuid.UUID, capital: Decimal, interes: Decimal, **kwargs) -> Pago:
+    """Crea cliente+credito+pago y, si el pago queda pagado (default) con
+    cuenta y monto > 0, también su `pago_reparto` por defecto al 100% —
+    exactamente lo que `crear_reparto_por_defecto` hace en producción al
+    registrar un pago. Esto preserva la paridad de los tests existentes
+    (single-recipient) ahora que `saldos_por_cuenta` lee de `pago_repartos`
+    en vez de `Pago.cuenta_bancaria_id` directo."""
     cliente = _mk_cliente()
     db_session.add(cliente)
     await db_session.flush()
@@ -114,6 +121,12 @@ async def _agregar_pago(db_session, cuenta_id: uuid.UUID, capital: Decimal, inte
     pago = _mk_pago(credito.id, cuenta_id, capital=capital, interes=interes, **kwargs)
     db_session.add(pago)
     await db_session.flush()
+    if pago.pagado and cuenta_id is not None and (capital + interes) > Decimal("0.00"):
+        db_session.add(PagoReparto(
+            id=uuid.uuid4(), pago_id=pago.id, tipo_destinatario=TipoDestinatario.cuenta_bancaria,
+            cuenta_bancaria_id=cuenta_id, monto=capital + interes,
+        ))
+        await db_session.flush()
     return pago
 
 
@@ -266,10 +279,32 @@ class TestSaldosPorCuentaPrecision:
 
 
 class TestSaldosPorCuentaReasignacion:
+    """payment-multi-recipient (item 10) — deliberate behavior change from
+    the receptor-ledger spec delta: once a Pago is paid, its `pago_repartos`
+    rows are the ONLY balance driver. This replaces the pre-item-10 scenario
+    ('reassigning Pago.cuenta_bancaria_id shifts two balances') since that
+    field is no longer authoritative for a paid pago."""
+
     @pytest.mark.asyncio
-    async def test_reasignar_cuenta_bancaria_mueve_el_saldo(self, db_session):
-        """Spec scenario: 'Reassigning a paid Pago's cuenta_bancaria_id
-        shifts two balances'."""
+    async def test_reasignar_pago_cuenta_bancaria_directo_no_mueve_el_saldo(self, db_session):
+        receptor = _mk_receptor()
+        cuenta_a = _mk_cuenta(receptor.id, entidad_bancaria="A")
+        cuenta_b = _mk_cuenta(receptor.id, entidad_bancaria="B")
+        db_session.add_all([receptor, cuenta_a, cuenta_b])
+        await db_session.flush()
+        pago = await _agregar_pago(db_session, cuenta_a.id, Decimal("100000.00"), Decimal("0.00"))
+
+        pago.cuenta_bancaria_id = cuenta_b.id
+        await db_session.flush()
+
+        resultado = await receptor_ledger_service.saldos_por_cuenta(db_session, [cuenta_a.id, cuenta_b.id])
+        assert resultado[cuenta_a.id].saldo == Decimal("100000.00")
+        assert resultado[cuenta_b.id].saldo == Decimal("0.00")
+
+    @pytest.mark.asyncio
+    async def test_editar_reparto_mueve_el_saldo_entre_cuentas(self, db_session):
+        """Spec scenario (receptor-ledger delta): 'Editing a reparto
+        reassigns balance without a Pago-level reassignment'."""
         receptor = _mk_receptor()
         cuenta_a = _mk_cuenta(receptor.id, entidad_bancaria="A")
         cuenta_b = _mk_cuenta(receptor.id, entidad_bancaria="B")
@@ -281,12 +316,105 @@ class TestSaldosPorCuentaReasignacion:
         assert antes[cuenta_a.id].saldo == Decimal("100000.00")
         assert antes[cuenta_b.id].saldo == Decimal("0.00")
 
-        pago.cuenta_bancaria_id = cuenta_b.id
+        reparto = (await db_session.execute(
+            select(PagoReparto).where(PagoReparto.pago_id == pago.id)
+        )).scalar_one()
+        reparto.cuenta_bancaria_id = cuenta_b.id
         await db_session.flush()
 
         despues = await receptor_ledger_service.saldos_por_cuenta(db_session, [cuenta_a.id, cuenta_b.id])
         assert despues[cuenta_a.id].saldo == Decimal("0.00")
         assert despues[cuenta_b.id].saldo == Decimal("100000.00")
+
+
+class TestSaldosPorCuentaReparto:
+    """payment-multi-recipient (item 10) — pago_repartos como fuente del
+    'recaudado' (reemplaza la lectura directa de Pago.cuenta_bancaria_id)."""
+
+    @pytest.mark.asyncio
+    async def test_split_dos_cuentas_acredita_cada_una_una_vez(self, db_session):
+        """Spec scenario (receptor-ledger delta): 'Split payment contributes
+        partial amounts to two balances'."""
+        receptor = _mk_receptor()
+        cuenta_a = _mk_cuenta(receptor.id, entidad_bancaria="A")
+        cuenta_b = _mk_cuenta(receptor.id, entidad_bancaria="B")
+        db_session.add_all([receptor, cuenta_a, cuenta_b])
+        await db_session.flush()
+        cliente = _mk_cliente()
+        db_session.add(cliente)
+        await db_session.flush()
+        credito = _mk_credito(cliente.id)
+        db_session.add(credito)
+        await db_session.flush()
+        # cuenta_a en Pago.cuenta_bancaria_id queda como legado/no autoritativo
+        # (invariante: para un pago pagado, solo pago_repartos manda).
+        pago = _mk_pago(credito.id, cuenta_a.id, capital=Decimal("60000.00"), interes=Decimal("40000.00"))
+        db_session.add(pago)
+        await db_session.flush()
+        db_session.add_all([
+            PagoReparto(
+                id=uuid.uuid4(), pago_id=pago.id, tipo_destinatario=TipoDestinatario.cuenta_bancaria,
+                cuenta_bancaria_id=cuenta_a.id, monto=Decimal("60000.00"),
+            ),
+            PagoReparto(
+                id=uuid.uuid4(), pago_id=pago.id, tipo_destinatario=TipoDestinatario.cuenta_bancaria,
+                cuenta_bancaria_id=cuenta_b.id, monto=Decimal("40000.00"),
+            ),
+        ])
+        await db_session.flush()
+
+        resultado = await receptor_ledger_service.saldos_por_cuenta(db_session, [cuenta_a.id, cuenta_b.id])
+        assert resultado[cuenta_a.id].saldo == Decimal("60000.00")
+        assert resultado[cuenta_b.id].saldo == Decimal("40000.00")
+
+    @pytest.mark.asyncio
+    async def test_reparto_tipo_cliente_se_ignora(self, db_session):
+        """Spec scenario (receptor-ledger delta): 'Split payment with a
+        client recipient contributes nothing to that client' — cliente-type
+        rows never touch cuenta balances (cuenta_bancaria_id is NULL on them
+        by construction, so the IN(cuenta_ids) filter never matches)."""
+        _, cuenta = await _preparar_cuenta(db_session)
+        cliente_credito = _mk_cliente()
+        db_session.add(cliente_credito)
+        await db_session.flush()
+        credito = _mk_credito(cliente_credito.id)
+        db_session.add(credito)
+        await db_session.flush()
+        pago = _mk_pago(credito.id, cuenta.id, capital=Decimal("70000.00"), interes=Decimal("0.00"))
+        db_session.add(pago)
+        await db_session.flush()
+        cliente_destinatario = _mk_cliente()
+        db_session.add(cliente_destinatario)
+        await db_session.flush()
+        db_session.add_all([
+            PagoReparto(
+                id=uuid.uuid4(), pago_id=pago.id, tipo_destinatario=TipoDestinatario.cuenta_bancaria,
+                cuenta_bancaria_id=cuenta.id, monto=Decimal("70000.00"),
+            ),
+            PagoReparto(
+                id=uuid.uuid4(), pago_id=pago.id, tipo_destinatario=TipoDestinatario.cliente,
+                cliente_id=cliente_destinatario.id, monto=Decimal("30000.00"),
+            ),
+        ])
+        await db_session.flush()
+
+        resultado = await receptor_ledger_service.saldos_por_cuenta(db_session, [cuenta.id])
+        assert resultado[cuenta.id].saldo == Decimal("70000.00")
+
+    @pytest.mark.asyncio
+    async def test_reparto_soft_deleted_se_ignora(self, db_session):
+        """Un reparto borrado lógicamente (editado/reemplazado) no debe
+        contribuir al saldo, aunque su Pago siga pagado/activo."""
+        _, cuenta = await _preparar_cuenta(db_session)
+        pago = await _agregar_pago(db_session, cuenta.id, Decimal("50000.00"), Decimal("0.00"))
+        reparto = (await db_session.execute(
+            select(PagoReparto).where(PagoReparto.pago_id == pago.id)
+        )).scalar_one()
+        reparto.deleted_at = ahora_bogota()
+        await db_session.flush()
+
+        resultado = await receptor_ledger_service.saldos_por_cuenta(db_session, [cuenta.id])
+        assert resultado[cuenta.id].saldo == Decimal("0.00")
 
 
 class TestSaldoSobreviveSoftDeleteDeReceptor:

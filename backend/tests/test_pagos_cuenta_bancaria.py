@@ -33,6 +33,7 @@ from app.models.cliente import Cliente
 from app.models.credito import Credito, Periodicidad, TipoCredito
 from app.models.gestor import Gestor
 from app.models.pago import Pago, TipoCuota
+from app.models.pago_reparto import PagoReparto, TipoDestinatario
 from app.models.receptor import CuentaBancaria, Receptor, TipoCuenta
 from app.models.usuario import TipoUsuario, Usuario
 
@@ -151,6 +152,82 @@ async def test_patch_cuenta_bancaria_mueve_a_otro_receptor(client_factory, db_se
     assert len(logs) == 1
     assert logs[0].valor_anterior == str(cuenta_a.id)
     assert logs[0].valor_nuevo == str(cuenta_c.id)
+
+
+@pytest.mark.asyncio
+async def test_patch_cuenta_bancaria_pago_pagado_reemplaza_repartos(client_factory, db_session):
+    """payment-multi-recipient (item 10, PR1): en un pago YA PAGADO, el
+    PATCH legacy debe borrar lógicamente el/los reparto(s) activos y crear
+    una única fila al 100% hacia la nueva cuenta (invariante I1) — ver
+    design.md 'Legacy PATCH /cuenta-bancaria'."""
+    r1 = _mk_receptor()
+    cuenta_a = _mk_cuenta(r1.id, etiqueta="A", predeterminada=True)
+    cuenta_c = _mk_cuenta(r1.id, etiqueta="C")
+    db_session.add_all([r1, cuenta_a, cuenta_c])
+    await db_session.flush()
+
+    credito = _mk_credito()
+    db_session.add(credito)
+    await db_session.flush()
+    pago = _mk_pago(
+        credito.id, cuenta_bancaria_id=cuenta_a.id, pagado=True,
+        capital_pagado=Decimal("83333.33"), interes_pagado=Decimal("30000.00"),
+    )
+    db_session.add(pago)
+    await db_session.flush()
+    reparto_previo = PagoReparto(
+        id=uuid.uuid4(), pago_id=pago.id, tipo_destinatario=TipoDestinatario.cuenta_bancaria,
+        cuenta_bancaria_id=cuenta_a.id, monto=Decimal("113333.33"),
+    )
+    db_session.add(reparto_previo)
+    await db_session.flush()
+
+    client = await client_factory(_mk_user(TipoUsuario.admin))
+    resp = await client.patch(
+        f"/api/v1/pagos/{pago.id}/cuenta-bancaria",
+        json={"cuenta_bancaria_id": str(cuenta_c.id)},
+    )
+    assert resp.status_code == 200, resp.text
+
+    await db_session.refresh(reparto_previo)
+    assert reparto_previo.deleted_at is not None
+
+    activos = (await db_session.execute(
+        select(PagoReparto).where(PagoReparto.pago_id == pago.id, PagoReparto.deleted_at == None)  # noqa: E711
+    )).scalars().all()
+    assert len(activos) == 1
+    assert activos[0].cuenta_bancaria_id == cuenta_c.id
+    assert activos[0].monto == Decimal("113333.33")
+
+
+@pytest.mark.asyncio
+async def test_patch_cuenta_bancaria_pago_pendiente_no_toca_repartos(client_factory, db_session):
+    """Un pago pendiente no tiene repartos todavía — Pago.cuenta_bancaria_id
+    sigue siendo la única fuente de verdad hasta que se pague."""
+    r1 = _mk_receptor()
+    cuenta_a = _mk_cuenta(r1.id, etiqueta="A", predeterminada=True)
+    cuenta_c = _mk_cuenta(r1.id, etiqueta="C")
+    db_session.add_all([r1, cuenta_a, cuenta_c])
+    await db_session.flush()
+
+    credito = _mk_credito()
+    db_session.add(credito)
+    await db_session.flush()
+    pago = _mk_pago(credito.id, cuenta_bancaria_id=cuenta_a.id, pagado=False)
+    db_session.add(pago)
+    await db_session.flush()
+
+    client = await client_factory(_mk_user(TipoUsuario.admin))
+    resp = await client.patch(
+        f"/api/v1/pagos/{pago.id}/cuenta-bancaria",
+        json={"cuenta_bancaria_id": str(cuenta_c.id)},
+    )
+    assert resp.status_code == 200, resp.text
+
+    activos = (await db_session.execute(
+        select(PagoReparto).where(PagoReparto.pago_id == pago.id)
+    )).scalars().all()
+    assert activos == []
 
 
 @pytest.mark.asyncio
