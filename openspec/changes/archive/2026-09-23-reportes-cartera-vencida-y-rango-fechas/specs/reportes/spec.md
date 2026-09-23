@@ -144,3 +144,14 @@ window MUST NOT reappear when that window is re-queried later.
 - WHEN Cartera Vencida is requested for that window
 - THEN payments are evaluated only against the `2026-09-15 … 2026-09-23` portion of the
   window (clamped to today), not the full requested range
+
+## Non-Goals
+
+- Historical/immutable snapshot reconstruction of past overdue state — report is
+  always live-recomputed.
+- Performance optimization for wide date intervals — same Python-side load-all-then-
+  aggregate pattern as today's `/alertas/vencidos` and `/reportes`; acceptable at
+  current scale, flagged for future review if data volume grows.
+- Changes to momento ranges, closure rules, deferral semantics, or the day-anchored
+  "fechas de pago fijas mensuales" feature itself.
+- A separate recaudo diario/distribución report (item 13, discarded from this change).
