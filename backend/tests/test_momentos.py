@@ -17,6 +17,8 @@ from app.utils.momentos import (
     get_periodo_momento,
     fecha_limite_mora,
     en_mora,
+    fecha_entrada_mora,
+    bounds_entrada_mora,
 )
 
 
@@ -382,3 +384,124 @@ class TestEnMora:
             hoy += un_dia
             iteraciones += 1
         assert iteraciones == 1096
+
+
+class TestFechaEntradaMora:
+    """
+    fecha_entrada_mora(fecha_maxima) — overdue-evaluation, Requirement:
+    Derived Entrada-en-Mora Date (reportes-cartera-vencida-y-rango-fechas,
+    design D3). Es el día siguiente al cierre del momento (m1..m5) que
+    contiene `fecha_maxima`: reutiliza get_mes_momento/get_momento/
+    get_periodo_momento, así que queda consistente con en_mora() en cada
+    frontera por construcción, no por una fórmula de fechas separada.
+    """
+
+    def test_dentro_de_m1_cierra_dia_siguiente(self):
+        """Scenario: Inside m1, closes day after.
+        fecha_maxima = 2026-09-27 (m1, 25-29, cierra 2026-09-29)."""
+        assert fecha_entrada_mora(date(2026, 9, 27)) == date(2026, 9, 30)
+
+    def test_m2_cruce_de_mes(self):
+        """Scenario: Cross-month m2.
+        fecha_maxima = 2026-10-02 (momento (2026, 9, m2), 09-30..10-04)."""
+        assert fecha_entrada_mora(date(2026, 10, 2)) == date(2026, 10, 5)
+
+    def test_febrero_no_bisiesto(self):
+        """Scenario: February non-leap.
+        fecha_maxima = 2026-02-27 (m1, cierra 2026-02-28)."""
+        assert fecha_entrada_mora(date(2026, 2, 27)) == date(2026, 3, 1)
+
+    def test_febrero_bisiesto(self):
+        """Scenario: February leap.
+        fecha_maxima = 2028-02-29 (m1, cierra 2028-02-29)."""
+        assert fecha_entrada_mora(date(2028, 2, 29)) == date(2028, 3, 1)
+
+    def test_diciembre_m2_hacia_enero(self):
+        """Scenario: December m2 into January.
+        fecha_maxima = 2026-12-31 (momento (2026, 12, m2), cierra 2027-01-04)."""
+        assert fecha_entrada_mora(date(2026, 12, 31)) == date(2027, 1, 5)
+
+    # --- Casos extra de design.md (Testing Strategy) ---
+
+    def test_m3_dia_14(self):
+        """m3 (días 5-13) cierra el 13 -> entrada el día 14."""
+        assert fecha_entrada_mora(date(2026, 3, 9)) == date(2026, 3, 14)
+
+    def test_dia_31_entrada_dia_5_del_mes_siguiente(self):
+        """Mes de 31 días, fecha_maxima=día 31 (m2) -> entrada día 5 del
+        mes siguiente."""
+        assert fecha_entrada_mora(date(2026, 3, 31)) == date(2026, 4, 5)
+
+    def test_marzo_dia_3_entrada_marzo_5(self):
+        """Marzo 3 (día 1-4, febrero no bisiesto < 30 días) pertenece al m2
+        de febrero, que empieza el 1 de marzo -> entrada el 5 de marzo."""
+        assert fecha_entrada_mora(date(2026, 3, 3)) == date(2026, 3, 5)
+
+    def test_diciembre_30_entrada_enero_5(self):
+        assert fecha_entrada_mora(date(2026, 12, 30)) == date(2027, 1, 5)
+
+    def test_enero_2_entrada_enero_5(self):
+        """Enero 2 pertenece al m2 de diciembre del año anterior."""
+        assert fecha_entrada_mora(date(2026, 1, 2)) == date(2026, 1, 5)
+
+    def test_consistencia_con_en_mora(self):
+        """
+        Scenario: Consistency with en_mora. Para CADA fecha_maxima de
+        2026-01-01..2028-12-31 (incluye 2028 bisiesto): en_mora(fm, hoy) es
+        False justo antes de fecha_entrada_mora(fm) y True justo en o
+        después de esa fecha — se prueba en el borde exacto, el caso más
+        propenso a errores de desfase de un día.
+        """
+        un_dia = timedelta(days=1)
+        fm = date(2026, 1, 1)
+        fin = date(2028, 12, 31)
+        iteraciones = 0
+        while fm <= fin:
+            entrada = fecha_entrada_mora(fm)
+            assert en_mora(fm, entrada - un_dia) is False, fm
+            assert en_mora(fm, entrada) is True, fm
+            fm += un_dia
+            iteraciones += 1
+        assert iteraciones == 1096
+
+
+class TestBoundsEntradaMora:
+    """
+    bounds_entrada_mora(inicio, fin) — design D4: devuelve (lo, hi) tal que
+    `lo <= fm < hi` es equivalente a `inicio <= fecha_entrada_mora(fm) <=
+    fin`, para cualquier fm. Esto permite filtrar cartera vencida con un
+    rango SQL sobre fecha_maxima en vez de calcular fecha_entrada_mora fila
+    por fila en Python.
+
+    Prueba de equivalencia exhaustiva: para cada fm de 2025-01-01 a
+    2028-12-31 (incluye 2028 bisiesto), se arma la ventana más ajustada
+    posible alrededor de su propia fecha_entrada_mora — el único punto
+    donde el predicado puede cambiar de valor — y se compara el resultado
+    de bounds_entrada_mora contra la definición ingenua `inicio <= entrada
+    <= fin`, en el borde inferior, el punto exacto, el borde superior y una
+    ventana amplia que sí la contiene.
+    """
+
+    def test_equivalencia_para_cada_fm_en_su_frontera(self):
+        un_dia = timedelta(days=1)
+        fm = date(2025, 1, 1)
+        fin_rango = date(2028, 12, 31)
+        iteraciones = 0
+        while fm <= fin_rango:
+            entrada = fecha_entrada_mora(fm)
+
+            casos = [
+                (entrada, entrada),  # ventana exacta -> incluye
+                (entrada - un_dia, entrada - un_dia),  # justo antes -> excluye
+                (entrada + un_dia, entrada + un_dia),  # justo después -> excluye
+                (entrada - 30 * un_dia, entrada + 30 * un_dia),  # amplia -> incluye
+            ]
+            for inicio, fin in casos:
+                lo, hi = bounds_entrada_mora(inicio, fin)
+                esperado = inicio <= entrada <= fin
+                obtenido = lo <= fm < hi
+                assert obtenido == esperado, (fm, inicio, fin, entrada, lo, hi)
+                iteraciones += 1
+
+            fm += un_dia
+        assert iteraciones == 1461 * 4
