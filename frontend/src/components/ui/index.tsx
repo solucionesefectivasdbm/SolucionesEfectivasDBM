@@ -75,14 +75,17 @@ export function Paginacion({ page, pages, total, onChange }: PaginacionProps) {
   )
 }
 
-// Confirmación de borrado
+// Confirmación de borrado (o cualquier acción destructiva/irreversible con
+// el mismo patrón: mensaje + Cancelar/Confirmar en un Modal).
 export function ConfirmDelete({
-  message, onConfirm, onCancel, loading,
+  message, onConfirm, onCancel, loading, confirmLabel = 'Eliminar', loadingLabel = 'Eliminando...',
 }: {
   message: string
   onConfirm: () => void
   onCancel: () => void
   loading?: boolean
+  confirmLabel?: string
+  loadingLabel?: string
 }) {
   return (
     <div>
@@ -90,7 +93,7 @@ export function ConfirmDelete({
       <div className="flex gap-3 justify-end">
         <button onClick={onCancel} className="btn-ghost">Cancelar</button>
         <button onClick={onConfirm} disabled={loading} className="btn-danger">
-          {loading ? 'Eliminando...' : 'Eliminar'}
+          {loading ? loadingLabel : confirmLabel}
         </button>
       </div>
     </div>
