@@ -121,7 +121,7 @@ window MUST NOT reappear when that window is re-queried later.
 
 #### Scenario: Deferred payment disappears from a past window on re-query `[pytest]`
 
-- GIVEN an unpaid payment originally due 2026-09-10 (`fecha_entrada_mora = 2026-09-15`,
+- GIVEN an unpaid payment originally due 2026-09-10 (`fecha_entrada_mora = 2026-09-14`,
   inside window `2026-09-01 … 2026-09-30`) that is later deferred to 2026-10-12
   (`fecha_entrada_mora` recomputed from the new `fecha_maxima`, now outside that window)
 - WHEN Cartera Vencida is re-queried for `2026-09-01 … 2026-09-30` after the deferral
