@@ -15,7 +15,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, Enum, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Boolean, Date, Enum, ForeignKey, Integer, Numeric, String, event
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -64,6 +64,13 @@ class Pago(AuditMixin, Base):
     )
     momento: Mapped[str] = mapped_column(String(5), nullable=False)
     fecha_maxima: Mapped[date] = mapped_column(Date, nullable=False)
+    fecha_maxima_original: Mapped[Optional[date]] = mapped_column(
+        Date, nullable=True, index=True,
+        comment="Corte de mora inmutable del momento original del pago. Se "
+                "fija una sola vez al crear el pago (before_insert listener "
+                "más abajo) y no cambia con aplazamientos puntuales de "
+                "fecha_maxima (PATCH /pagos/{id}/fecha)."
+    )
     cuenta_bancaria_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("cuentas_bancarias.id"), nullable=True, index=True
     )
@@ -98,3 +105,15 @@ class Pago(AuditMixin, Base):
     repartos: Mapped[list["PagoReparto"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
         "PagoReparto", back_populates="pago", lazy="noload"
     )
+
+
+@event.listens_for(Pago, "before_insert")
+def _fijar_fecha_maxima_original(mapper, connection, target: Pago) -> None:
+    """Fija fecha_maxima_original = fecha_maxima al crear el pago
+    (design.md decisión D3). Solo actúa cuando la columna nueva viene en
+    None, así que un valor ya fijado explícitamente (p.ej. una fila
+    reconstruida por el backfill del PR4) no se pisa en el insert. Evita
+    tener que editar los 9 constructores `Pago(...)` existentes en
+    credito_service.py y pago_service.py."""
+    if target.fecha_maxima_original is None:
+        target.fecha_maxima_original = target.fecha_maxima

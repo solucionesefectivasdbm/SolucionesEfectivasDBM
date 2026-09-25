@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.models.credito import Credito, Periodicidad, TipoCredito
 from app.models.gestor import Gestor
-from app.models.pago import Pago
+from app.models.pago import Pago, TipoCuota
 from app.models.receptor import Receptor
 from app.models.receptor_movimiento import MovimientoReceptor, TipoMovimiento
 from app.models.usuario import TipoUsuario, Usuario
@@ -122,6 +122,50 @@ class TestReceptorIdDroppedFromGestorAndPago:
     def test_receptor_has_no_pagos_relationship(self):
         relaciones = {r.key for r in inspect(Receptor).relationships}
         assert "pagos" not in relaciones
+
+
+def _mk_pago_minimo(**kwargs) -> Pago:
+    """Pago mínimo para pruebas a nivel de mapper. No requiere un Credito
+    real: SQLite en tests no aplica FOREIGN KEY (igual que TestMovimientoReceptor
+    más abajo)."""
+    defaults = dict(
+        id=uuid.uuid4(), credito_id=uuid.uuid4(), numero_cuota=1,
+        tipo_cuota=TipoCuota.programada, monto_a_pagar=Decimal("110000.00"),
+        capital_a_pagar=Decimal("100000.00"), interes_a_pagar=Decimal("10000.00"),
+        capital_pagado=Decimal("0.00"), interes_pagado=Decimal("0.00"),
+        momento="m1", fecha_maxima=date(2026, 10, 5), pagado=False,
+        validado_recaudador=False,
+    )
+    defaults.update(kwargs)
+    return Pago(**defaults)
+
+
+class TestPagoFechaMaximaOriginal:
+    """Fase 1 (atraso-pago-aplazado-corte-original): `Pago.fecha_maxima_original`
+    se fija una sola vez al crear el pago, vía un listener `before_insert`
+    (design.md decisión D3). Falla mientras el modelo no tenga la columna."""
+
+    @pytest.mark.asyncio
+    async def test_creacion_fija_fecha_maxima_original_igual_a_fecha_maxima(self, db_session):
+        """Spec 'Creación de pago fija el corte original': al insertar,
+        fecha_maxima_original queda igual a fecha_maxima."""
+        pago = _mk_pago_minimo(fecha_maxima=date(2026, 10, 5))
+        db_session.add(pago)
+        await db_session.flush()
+        assert pago.fecha_maxima_original == date(2026, 10, 5)
+
+    @pytest.mark.asyncio
+    async def test_no_sobrescribe_fecha_maxima_original_si_ya_viene_fijada(self, db_session):
+        """Design D3: el listener solo copia fecha_maxima cuando la columna
+        nueva es None — un valor explícito (p.ej. una fila reconstruida por
+        el backfill del PR4) no debe ser pisado en el insert."""
+        pago = _mk_pago_minimo(
+            fecha_maxima=date(2026, 10, 5),
+            fecha_maxima_original=date(2026, 9, 1),
+        )
+        db_session.add(pago)
+        await db_session.flush()
+        assert pago.fecha_maxima_original == date(2026, 9, 1)
 
 
 def _mk_usuario(**kwargs) -> Usuario:
