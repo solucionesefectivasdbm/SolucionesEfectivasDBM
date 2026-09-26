@@ -93,6 +93,7 @@ def _pago_row_a_dict(row, hoy: date, limite: date) -> dict:
         "interes_pagado": row.interes_pagado,
         "momento": row.momento,
         "fecha_maxima": row.fecha_maxima,
+        "fecha_maxima_original": row.fecha_maxima_original,
         "cuenta_bancaria_id": row.cuenta_bancaria_id,
         "cuenta_bancaria": cuenta_bancaria,
         "pagado": row.pagado,
@@ -112,7 +113,10 @@ def _pago_row_a_dict(row, hoy: date, limite: date) -> dict:
         # la página; `listar_pagos_aplazados` y otros sitios que no lo
         # hacen se quedan con la lista vacía, no con un campo faltante.
         "repartos": [],
-        **flags_mora(row.fecha_maxima, row.pagado, hoy, limite),
+        **flags_mora(
+            row.fecha_maxima, row.pagado, hoy, limite,
+            fecha_maxima_original=row.fecha_maxima_original,
+        ),
     }
 
 
@@ -189,6 +193,7 @@ async def listar_pagos_aplazados(
             Pago.id, Pago.credito_id, Pago.numero_cuota, Pago.tipo_cuota,
             Pago.monto_a_pagar, Pago.capital_a_pagar, Pago.interes_a_pagar,
             Pago.capital_pagado, Pago.interes_pagado, Pago.momento, Pago.fecha_maxima,
+            Pago.fecha_maxima_original,
             Pago.cuenta_bancaria_id, Pago.pagado, Pago.validado_recaudador,
             Pago.fecha_pago_real, Pago.es_excedente_a, Pago.es_ultimo_pago,
             Pago.tipo_validacion, Pago.veces_aplazado,
@@ -301,6 +306,7 @@ async def listar_pagos(
             Pago.id, Pago.credito_id, Pago.numero_cuota, Pago.tipo_cuota,
             Pago.monto_a_pagar, Pago.capital_a_pagar, Pago.interes_a_pagar,
             Pago.capital_pagado, Pago.interes_pagado, Pago.momento, Pago.fecha_maxima,
+            Pago.fecha_maxima_original,
             Pago.cuenta_bancaria_id, Pago.pagado, Pago.validado_recaudador,
             Pago.fecha_pago_real, Pago.es_excedente_a, Pago.es_ultimo_pago,
             Pago.tipo_validacion, Pago.veces_aplazado,
@@ -321,8 +327,13 @@ async def listar_pagos(
         .outerjoin(Receptor, CuentaBancaria.receptor_id == Receptor.id)
         .where(
             Pago.deleted_at == None,  # noqa: E711
-            Pago.fecha_maxima >= fecha_inicio,
-            Pago.fecha_maxima <= fecha_fin,
+            # atraso-pago-aplazado-corte-original (design D8): el rango de
+            # mes/momento agrupa por el corte ORIGINAL, no por fecha_maxima
+            # vigente — así un pago aplazado más allá de su momento no
+            # "escapa" al listado del momento en el que nació. Display y
+            # sort (más abajo) siguen sobre fecha_maxima vigente.
+            Pago.fecha_maxima_original >= fecha_inicio,
+            Pago.fecha_maxima_original <= fecha_fin,
             # Regla 6/9: una cuota YA PAGADA es historial y se conserva siempre.
             # Una cuota PENDIENTE de un crédito que ya quedó saldado (activo
             # aún True, cierre sin confirmar) no debe listarse — es el "trap"
@@ -646,6 +657,11 @@ async def _calcular_virtuales(
                     "interes_pagado": Decimal("0.00"),
                     "momento": get_momento(fecha_proy),
                     "fecha_maxima": fecha_proy,
+                    # Fila virtual = cuota proyectada que aún no existe:
+                    # nunca fue aplazada, así que su corte original es ella
+                    # misma (atraso-pago-aplazado-corte-original, design.md
+                    # Call Sites — _calcular_virtuales).
+                    "fecha_maxima_original": fecha_proy,
                     "cuenta_bancaria_id": None,
                     "cuenta_bancaria": None,
                     "pagado": False,
@@ -1163,7 +1179,11 @@ async def alertas_vencidos(
         .where(
             Pago.pagado == False,  # noqa: E712
             Pago.deleted_at == None,  # noqa: E711
-            Pago.fecha_maxima < limite,
+            # atraso-pago-aplazado-corte-original (design D7): el cierre de
+            # mora se evalúa contra el corte ORIGINAL, no fecha_maxima
+            # vigente — un aplazamiento puntual no debe sacar al pago de
+            # esta alerta.
+            Pago.fecha_maxima_original < limite,
             credito_operativamente_abierto(),
         )
     )
@@ -1175,7 +1195,9 @@ async def alertas_vencidos(
         if gestor:
             query = query.where(Cliente.gestor_id == gestor.id)
 
-    rows = (await db.execute(query.order_by(Pago.fecha_maxima))).all()
+    rows = (await db.execute(
+        query.order_by(Pago.fecha_maxima_original, Pago.id)
+    )).all()
     total_mora = sum(
         row.Pago.monto_a_pagar - row.Pago.capital_pagado - row.Pago.interes_pagado
         for row in rows
@@ -1187,7 +1209,10 @@ async def alertas_vencidos(
         "pagos": [
             PagoResponse.model_validate(row.Pago).model_copy(
                 update={
-                    **flags_mora(row.Pago.fecha_maxima, row.Pago.pagado, hoy, limite),
+                    **flags_mora(
+                        row.Pago.fecha_maxima, row.Pago.pagado, hoy, limite,
+                        fecha_maxima_original=row.Pago.fecha_maxima_original,
+                    ),
                     "cliente_nombre": f"{row.cliente_nombre} {row.cliente_apellidos}",
                     "numero_credito_cliente": row.numero_credito_cliente,
                 }

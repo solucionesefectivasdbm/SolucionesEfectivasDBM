@@ -221,6 +221,60 @@ class TestAlertasVencidosMomentoCerrado:
 
 
 # ---------------------------------------------------------------------------
+# GET /pagos/alertas/vencidos — corte por fecha_maxima_original
+# (atraso-pago-aplazado-corte-original)
+# ---------------------------------------------------------------------------
+
+class TestAlertasVencidosCorteOriginal:
+    @pytest.mark.asyncio
+    async def test_aplazamiento_cruza_cierre_cuenta_en_mora(self, client_factory, db_session, fijar_hoy):
+        """
+        Scenario: Pago aplazado más allá del cierre cuenta en mora. Nace en
+        m1 de marzo (27-mar); se aplaza a abril (10-abr), todavía futuro
+        respecto a `hoy`. Como el momento ORIGINAL (m1) ya cerró, debe
+        contar en las alertas de vencidos aunque la fecha aplazada no haya
+        llegado.
+        """
+        cliente = _mk_cliente()
+        credito = _mk_credito(cliente.id)
+        pago = _mk_pago(
+            credito.id, fecha_maxima=date(2026, 4, 10),
+            fecha_maxima_original=date(2026, 3, 27), veces_aplazado=1,
+        )
+        db_session.add_all([cliente, credito, pago])
+        await db_session.flush()
+        fijar_hoy(date(2026, 3, 30))  # m1 ya cerró; 10-abr sigue en el futuro
+
+        client = await client_factory(_mk_user(TipoUsuario.admin))
+        r = await client.get("/api/v1/pagos/alertas/vencidos")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["total_pagos_vencidos"] == 1
+        assert body["pagos"][0]["id"] == str(pago.id)
+        assert body["pagos"][0]["en_mora"] is True
+        assert body["pagos"][0]["vencido"] is True
+
+    @pytest.mark.asyncio
+    async def test_aplazamiento_dentro_del_mismo_momento_no_lista(self, client_factory, db_session, fijar_hoy):
+        """Deferral que NO cruza el cierre de su momento original: no debe
+        contar en las alertas mientras ese momento siga abierto."""
+        cliente = _mk_cliente()
+        credito = _mk_credito(cliente.id)
+        pago = _mk_pago(
+            credito.id, fecha_maxima=date(2026, 3, 29),
+            fecha_maxima_original=date(2026, 3, 27), veces_aplazado=1,
+        )
+        db_session.add_all([cliente, credito, pago])
+        await db_session.flush()
+        fijar_hoy(date(2026, 3, 28))  # m1 sigue abierto (abre el 25)
+
+        client = await client_factory(_mk_user(TipoUsuario.admin))
+        r = await client.get("/api/v1/pagos/alertas/vencidos")
+        assert r.status_code == 200, r.text
+        assert r.json()["pagos"] == []
+
+
+# ---------------------------------------------------------------------------
 # GET /clientes?al_dia= and GET /clientes/{id} — mismo predicado
 # ---------------------------------------------------------------------------
 
@@ -320,6 +374,11 @@ class TestPagoResponseFlagsMora:
         virtuales = [item for item in r.json()["items"] if item["es_proyectada"]]
         assert len(virtuales) >= 1
         assert all(v["vencido"] is False and v["en_mora"] is False for v in virtuales)
+        # atraso-pago-aplazado-corte-original (design.md, Call Sites —
+        # _calcular_virtuales): una fila virtual es una cuota proyectada que
+        # todavía no existe — nunca fue aplazada, así que su corte original
+        # es ella misma.
+        assert all(v["fecha_maxima_original"] == v["fecha_maxima"] for v in virtuales)
 
     @pytest.mark.asyncio
     async def test_aplazados_flags(self, client_factory, db_session, fijar_hoy):

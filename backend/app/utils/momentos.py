@@ -247,19 +247,41 @@ def bounds_entrada_mora(inicio: date, fin: date) -> tuple[date, date]:
     return fecha_limite_mora(inicio - timedelta(days=1)), fecha_limite_mora(fin)
 
 
-def flags_mora(fecha_maxima: date, pagado: bool, hoy: date, limite: date) -> dict:
+def flags_mora(
+    fecha_maxima: date,
+    pagado: bool,
+    hoy: date,
+    limite: date,
+    *,
+    fecha_maxima_original: date | None = None,
+) -> dict:
     """
     Calcula los flags de mora de un pago (scheduled-overdue-evaluation):
-    `vencido` (alerta visual: fecha ya pasó) y `en_mora` (momento que
-    contiene `fecha_maxima` ya cerró, ver en_mora()). Un pago pagado nunca
-    está vencido ni en mora.
+    `vencido` (alerta visual: fecha ya pasó) y `en_mora` (el momento del
+    CORTE ORIGINAL ya cerró). Un pago pagado nunca está vencido ni en mora.
 
     `limite` es `fecha_limite_mora(hoy)` precalculado UNA vez por request por
     el caller, para no recomputarlo por cada fila del listado.
+
+    `fecha_maxima_original` (atraso-pago-aplazado-corte-original, design
+    D6/D7) es el corte inmutable del momento original de este pago —
+    `Pago.fecha_maxima_original`, que NO se mueve ante un aplazamiento
+    puntual (a diferencia de `fecha_maxima` vigente). `en_mora` se evalúa
+    contra ese corte: si el aplazamiento cruzó el cierre de su momento
+    original, el pago cuenta en mora aunque la fecha aplazada todavía no
+    haya llegado. `vencido` sigue mirando `fecha_maxima` vigente (alerta de
+    "ya pasó la fecha"), con un OR sobre `en_mora` para preservar el
+    invariante en_mora implica vencido.
+
+    Si se omite (callers aún no migrados a este corte, ver Fase 3 de
+    atraso-pago-aplazado-corte-original), cae a `fecha_maxima`: el
+    comportamiento queda idéntico al de antes de este cambio.
     """
     if pagado:
         return {"vencido": False, "en_mora": False}
+    original = fecha_maxima if fecha_maxima_original is None else fecha_maxima_original
+    en_mora_flag = original < limite
     return {
-        "vencido": fecha_maxima < hoy,
-        "en_mora": fecha_maxima < limite,
+        "vencido": (fecha_maxima < hoy) or en_mora_flag,
+        "en_mora": en_mora_flag,
     }

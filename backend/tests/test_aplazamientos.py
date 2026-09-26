@@ -608,6 +608,100 @@ class TestCrossPeriodDeferredListing:
 # Double Visualization
 # ---------------------------------------------------------------------------
 
+class TestFechaMaximaOriginalInmutable:
+    """
+    atraso-pago-aplazado-corte-original — Requirement: Persistencia de
+    fecha_maxima_original. PATCH /pagos/{id}/fecha no debe mover el corte
+    original, en NINGUNO de los dos modos (aplazamiento o corrección libre).
+    """
+
+    @pytest.mark.asyncio
+    async def test_aplazamiento_no_modifica_fecha_maxima_original(
+        self, client_factory, db_session
+    ):
+        cliente = _mk_cliente()
+        credito = _mk_credito(cliente.id)
+        pago = _mk_pago(credito.id, fecha_maxima=date(2026, 10, 5))
+        db_session.add_all([cliente, credito, pago])
+        await db_session.flush()
+        fecha_original = pago.fecha_maxima_original
+        assert fecha_original == date(2026, 10, 5)
+
+        admin = _mk_user(TipoUsuario.admin)
+        client = await client_factory(admin)
+
+        r = await client.patch(
+            f"/api/v1/pagos/{pago.id}/fecha",
+            json={"fecha_maxima": "2026-10-12", "es_aplazamiento": True},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["fecha_maxima"] == "2026-10-12"
+        assert body["fecha_maxima_original"] == "2026-10-05"
+
+    @pytest.mark.asyncio
+    async def test_correccion_libre_no_modifica_fecha_maxima_original(
+        self, client_factory, db_session
+    ):
+        """Design D4: la corrección libre (es_aplazamiento=False) TAMPOCO
+        resincroniza fecha_maxima_original — decisión de negocio confirmada."""
+        cliente = _mk_cliente()
+        credito = _mk_credito(cliente.id)
+        pago = _mk_pago(credito.id, fecha_maxima=date(2026, 10, 5))
+        db_session.add_all([cliente, credito, pago])
+        await db_session.flush()
+
+        admin = _mk_user(TipoUsuario.admin)
+        client = await client_factory(admin)
+
+        r = await client.patch(
+            f"/api/v1/pagos/{pago.id}/fecha", json={"fecha_maxima": "2026-10-20"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["fecha_maxima"] == "2026-10-20"
+        assert body["fecha_maxima_original"] == "2026-10-05"
+
+    @pytest.mark.asyncio
+    async def test_pago_aplazado_permanece_en_momento_original(
+        self, client_factory, db_session
+    ):
+        """
+        Scenario: Pago aplazado permanece en su momento original. El pago
+        nace en m1 de octubre (27-oct); se aplaza a una fecha de noviembre
+        (m2/m3) — pero GET /pagos?momento=m1 de octubre debe seguir
+        listándolo, porque el filtro agrupa por fecha_maxima_original.
+        """
+        cliente = _mk_cliente()
+        credito = _mk_credito(cliente.id)
+        pago = _mk_pago(credito.id, fecha_maxima=date(2026, 10, 27), momento="m1")
+        db_session.add_all([cliente, credito, pago])
+        await db_session.flush()
+
+        admin = _mk_user(TipoUsuario.admin)
+        client = await client_factory(admin)
+
+        r_patch = await client.patch(
+            f"/api/v1/pagos/{pago.id}/fecha",
+            json={"fecha_maxima": "2026-11-10", "es_aplazamiento": True},
+        )
+        assert r_patch.status_code == 200, r_patch.text
+
+        r_original = await client.get(
+            "/api/v1/pagos", params={"anio": 2026, "mes": 10, "momento": "m1"},
+        )
+        assert r_original.status_code == 200, r_original.text
+        ids_original = [item["id"] for item in r_original.json()["items"]]
+        assert str(pago.id) in ids_original
+
+        r_nuevo = await client.get(
+            "/api/v1/pagos", params={"anio": 2026, "mes": 11, "momento": "m3"},
+        )
+        assert r_nuevo.status_code == 200, r_nuevo.text
+        ids_nuevo = [item["id"] for item in r_nuevo.json()["items"]]
+        assert str(pago.id) not in ids_nuevo
+
+
 class TestDoubleVisualization:
     @pytest.mark.asyncio
     async def test_present_in_both_views(self, client_factory, db_session):

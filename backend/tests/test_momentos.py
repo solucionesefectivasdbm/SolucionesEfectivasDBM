@@ -19,6 +19,7 @@ from app.utils.momentos import (
     en_mora,
     fecha_entrada_mora,
     bounds_entrada_mora,
+    flags_mora,
 )
 
 
@@ -505,3 +506,91 @@ class TestBoundsEntradaMora:
 
             fm += un_dia
         assert iteraciones == 1461 * 4
+
+
+class TestFlagsMora:
+    """
+    flags_mora(fecha_maxima, pagado, hoy, limite, *, fecha_maxima_original=None)
+    — atraso-pago-aplazado-corte-original (design D6/D7).
+
+    `fecha_maxima_original` es el corte inmutable del momento original de un
+    pago. `en_mora` se evalúa contra ese corte, no contra `fecha_maxima`
+    vigente (que puede haberse movido por un aplazamiento puntual).
+    `vencido` sigue considerando `fecha_maxima` vigente, con un OR sobre
+    `en_mora` (invariante: en_mora implica vencido).
+
+    Sin `fecha_maxima_original` (kwarg omitido, callers no migrados como
+    creditos.py todavía en Fase 3), el comportamiento es IDÉNTICO al previo
+    al cambio: original cae de vuelta a `fecha_maxima`.
+    """
+
+    def test_original_igual_a_actual_sin_aplazamiento(self):
+        """
+        Pago nunca aplazado: fecha_maxima_original == fecha_maxima. El
+        resultado debe ser idéntico al comportamiento previo al cambio
+        (Scenario: Pago no aplazado se evalúa igual que antes).
+        """
+        hoy = date(2026, 3, 28)
+        limite = fecha_limite_mora(hoy)  # m1 abre el 25 -> limite = 25
+        assert limite == date(2026, 3, 25)
+        original = date(2026, 3, 27)
+        resultado = flags_mora(
+            date(2026, 3, 27), False, hoy, limite, fecha_maxima_original=original,
+        )
+        # vencido: 27 < 28 -> True (vencida dentro de su propio momento, aún
+        # abierto). en_mora: 27 < 25 -> False (el momento no cerró).
+        assert resultado == {"vencido": True, "en_mora": False}
+
+    def test_aplazamiento_cruza_el_cierre_cuenta_en_mora(self):
+        """
+        Scenario: Pago aplazado más allá del cierre cuenta en mora. El pago
+        se creó con fecha_maxima_original = 27-mar (m1, cierra el 30-mar) y
+        se aplazó a 10-abr — una fecha todavía futura respecto a `hoy`. Debe
+        contar en mora (y por lo tanto vencido) aunque la fecha aplazada no
+        haya llegado.
+        """
+        hoy = date(2026, 3, 30)
+        limite = fecha_limite_mora(hoy)
+        assert limite == date(2026, 3, 30)  # m1 cerró, hoy ya es m2
+        original = date(2026, 3, 27)
+        fecha_maxima_aplazada = date(2026, 4, 10)
+        assert fecha_maxima_aplazada > hoy  # la fecha aplazada NO ha llegado
+
+        resultado = flags_mora(
+            fecha_maxima_aplazada, False, hoy, limite, fecha_maxima_original=original,
+        )
+        assert resultado == {"vencido": True, "en_mora": True}
+
+    def test_aplazamiento_dentro_del_mismo_momento_no_hay_mora(self):
+        """
+        Deferral que NO cruza el cierre del momento original: el pago sigue
+        sin estar en mora ni vencido mientras el momento permanezca abierto.
+        """
+        hoy = date(2026, 3, 28)
+        limite = fecha_limite_mora(hoy)
+        assert limite == date(2026, 3, 25)
+        original = date(2026, 3, 27)
+        fecha_maxima_aplazada = date(2026, 3, 29)  # sigue en m1
+
+        resultado = flags_mora(
+            fecha_maxima_aplazada, False, hoy, limite, fecha_maxima_original=original,
+        )
+        assert resultado == {"vencido": False, "en_mora": False}
+
+    def test_sin_fecha_maxima_original_cae_a_fecha_maxima(self):
+        """
+        Callers no migrados (p.ej. creditos.py, todavía Fase 3) no pasan el
+        kwarg: el comportamiento debe ser exactamente el de antes del cambio.
+        """
+        hoy = date(2026, 3, 31)
+        limite = fecha_limite_mora(hoy)
+        assert limite == date(2026, 3, 30)
+        assert flags_mora(date(2026, 3, 27), False, hoy, limite) == {
+            "vencido": True, "en_mora": True,
+        }
+        assert flags_mora(date(2026, 3, 30), False, hoy, limite) == {
+            "vencido": True, "en_mora": False,
+        }
+        assert flags_mora(date(2026, 3, 27), True, hoy, limite) == {
+            "vencido": False, "en_mora": False,
+        }
