@@ -537,6 +537,7 @@ class TestDiasPagoReanchorSemantics:
         )
         paid = await _cuota(db_session, c, 1, date(2026, 1, 20), pagado=True)
         original_paid_date = paid.fecha_maxima
+        original_paid_date_original = paid.fecha_maxima_original
         await _cuota(db_session, c, 2, date(2026, 2, 19))
 
         r = await client_admin.patch(
@@ -546,6 +547,7 @@ class TestDiasPagoReanchorSemantics:
         assert r.status_code == 200, r.text
         # identity map — no refresh needed
         assert paid.fecha_maxima == original_paid_date
+        assert paid.fecha_maxima_original == original_paid_date_original
 
     @pytest.mark.asyncio
     async def test_amounts_invariant(self, client_admin, db_session):
@@ -592,6 +594,30 @@ class TestDiasPagoReanchorSemantics:
         # identity map — no refresh needed
         expected_momento = get_momento(date(2026, 2, 20))
         assert p2.momento == expected_momento
+
+    @pytest.mark.asyncio
+    async def test_fecha_maxima_original_resincronizada_para_pendientes(self, client_admin, db_session):
+        """
+        atraso-pago-aplazado-corte-original (Fase 3, design D5): este
+        re-anclaje es un cambio de plan del admin, no un aplazamiento
+        puntual del cliente — fecha_maxima_original debe resincronizarse
+        junto con fecha_maxima para las cuotas pendientes.
+        """
+        c = await _credito(
+            db_session, periodicidad=Periodicidad.mensual,
+            anchor_dia_1=20, fecha_inicial_pago=date(2026, 1, 20),
+        )
+        await _cuota(db_session, c, 1, date(2026, 1, 20), pagado=True)
+        p2 = await _cuota(db_session, c, 2, date(2026, 2, 19))
+
+        r = await client_admin.patch(
+            f"{ENDPOINT_BASE}/{c.id}/dias-pago",
+            json={"anchor_dia_1": 20},
+        )
+        assert r.status_code == 200, r.text
+        # identity map — no refresh needed
+        assert p2.fecha_maxima == date(2026, 2, 20)
+        assert p2.fecha_maxima_original == date(2026, 2, 20)
 
     @pytest.mark.asyncio
     async def test_no_paid_cuotas_uses_fecha_inicial_pago(self, client_admin, db_session):

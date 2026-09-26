@@ -449,8 +449,11 @@ async def generar_reporte_cartera_vencida(
         .where(
             Pago.pagado == False,  # noqa: E712
             Pago.deleted_at == None,  # noqa: E711
-            Pago.fecha_maxima >= lo,
-            Pago.fecha_maxima < hi,
+            # atraso-pago-aplazado-corte-original (design D8): corte
+            # inmutable del momento original, no la fecha_maxima vigente
+            # (que un aplazamiento puntual movería fuera de esta ventana).
+            Pago.fecha_maxima_original >= lo,
+            Pago.fecha_maxima_original < hi,
             credito_operativamente_abierto(),
         )
     )

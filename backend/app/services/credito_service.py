@@ -1007,6 +1007,13 @@ async def recalcular_cuotas_futuras(
     cuando el Admin modifica la fecha del pago activo.
     Se usa después de que el Admin cambia la fecha del pago activo
     desde la ventana de créditos.
+
+    atraso-pago-aplazado-corte-original (design D5): este re-anclaje es un
+    cambio de plan legítimo (el admin corrige el día-ancla del crédito), no
+    un aplazamiento puntual a solicitud del cliente — a diferencia de
+    `PATCH /pagos/{id}/fecha`, aquí SÍ se resincroniza fecha_maxima_original
+    junto con fecha_maxima/momento, porque la fecha recalculada pasa a ser
+    el nuevo "original" de la cuota.
     """
     result = await db.execute(
         select(Pago)
@@ -1022,5 +1029,6 @@ async def recalcular_cuotas_futuras(
     fecha_actual = desde_fecha
     for cuota in cuotas_futuras:
         cuota.fecha_maxima = fecha_actual
+        cuota.fecha_maxima_original = fecha_actual
         cuota.momento = get_momento(fecha_actual)
         fecha_actual = siguiente_fecha_maxima(fecha_actual, credito)

@@ -56,7 +56,10 @@ async def listar_clientes(
             Credito.deleted_at == None,  # noqa: E711
             Pago.deleted_at == None,  # noqa: E711
             Pago.pagado == False,  # noqa: E712
-            Pago.fecha_maxima < limite,
+            # atraso-pago-aplazado-corte-original (design D8): corte inmutable
+            # del momento original, no la fecha_maxima vigente (que un
+            # aplazamiento puntual mueve sin cerrar el momento original).
+            Pago.fecha_maxima_original < limite,
         )
         .distinct()
     )
@@ -110,7 +113,7 @@ async def listar_clientes(
                 Credito.deleted_at == None,  # noqa: E711
                 Pago.deleted_at == None,  # noqa: E711
                 Pago.pagado == False,  # noqa: E712
-                Pago.fecha_maxima < limite,
+                Pago.fecha_maxima_original < limite,
             )
             .distinct()
         )
@@ -200,7 +203,7 @@ async def obtener_cliente(
             Credito.deleted_at == None,  # noqa: E711
             Pago.deleted_at == None,  # noqa: E711
             Pago.pagado == False,  # noqa: E712
-            Pago.fecha_maxima < limite,
+            Pago.fecha_maxima_original < limite,
         )
         .limit(1)
     )).scalar_one_or_none()
