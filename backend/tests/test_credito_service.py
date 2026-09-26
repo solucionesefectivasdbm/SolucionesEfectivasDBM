@@ -384,6 +384,32 @@ class TestRecalcularCuotasFuturasAnchor:
         assert cuota.fecha_maxima == date(2026, 2, 20)
         assert cuota.momento == get_momento(date(2026, 2, 20))
 
+    @pytest.mark.asyncio
+    async def test_6_6_a_fecha_maxima_original_resincronizada_en_pendientes(self, db_session):
+        """
+        atraso-pago-aplazado-corte-original (Fase 3, design D5):
+        recalcular_cuotas_futuras es un re-anclaje legítimo del calendario
+        (cambio de plan admin), no un aplazamiento puntual del cliente —
+        debe resincronizar fecha_maxima_original junto con fecha_maxima
+        para las cuotas pendientes. Las cuotas pagadas no se tocan.
+        """
+        credito = await _credito_db(
+            db_session, Periodicidad.mensual, anchor_dia_1=20,
+        )
+        cuota_pagada = await _pago_db(
+            db_session, credito, 1, date(2026, 1, 20), pagado=True
+        )
+        cuota_pendiente = await _pago_db(db_session, credito, 2, date(2026, 2, 19))
+        original_pagada_antes = cuota_pagada.fecha_maxima_original
+
+        await recalcular_cuotas_futuras(db_session, credito, date(2026, 2, 20))
+
+        assert cuota_pendiente.fecha_maxima == date(2026, 2, 20)
+        assert cuota_pendiente.fecha_maxima_original == date(2026, 2, 20)
+        # Cuota pagada: ni fecha_maxima ni fecha_maxima_original cambian.
+        assert cuota_pagada.fecha_maxima == date(2026, 1, 20)
+        assert cuota_pagada.fecha_maxima_original == original_pagada_antes
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # zero-balance-credit-closure — PR 1: settled predicate + interest-only tail

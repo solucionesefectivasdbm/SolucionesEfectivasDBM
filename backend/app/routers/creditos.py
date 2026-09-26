@@ -606,7 +606,10 @@ async def historial_cuotas(
     pagos = result.scalars().all()
     return [
         PagoResponse.model_validate(p).model_copy(
-            update=flags_mora(p.fecha_maxima, p.pagado, hoy, limite)
+            update=flags_mora(
+                p.fecha_maxima, p.pagado, hoy, limite,
+                fecha_maxima_original=p.fecha_maxima_original,
+            )
         )
         for p in pagos
     ]

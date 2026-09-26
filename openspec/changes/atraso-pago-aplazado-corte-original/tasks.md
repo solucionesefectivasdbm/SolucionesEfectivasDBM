@@ -42,15 +42,16 @@ Chain strategy: feature-branch-chain
 - [x] 2.5 RED `test_mora_momento_cerrado.py` (pagos.py scope): `alertas/vencidos` flags a crossing deferral, not a non-crossing one. DONE: `TestAlertasVencidosCorteOriginal` (2 cases) + 1 assertion added to the existing virtual-row test (`fecha_maxima_original == fecha_maxima` for projected rows).
 - [x] 2.6 GREEN: `alertas_vencidos` uses `fecha_maxima_original < limite`, `ORDER BY fecha_maxima_original, Pago.id`; `_calcular_virtuales` sets `fecha_maxima_original = fecha_proy`. DONE.
 
-## Phase 3: Remaining Call Sites + Re-anchor Resync
+## Phase 3: Remaining Call Sites + Re-anchor Resync — DONE 7/7
 
-- [ ] 3.1 RED `test_mora_momento_cerrado.py` (clientes/creditos scope): 3 `al_dia` predicates and `historial_cuotas` flag a crossing deferral.
-- [ ] 3.2 GREEN: `routers/clientes.py` L59/113/203 use `fecha_maxima_original < limite`.
-- [ ] 3.3 GREEN: `routers/creditos.py` `historial_cuotas` passes `fecha_maxima_original` to `flags_mora`.
-- [ ] 3.4 RED `test_reportes_cartera_vencida.py`: deferred pago counts in the window derived from its original date.
-- [ ] 3.5 GREEN: `routers/reportes.py` cartera-vencida query: `lo <= Pago.fecha_maxima_original < hi`.
-- [ ] 3.6 RED `test_dias_pago_endpoint.py`: `recalcular_cuotas_futuras` resyncs `fecha_maxima_original` on pending cuotas; paid cuotas unchanged.
-- [ ] 3.7 GREEN: `credito_service.py` `recalcular_cuotas_futuras` sets `cuota.fecha_maxima_original = fecha_actual` alongside `fecha_maxima`/`momento`.
+- [x] 3.1 RED `test_mora_momento_cerrado.py` (clientes/creditos scope): 3 `al_dia` predicates and `historial_cuotas` flag a crossing deferral. DONE: added `test_aplazamiento_cruza_cierre_marca_en_atraso` + `test_aplazamiento_dentro_del_mismo_momento_sigue_al_dia` to `TestClientesAlDiaMomentoCerrado`, and `test_historial_cuotas_aplazamiento_cruza_cierre_marca_en_mora` + `test_historial_cuotas_aplazamiento_dentro_del_momento_no_marca_mora` to `TestHistorialCuotasFlagsMora`. Confirmed RED (crossing cases failed; non-crossing cases already passed — forward deferral within an still-open momento can never flip `< limite`, so they only guard against over-counting).
+- [x] 3.2 GREEN: `routers/clientes.py` L59/113/203 (`listar_clientes` list+page subqueries, `obtener_cliente` detail) use `fecha_maxima_original < limite`. DONE.
+- [x] 3.3 GREEN: `routers/creditos.py` `historial_cuotas` passes `fecha_maxima_original=p.fecha_maxima_original` to `flags_mora`. DONE.
+- [x] 3.4 RED `test_reportes_cartera_vencida.py`: deferred pago counts in the window derived from its original date. DONE: added `test_aplazamiento_no_saca_de_la_ventana_de_su_corte_original`; extended `_mk_pago` helper with an optional `fecha_maxima_original` kwarg. Confirmed RED. Also discovered and fixed a PRE-EXISTING test that encoded the OLD (now superseded) behavior — see Deviations.
+- [x] 3.5 GREEN: `routers/reportes.py` cartera-vencida query: `lo <= Pago.fecha_maxima_original < hi`. DONE.
+- [x] 3.6 RED `test_dias_pago_endpoint.py` + `test_credito_service.py`: `recalcular_cuotas_futuras` resyncs `fecha_maxima_original` on pending cuotas; paid cuotas unchanged. DONE: unit test `test_6_6_a_fecha_maxima_original_resincronizada_en_pendientes` in `TestRecalcularCuotasFuturasAnchor`, integration test `test_fecha_maxima_original_resincronizada_para_pendientes` in `TestDiasPagoReanchorSemantics` (real `PATCH /creditos/{id}/dias-pago`), plus a companion assertion added to the pre-existing `test_paid_cuotas_untouched`. Confirmed RED on both new tests; companion assertion already green (paid cuotas were never in `recalcular_cuotas_futuras`'s query).
+- [x] 3.7 GREEN: `credito_service.py` `recalcular_cuotas_futuras` sets `cuota.fecha_maxima_original = fecha_actual` alongside `fecha_maxima`/`momento`. DONE.
+- [x] Confirmed no regression (verification only, not a new task): `PATCH /pagos/{id}/fecha` (`modificar_fecha_pago`, pagos.py) still touches only `fecha_maxima` and `veces_aplazado` — `fecha_maxima_original` is untouched in both `es_aplazamiento` modes, matching design D4. Re-verified via full `test_aplazamientos.py` run (28/28 passing).
 
 ## Phase 4: Backfill Service + Admin Endpoint
 

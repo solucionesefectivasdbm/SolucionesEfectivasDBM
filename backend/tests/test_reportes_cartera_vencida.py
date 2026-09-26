@@ -56,6 +56,7 @@ def _mk_credito(cliente_id: uuid.UUID, **kw) -> Credito:
 def _mk_pago(
     credito_id: uuid.UUID, numero_cuota: int, fecha_maxima: date,
     capital: Decimal, interes: Decimal, *, pagado: bool = False,
+    fecha_maxima_original: date | None = None,
 ) -> Pago:
     return Pago(
         id=uuid.uuid4(), credito_id=credito_id, numero_cuota=numero_cuota,
@@ -64,6 +65,7 @@ def _mk_pago(
         capital_pagado=capital if pagado else Decimal("0.00"),
         interes_pagado=interes if pagado else Decimal("0.00"),
         momento="m3", fecha_maxima=fecha_maxima,
+        fecha_maxima_original=fecha_maxima_original,
         pagado=pagado, validado_recaudador=pagado, es_ultimo_pago=False,
     )
 
@@ -150,6 +152,45 @@ async def test_excluido_cuando_entrada_en_mora_cae_fuera_de_la_ventana(client_ad
     assert body["cantidad_cuotas"] == 0
     assert body["total_vencido"] == 0.0
     assert body["por_gestor"] == []
+
+
+@pytest.mark.asyncio
+async def test_aplazamiento_no_saca_de_la_ventana_de_su_corte_original(client_admin_db, db_session, fijar_hoy):
+    """
+    atraso-pago-aplazado-corte-original (Fase 3, design D8): un pago
+    aplazado más allá de la ventana de su momento original debe seguir
+    contando en cartera vencida usando `fecha_maxima_original` como corte
+    (mismo criterio que `en_mora()`/`alertas/vencidos`), no la
+    `fecha_maxima` vigente, que escaparía de la ventana consultada.
+    """
+    cliente = _mk_cliente()
+    db_session.add(cliente)
+    await db_session.flush()
+    credito = _mk_credito(cliente.id)
+    db_session.add(credito)
+    await db_session.flush()
+    # fecha_maxima_original=2026-09-27 -> momento m1 sept (25-29) ->
+    # fecha_entrada_mora=2026-09-30 (misma ventana que el caso base).
+    # fecha_maxima vigente se aplaza muy adelante (2026-11-15) por un
+    # aplazamiento puntual — fuera de cualquier ventana relacionada con la
+    # consultada.
+    pago = _mk_pago(
+        credito.id, 1, date(2026, 11, 15), Decimal("80.00"), Decimal("20.00"),
+        fecha_maxima_original=date(2026, 9, 27),
+    )
+    db_session.add(pago)
+    await db_session.flush()
+    fijar_hoy(date(2026, 10, 10))
+
+    resp = await client_admin_db.get(
+        CARTERA_URL, params={"fecha_desde": "2026-09-30", "fecha_hasta": "2026-10-04"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["cantidad_cuotas"] == 1
+    assert body["total_vencido"] == 100.0
+    assert body["total_capital_vencido"] == 80.0
+    assert body["total_intereses_vencidos"] == 20.0
 
 
 @pytest.mark.asyncio
@@ -240,8 +281,18 @@ async def test_sin_desglose_por_receptor(client_admin_db, db_session, fijar_hoy)
 # ─── Requirement: Cartera Vencida Is Live, Not a Historical Snapshot ────────
 
 @pytest.mark.asyncio
-async def test_pago_aplazado_desaparece_de_ventana_pasada_al_reconsultar(client_admin_db, db_session, fijar_hoy):
-    """Scenario: Deferred payment disappears from a past window on re-query."""
+async def test_pago_aplazado_permanece_en_ventana_de_su_corte_original(client_admin_db, db_session, fijar_hoy):
+    """
+    Scenario: Deferred payment stays counted in its original window on
+    re-query (atraso-pago-aplazado-corte-original, Fase 3, design D8).
+
+    Supersedes the old fecha_maxima-based behavior (this test used to be
+    named `test_pago_aplazado_desaparece_de_ventana_pasada_al_reconsultar`
+    and asserted the pago disappeared from its original window on
+    deferral — that was exactly the bug this change fixes; see spec
+    "Consistencia entre endpoints de mora y cartera", scenario "Cartera
+    vencida refleja el corte inmutable").
+    """
     gestor = _mk_gestor(nombre="Carla")
     db_session.add(gestor)
     await db_session.flush()
@@ -251,7 +302,8 @@ async def test_pago_aplazado_desaparece_de_ventana_pasada_al_reconsultar(client_
     credito = _mk_credito(cliente.id)
     db_session.add(credito)
     await db_session.flush()
-    # fecha_maxima=2026-09-10 (m3) -> fecha_entrada_mora=2026-09-14, dentro de septiembre.
+    # fecha_maxima=2026-09-10 (m3) -> fecha_entrada_mora=2026-09-14, dentro de
+    # septiembre. fecha_maxima_original queda en 2026-09-10 (before_insert).
     pago = _mk_pago(credito.id, 1, date(2026, 9, 10), Decimal("50.00"), Decimal("30.00"))
     db_session.add(pago)
     await db_session.flush()
@@ -264,7 +316,8 @@ async def test_pago_aplazado_desaparece_de_ventana_pasada_al_reconsultar(client_
     assert body_antes["cantidad_cuotas"] == 1
     assert len(body_antes["por_gestor"]) == 1
 
-    # Aplazamiento: nueva fecha_maxima cuya fecha_entrada_mora cae en octubre.
+    # Aplazamiento puntual (PATCH /pagos/{id}/fecha, design D4): mueve
+    # fecha_maxima a octubre pero NO toca fecha_maxima_original.
     pago.fecha_maxima = date(2026, 10, 12)
     pago.veces_aplazado = 1
     await db_session.flush()
@@ -272,9 +325,9 @@ async def test_pago_aplazado_desaparece_de_ventana_pasada_al_reconsultar(client_
     despues = await client_admin_db.get(CARTERA_URL, params=ventana)
     assert despues.status_code == 200, despues.text
     body_despues = despues.json()
-    assert body_despues["cantidad_cuotas"] == 0
-    assert body_despues["total_vencido"] == 0.0
-    assert body_despues["por_gestor"] == []
+    assert body_despues["cantidad_cuotas"] == 1
+    assert body_despues["total_vencido"] == 80.0
+    assert len(body_despues["por_gestor"]) == 1
 
 
 @pytest.mark.asyncio

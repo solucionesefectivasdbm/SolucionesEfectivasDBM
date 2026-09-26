@@ -325,6 +325,57 @@ class TestClientesAlDiaMomentoCerrado:
         r_detail = await client.get(f"/api/v1/clientes/{cliente.id}")
         assert r_detail.json()["al_dia"] is False
 
+    @pytest.mark.asyncio
+    async def test_aplazamiento_cruza_cierre_marca_en_atraso(self, client_factory, db_session, fijar_hoy):
+        """
+        atraso-pago-aplazado-corte-original (Fase 3): al_dia debe usar el
+        corte del momento ORIGINAL, igual que alertas/vencidos. Nace en m1
+        de marzo (27-mar); se aplaza a abril (10-abr), todavía futuro. Como
+        el momento ORIGINAL ya cerró, el cliente debe marcarse en atraso.
+        """
+        cliente = _mk_cliente()
+        credito = _mk_credito(cliente.id)
+        pago = _mk_pago(
+            credito.id, fecha_maxima=date(2026, 4, 10),
+            fecha_maxima_original=date(2026, 3, 27), veces_aplazado=1,
+        )
+        db_session.add_all([cliente, credito, pago])
+        await db_session.flush()
+        fijar_hoy(date(2026, 3, 30))  # m1 ya cerró; 10-abr sigue en el futuro
+
+        client = await client_factory(_mk_user(TipoUsuario.admin))
+
+        r_list_false = await client.get("/api/v1/clientes", params={"al_dia": False})
+        ids_false = [c["id"] for c in r_list_false.json()["items"]]
+        assert str(cliente.id) in ids_false
+
+        r_list_true = await client.get("/api/v1/clientes", params={"al_dia": True})
+        ids_true = [c["id"] for c in r_list_true.json()["items"]]
+        assert str(cliente.id) not in ids_true
+
+        r_detail = await client.get(f"/api/v1/clientes/{cliente.id}")
+        assert r_detail.status_code == 200, r_detail.text
+        assert r_detail.json()["al_dia"] is False
+
+    @pytest.mark.asyncio
+    async def test_aplazamiento_dentro_del_mismo_momento_sigue_al_dia(self, client_factory, db_session, fijar_hoy):
+        """Deferral que NO cruza el cierre de su momento original: el
+        cliente sigue al día mientras ese momento siga abierto."""
+        cliente = _mk_cliente()
+        credito = _mk_credito(cliente.id)
+        pago = _mk_pago(
+            credito.id, fecha_maxima=date(2026, 3, 29),
+            fecha_maxima_original=date(2026, 3, 27), veces_aplazado=1,
+        )
+        db_session.add_all([cliente, credito, pago])
+        await db_session.flush()
+        fijar_hoy(date(2026, 3, 28))  # m1 sigue abierto (abre el 25)
+
+        client = await client_factory(_mk_user(TipoUsuario.admin))
+        r_detail = await client.get(f"/api/v1/clientes/{cliente.id}")
+        assert r_detail.status_code == 200, r_detail.text
+        assert r_detail.json()["al_dia"] is True
+
 
 # ---------------------------------------------------------------------------
 # GET /pagos — vencido/en_mora en filas reales y virtuales
@@ -430,3 +481,52 @@ class TestHistorialCuotasFlagsMora:
         assert por_id[str(pago_vencido.id)]["en_mora"] is False
         assert por_id[str(pago_pagado.id)]["vencido"] is False
         assert por_id[str(pago_pagado.id)]["en_mora"] is False
+
+    @pytest.mark.asyncio
+    async def test_historial_cuotas_aplazamiento_cruza_cierre_marca_en_mora(self, client_factory, db_session, fijar_hoy):
+        """
+        atraso-pago-aplazado-corte-original (Fase 3): historial_cuotas debe
+        marcar en_mora usando el corte del momento ORIGINAL, no la fecha
+        aplazada vigente. Nace en m1 de marzo (27-mar); se aplaza a abril
+        (10-abr), todavía futuro. Como el momento ORIGINAL ya cerró, la
+        cuota debe aparecer en mora en el historial.
+        """
+        cliente = _mk_cliente()
+        credito = _mk_credito(cliente.id)
+        pago = _mk_pago(
+            credito.id, numero_cuota=1,
+            fecha_maxima=date(2026, 4, 10),
+            fecha_maxima_original=date(2026, 3, 27), veces_aplazado=1,
+        )
+        db_session.add_all([cliente, credito, pago])
+        await db_session.flush()
+        fijar_hoy(date(2026, 3, 30))  # m1 ya cerró; 10-abr sigue en el futuro
+
+        client = await client_factory(_mk_user(TipoUsuario.admin))
+        r = await client.get(f"/api/v1/creditos/{credito.id}/cuotas")
+        assert r.status_code == 200, r.text
+        item = next(i for i in r.json() if i["id"] == str(pago.id))
+        assert item["en_mora"] is True
+        assert item["vencido"] is True
+
+    @pytest.mark.asyncio
+    async def test_historial_cuotas_aplazamiento_dentro_del_momento_no_marca_mora(self, client_factory, db_session, fijar_hoy):
+        """Deferral que NO cruza el cierre de su momento original: no debe
+        marcarse en mora en el historial mientras ese momento siga
+        abierto."""
+        cliente = _mk_cliente()
+        credito = _mk_credito(cliente.id)
+        pago = _mk_pago(
+            credito.id, numero_cuota=1,
+            fecha_maxima=date(2026, 3, 29),
+            fecha_maxima_original=date(2026, 3, 27), veces_aplazado=1,
+        )
+        db_session.add_all([cliente, credito, pago])
+        await db_session.flush()
+        fijar_hoy(date(2026, 3, 28))  # m1 sigue abierto (abre el 25)
+
+        client = await client_factory(_mk_user(TipoUsuario.admin))
+        r = await client.get(f"/api/v1/creditos/{credito.id}/cuotas")
+        assert r.status_code == 200, r.text
+        item = next(i for i in r.json() if i["id"] == str(pago.id))
+        assert item["en_mora"] is False
