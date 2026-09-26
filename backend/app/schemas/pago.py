@@ -24,6 +24,12 @@ class PagoResponse(BaseModel):
     interes_pagado: Decimal
     momento: str
     fecha_maxima: date
+    # atraso-pago-aplazado-corte-original: corte de mora inmutable del
+    # momento original de este pago (design D2/D3). Se fija al crear el pago
+    # y no se mueve ante un aplazamiento puntual de `fecha_maxima` — ver
+    # `app.utils.momentos.flags_mora`. Optional/None: filas virtuales de
+    # `_calcular_virtuales` y sitios legacy que no lo seleccionan todavía.
+    fecha_maxima_original: Optional[date] = None
     cuenta_bancaria_id: Optional[uuid.UUID]
     cuenta_bancaria: Optional[CuentaBancariaResumen] = None
     pagado: bool

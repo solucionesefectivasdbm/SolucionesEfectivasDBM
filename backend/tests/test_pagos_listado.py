@@ -137,6 +137,12 @@ def _fake_row(**overrides) -> SimpleNamespace:
         cb_receptor_nombre=None,
     )
     base.update(overrides)
+    # atraso-pago-aplazado-corte-original: si el caller no pasó
+    # fecha_maxima_original explícitamente, se asume "nunca aplazado" —
+    # igual a fecha_maxima (incluyendo cualquier override de fecha_maxima
+    # ya aplicado arriba). Preserva el comportamiento de TODOS los tests
+    # existentes que no les importa el aplazamiento.
+    base.setdefault("fecha_maxima_original", base["fecha_maxima"])
     return SimpleNamespace(**base)
 
 
@@ -154,6 +160,7 @@ class TestPagoRowADict:
         resp = PagoResponse.model_validate(_pago_row_a_dict(row, _HOY, _LIMITE))
         assert resp.id == row.id
         assert resp.credito_id == row.credito_id
+        assert resp.fecha_maxima_original == row.fecha_maxima_original
         assert resp.numero_cuota == 3
         assert resp.tipo_cuota == TipoCuota.programada
         assert resp.monto_a_pagar == Decimal("100462.13")
