@@ -46,7 +46,7 @@ from app.schemas.pago import (
     ValidarPagoRequest,
 )
 from app.schemas.pago_reparto import ReemplazarRepartosRequest, RepartoResponse
-from app.services import audit_service, fecha_original_backfill, pago_reparto_service
+from app.services import audit_service, pago_reparto_service
 from app.services.credito_service import credito_operativamente_abierto
 from app.services.cuenta_bancaria_service import obtener_cuenta_o_404
 from app.services.pago_service import PagoService
@@ -1220,52 +1220,6 @@ async def alertas_vencidos(
             for row in rows
         ],
     }
-
-
-# ---------------------------------------------------------------------------
-# ENDPOINT TEMPORAL — eliminar tras ejecutar en producción
-# (atraso-pago-aplazado-corte-original, Fase 4)
-# ---------------------------------------------------------------------------
-class BackfillFechaMaximaOriginalBody(BaseModel):
-    dry_run: bool = True
-
-
-@router.post("/admin/backfill-fecha-maxima-original")
-async def backfill_fecha_maxima_original(
-    body: BackfillFechaMaximaOriginalBody,
-    request: Request,
-    current_user: Usuario = Depends(require_role("admin")),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    """
-    Backfill idempotente: reconstruye `fecha_maxima_original` para pagos
-    existentes creados antes de que la columna existiera, caminando el
-    historial de `fecha_maxima` en `audit_log` (design.md "Backfill
-    Algorithm", decisión D9). La migración de Fase 1 llenó la columna con
-    `fecha_maxima_original = fecha_maxima` para toda fila existente, lo cual
-    es incorrecto para cualquier pago ya aplazado antes del despliegue.
-
-    `dry_run=True` (default) es el paso de verificación: reporta los
-    conteos — incluyendo cuántos pagos no tienen fila de auditoría
-    utilizable, es decir, van a fallback (`aplazados_sin_auditoria`,
-    `reanclados`, `valores_invalidos`) — sin escribir nada. Revisar estos
-    conteos antes de aplicar (`dry_run=False`).
-
-    Idempotente: el resultado se calcula solo desde `audit_log` y
-    `fecha_maxima`, nunca desde la columna misma, así que una segunda
-    corrida aplicada da `a_modificar=0`.
-
-    ENDPOINT TEMPORAL — eliminar tras ejecutar una vez en producción (ver
-    design.md "Migration / Rollout"; mismo patrón que dfb0cf2 /
-    abono-capital-carryover-fix, colocado aquí en pagos.py en vez de un
-    admin.py nuevo — ver nota en tasks.md Fase 4, tarea 4.4).
-    """
-    return await fecha_original_backfill.ejecutar(
-        db=db,
-        usuario_id=current_user.id,
-        ip=get_client_ip(request),
-        dry_run=body.dry_run,
-    )
 
 
 # --- Helper ---
