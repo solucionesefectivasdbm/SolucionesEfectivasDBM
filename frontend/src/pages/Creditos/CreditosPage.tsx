@@ -8,6 +8,7 @@ import type { Credito, Pago, Cliente, Gestor } from '@/types'
 import { Plus, Eye, Pencil, Search, Trash2, CalendarDays, CheckCircle } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
+import { getErrorMessage } from '@/utils/apiErrors'
 import clsx from 'clsx'
 
 interface CreditoForm {
@@ -75,7 +76,7 @@ export default function CreditosPage() {
       setCreditos(res.data.items)
       setTotal(res.data.total)
       setPages(res.data.pages)
-    } catch (e: any) { toast.error(e.response?.data?.detail || 'Error al cargar créditos') }
+    } catch (e: any) { toast.error(getErrorMessage(e, 'Error al cargar créditos')) }
     finally { setLoading(false) }
   }, [page, busqueda, soloActivos, filtroGestor])
 
@@ -96,7 +97,7 @@ export default function CreditosPage() {
       const res = await creditosApi.historialCuotas(c.id)
       setHistorial(res.data)
       setModalHistorial(true)
-    } catch (e: any) { toast.error(e.response?.data?.detail || 'Error al cargar historial') }
+    } catch (e: any) { toast.error(getErrorMessage(e, 'Error al cargar historial')) }
   }
 
   const onCrear = (data: CreditoForm) => {
@@ -129,7 +130,7 @@ export default function CreditosPage() {
       reset()
       cargar()
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'Error al crear crédito')
+      toast.error(getErrorMessage(e, 'Error al crear crédito'))
     } finally { setSubmitting(false) }
   }
 
@@ -194,7 +195,7 @@ export default function CreditosPage() {
       setModalEditar(false)
       cargar()
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'Error')
+      toast.error(getErrorMessage(e, 'Error'))
     } finally { setSubmitting(false) }
   }
 
@@ -205,8 +206,7 @@ export default function CreditosPage() {
       toast.success('Crédito eliminado')
       cargar()
     } catch (e: any) {
-      const detail = e.response?.data?.detail
-      toast.error(Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error al eliminar')
+      toast.error(getErrorMessage(e, 'Error al eliminar'))
     }
   }
 
@@ -226,7 +226,7 @@ export default function CreditosPage() {
       setCreditoDias(null)
       cargar()
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'Error al actualizar días de pago')
+      toast.error(getErrorMessage(e, 'Error al actualizar días de pago'))
     } finally { setSubmitting(false) }
   }
 
@@ -240,7 +240,7 @@ export default function CreditosPage() {
       setCreditoACerrar(null)
       cargar()
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'Error al confirmar el cierre')
+      toast.error(getErrorMessage(e, 'Error al confirmar el cierre'))
     } finally { setSubmitting(false) }
   }
 
@@ -254,7 +254,7 @@ export default function CreditosPage() {
       setCreditoACerrarInteres(null)
       cargar()
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'Error al confirmar el cierre')
+      toast.error(getErrorMessage(e, 'Error al confirmar el cierre'))
     } finally { setSubmitting(false) }
   }
 

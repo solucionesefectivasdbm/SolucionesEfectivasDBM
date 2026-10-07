@@ -6,7 +6,7 @@ import Modal from '@/components/ui/Modal'
 import SelectCuentaBancaria from '@/components/ui/SelectCuentaBancaria'
 import RepartoPagoModal from '@/components/pagos/RepartoPagoModal'
 import { usePermissions } from '@/store/authStore'
-import { mensajeError, esErrorSesionExpirada } from '@/utils/apiErrors'
+import { mensajeError, esErrorSesionExpirada, getErrorMessage } from '@/utils/apiErrors'
 import type { Pago, Receptor, Credito, Gestor } from '@/types'
 import { Check, Calendar, User, Plus, Search, DollarSign, CalendarDays, ArrowLeft, RotateCcw, ChevronUp, ChevronDown, X } from 'lucide-react'
 import toast from 'react-hot-toast'
@@ -128,7 +128,7 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       setPagos(res.data.items)
       setTotal(res.data.total)
       setPages(res.data.pages)
-    } catch (e: any) { toast.error(e.response?.data?.detail || 'Error al cargar pagos') }
+    } catch (e: any) { toast.error(getErrorMessage(e, 'Error al cargar pagos')) }
     finally { if (mostrarSpinner) setLoading(false) }
   }, [anio, mes, momento, sortDir, busqueda, page, filtroGestor, filtroReceptor, filtroCuentaBancaria, filtrosCompletos, esSemanal, esDiario, esAplazados, incluirPagados])
 

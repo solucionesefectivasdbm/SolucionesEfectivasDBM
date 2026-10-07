@@ -8,6 +8,7 @@ import { Plus, Pencil, Trash2, Search, CheckCircle, XCircle, Eye } from 'lucide-
 import { useForm } from 'react-hook-form'
 import { formatCOP, formatFecha, formatPorcentaje } from '@/utils/formatters'
 import toast from 'react-hot-toast'
+import { getErrorMessage } from '@/utils/apiErrors'
 
 interface ClienteForm {
   nombre: string; apellidos: string; cedula: string; telefono: string
@@ -50,7 +51,7 @@ export default function ClientesPage() {
       setClientes(res.data.items)
       setTotal(res.data.total)
       setPages(res.data.pages)
-    } catch (e: any) { toast.error(e.response?.data?.detail || 'Error al cargar clientes') }
+    } catch (e: any) { toast.error(getErrorMessage(e, 'Error al cargar clientes')) }
     finally { setLoading(false) }
   }, [page, busqueda, filtroGestor, filtroAlDia])
 
@@ -82,8 +83,7 @@ export default function ClientesPage() {
         setModalForm(false)
         cargar()
       } catch (e: any) {
-        const detail = e.response?.data?.detail
-        toast.error(Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error')
+        toast.error(getErrorMessage(e, 'Error'))
       } finally { setSubmitting(false) }
       return
     }
@@ -103,8 +103,7 @@ export default function ClientesPage() {
       setDatosPendientes(null)
       cargar()
     } catch (e: any) {
-      const detail = e.response?.data?.detail
-      toast.error(Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error')
+      toast.error(getErrorMessage(e, 'Error'))
     } finally { setSubmitting(false) }
   }
 
@@ -143,7 +142,7 @@ export default function ClientesPage() {
       setCreditosCliente(res.data.items)
       setResumenCliente(resumen.data)
       setModalHistorial(true)
-    } catch (e: any) { toast.error(e.response?.data?.detail || 'Error al cargar historial') }
+    } catch (e: any) { toast.error(getErrorMessage(e, 'Error al cargar historial')) }
   }
 
   const verPagosCredito = async (credito: Credito) => {
@@ -151,7 +150,7 @@ export default function ClientesPage() {
     try {
       const res = await creditosApi.historialCuotas(credito.id)
       setPagosCredito(res.data)
-    } catch (e: any) { toast.error(e.response?.data?.detail || 'Error al cargar cuotas') }
+    } catch (e: any) { toast.error(getErrorMessage(e, 'Error al cargar cuotas')) }
   }
 
   const handleEliminar = async () => {
@@ -163,7 +162,7 @@ export default function ClientesPage() {
       setModalEliminar(false)
       cargar()
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'Error')
+      toast.error(getErrorMessage(e, 'Error'))
     } finally { setSubmitting(false) }
   }
 

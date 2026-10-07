@@ -65,3 +65,20 @@ export function mensajeError(e: unknown, fallback: string): string | null {
 export function esErrorSesionExpirada(e: unknown): boolean {
   return (e as AxiosError)?.response?.status === 401 && leerSesionExpirada()
 }
+
+/**
+ * Extrae un mensaje string seguro para toast desde `detail` del backend.
+ * FastAPI/Pydantic devuelve `detail` como array de objetos en errores 422;
+ * pasarlo crudo a un toast rompe el render de React.
+ */
+export function getErrorMessage(e: any, fallback = 'Error'): string {
+  const detail = e?.response?.data?.detail
+  if (typeof detail === 'string' && detail) return detail
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((d: any) => (typeof d === 'string' ? d : typeof d?.msg === 'string' ? d.msg.replace(/^Value error, /, '') : ''))
+      .filter(Boolean)
+    if (msgs.length > 0) return msgs.join('. ')
+  }
+  return fallback
+}

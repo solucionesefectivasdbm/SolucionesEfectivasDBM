@@ -8,6 +8,7 @@ import { formatCOP, formatCuentaBancaria } from '@/utils/formatters'
 import { Plus, Pencil, Trash2, Search, CreditCard, Wallet } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
+import { getErrorMessage } from '@/utils/apiErrors'
 
 export default function ReceptoresPage() {
   const perms = usePermissions()
@@ -69,9 +70,7 @@ export default function ReceptoresPage() {
         toast.success('Receptor actualizado')
         setModalForm(false); cargar()
       } catch (e: any) {
-        const detail = e.response?.data?.detail
-        const msg = Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error'
-        toast.error(msg)
+        toast.error(getErrorMessage(e, 'Error'))
       }
       finally { setSubmitting(false) }
       return
@@ -91,9 +90,7 @@ export default function ReceptoresPage() {
       setDatosPendientes(null)
       cargar()
     } catch (e: any) {
-      const detail = e.response?.data?.detail
-      const msg = Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error'
-      toast.error(msg)
+      toast.error(getErrorMessage(e, 'Error'))
     }
     finally { setSubmitting(false) }
   }
@@ -119,9 +116,7 @@ export default function ReceptoresPage() {
       await receptoresApi.eliminar(seleccionado.id)
       toast.success('Receptor eliminado'); setModalEliminar(false); cargar()
     } catch (e: any) {
-      const detail = e.response?.data?.detail
-      const msg = Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error'
-      toast.error(msg)
+      toast.error(getErrorMessage(e, 'Error'))
     }
     finally { setSubmitting(false) }
   }
@@ -138,9 +133,7 @@ export default function ReceptoresPage() {
         setSeleccionado(res.data)
         cargar()
       } catch (e: any) {
-        const detail = e.response?.data?.detail
-        const msg = Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error'
-        toast.error(msg)
+        toast.error(getErrorMessage(e, 'Error'))
       }
       finally { setSubmitting(false) }
       return
@@ -163,9 +156,7 @@ export default function ReceptoresPage() {
       setSeleccionado(res.data)
       cargar()
     } catch (e: any) {
-      const detail = e.response?.data?.detail
-      const msg = Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error'
-      toast.error(msg)
+      toast.error(getErrorMessage(e, 'Error'))
     }
     finally { setSubmitting(false) }
   }
@@ -185,9 +176,7 @@ export default function ReceptoresPage() {
       setSeleccionado(res.data)
       cargar()
     } catch (e: any) {
-      const detail = e.response?.data?.detail
-      const msg = Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error'
-      toast.error(msg)
+      toast.error(getErrorMessage(e, 'Error'))
     }
     finally { setSubmitting(false) }
   }
@@ -256,9 +245,7 @@ export default function ReceptoresPage() {
       await cargarMovimientos(seleccionado.id, 1)
       cargar()
     } catch (e: any) {
-      const detail = e.response?.data?.detail
-      const msg = Array.isArray(detail) ? detail.map((d: any) => d.msg).join(', ') : detail || 'Error'
-      toast.error(msg)
+      toast.error(getErrorMessage(e, 'Error'))
     }
     finally { setSubmitting(false) }
   }

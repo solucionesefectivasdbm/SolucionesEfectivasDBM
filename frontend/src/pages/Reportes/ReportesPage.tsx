@@ -7,6 +7,7 @@ import { LoadingPage } from '@/components/ui'
 import IngresosReporteView from './IngresosReporteView'
 import CarteraVencidaReporteView from './CarteraVencidaReporteView'
 import toast from 'react-hot-toast'
+import { getErrorMessage } from '@/utils/apiErrors'
 import { BarChart3 } from 'lucide-react'
 
 // reportes-cartera-vencida-y-rango-fechas (PR3, design D10): ReportesPage es
@@ -71,7 +72,7 @@ export default function ReportesPage() {
         setReporteCarteraVencida(res.data)
       }
     } catch (e: any) {
-      toast.error(e.response?.data?.detail ?? 'Error al generar reporte')
+      toast.error(getErrorMessage(e, 'Error al generar reporte'))
     } finally {
       setLoading(false)
     }

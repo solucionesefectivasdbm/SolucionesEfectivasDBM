@@ -4,6 +4,7 @@ import { useForm } from 'react-hook-form'
 import { usuariosApi } from '@/api'
 import { useAuthStore } from '@/store/authStore'
 import toast from 'react-hot-toast'
+import { getErrorMessage } from '@/utils/apiErrors'
 
 interface Form { password_actual: string; password_nuevo: string; confirmar: string }
 
@@ -21,7 +22,7 @@ export default function CambiarPasswordPage() {
       toast.success('Contraseña actualizada correctamente')
       navigate('/dashboard')
     } catch (err: any) {
-      toast.error(err.response?.data?.detail || 'Error al cambiar la contraseña')
+      toast.error(getErrorMessage(err, 'Error al cambiar la contraseña'))
     } finally {
       setLoading(false)
     }
