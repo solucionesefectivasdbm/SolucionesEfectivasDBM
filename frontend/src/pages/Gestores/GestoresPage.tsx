@@ -8,6 +8,7 @@ import type { Gestor, Usuario, Receptor } from '@/types'
 import { Plus, Pencil, Search } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
+import { getErrorMessage } from '@/utils/apiErrors'
 
 interface GestorForm {
   cedula: string
@@ -117,7 +118,7 @@ export default function GestoresPage() {
         setModalForm(false)
         cargar()
       } catch (e: any) {
-        toast.error(e.response?.data?.detail || 'Error al guardar')
+        toast.error(getErrorMessage(e, 'Error al guardar'))
       } finally {
         setSubmitting(false)
       }
@@ -142,7 +143,7 @@ export default function GestoresPage() {
       setDatosPendientes(null)
       cargar()
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'Error al guardar')
+      toast.error(getErrorMessage(e, 'Error al guardar'))
     } finally {
       setSubmitting(false)
     }

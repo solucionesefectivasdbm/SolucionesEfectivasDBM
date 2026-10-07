@@ -6,6 +6,7 @@ import { authApi } from '@/api'
 import { useAuthStore } from '@/store/authStore'
 import { leerSesionExpirada, AUTH_REDIRECT_REASON_KEY } from '@/utils/apiErrors'
 import toast from 'react-hot-toast'
+import { getErrorMessage } from '@/utils/apiErrors'
 
 interface LoginForm {
   username: string
@@ -43,7 +44,7 @@ export default function LoginPage() {
         navigate('/dashboard')
       }
     } catch (err: any) {
-      const msg = err.response?.data?.detail || 'Credenciales incorrectas'
+      const msg = getErrorMessage(err, 'Credenciales incorrectas')
       toast.error(msg)
     } finally {
       setLoading(false)

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
+import { getErrorMessage } from '@/utils/apiErrors'
 import { pagosApi, clientesApi, creditosApi } from '@/api'
 import { formatCOP, formatFecha } from '@/utils/formatters'
 import { StatCard, LoadingPage } from '@/components/ui'
@@ -31,7 +32,7 @@ export default function DashboardPage() {
         setTotalClientes(cl.data.total)
         setTotalCreditos(cr.data.total)
         setSaldoCartera(cartera.data.saldo_capital)
-      } catch (e: any) { toast.error(e.response?.data?.detail || 'Error al cargar el panel de control') }
+      } catch (e: any) { toast.error(getErrorMessage(e, 'Error al cargar el panel de control')) }
       finally { setLoading(false) }
     }
     cargar()

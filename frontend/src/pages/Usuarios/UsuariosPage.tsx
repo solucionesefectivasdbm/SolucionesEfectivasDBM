@@ -6,6 +6,7 @@ import type { Usuario } from '@/types'
 import { Plus, Pencil, Trash2, Key, Search } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
+import { getErrorMessage } from '@/utils/apiErrors'
 
 export default function UsuariosPage() {
   const [usuarios, setUsuarios] = useState<Usuario[]>([])
@@ -41,7 +42,7 @@ export default function UsuariosPage() {
         await usuariosApi.actualizar(editando.id, { telefono: data.telefono, tipo_usuario: data.tipo_usuario, activo: data.activo })
         toast.success('Usuario actualizado')
         setModalForm(false); cargar()
-      } catch (e: any) { toast.error(e.response?.data?.detail || 'Error') }
+      } catch (e: any) { toast.error(getErrorMessage(e, 'Error')) }
       finally { setSubmitting(false) }
       return
     }
@@ -60,7 +61,7 @@ export default function UsuariosPage() {
       setModalConfirmarCrear(false)
       setDatosPendientes(null)
       cargar()
-    } catch (e: any) { toast.error(e.response?.data?.detail || 'Error') }
+    } catch (e: any) { toast.error(getErrorMessage(e, 'Error')) }
     finally { setSubmitting(false) }
   }
 
@@ -88,17 +89,21 @@ export default function UsuariosPage() {
     try {
       await usuariosApi.eliminar(seleccionado.id)
       toast.success('Usuario eliminado'); setModalEliminar(false); cargar()
-    } catch (e: any) { toast.error(e.response?.data?.detail || 'Error') }
+    } catch (e: any) { toast.error(getErrorMessage(e, 'Error')) }
     finally { setSubmitting(false) }
   }
 
   const handleResetPassword = async () => {
     if (!seleccionado || !newPassword) return
+    if (newPassword.length < 8 || !/(?=.*[A-Z])(?=.*[a-z])(?=.*\d)/.test(newPassword)) {
+      toast.error('La contraseña debe tener mínimo 8 caracteres, con mayúscula, minúscula y número')
+      return
+    }
     setSubmitting(true)
     try {
       await usuariosApi.restablecerPassword(seleccionado.id, newPassword)
       toast.success('Contraseña restablecida'); setModalPassword(false); setNewPassword('')
-    } catch (e: any) { toast.error(e.response?.data?.detail || 'Error') }
+    } catch (e: any) { toast.error(getErrorMessage(e, 'Error')) }
     finally { setSubmitting(false) }
   }
 
