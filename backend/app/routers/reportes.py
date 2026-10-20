@@ -3,7 +3,7 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 
@@ -205,8 +205,17 @@ async def generar_reporte_ingresos(
         .join(Cliente, Credito.cliente_id == Cliente.id)
         .where(
             Pago.deleted_at == None,
-            Pago.fecha_maxima >= fecha_inicio,
-            Pago.fecha_maxima <= fecha_fin,
+            # Mismo criterio que `listar_pagos` (atraso-pago-aplazado-corte-
+            # original, design D8): ventana por el corte ORIGINAL inmutable,
+            # no por `fecha_maxima` vigente (un aplazamiento la movería).
+            Pago.fecha_maxima_original >= fecha_inicio,
+            Pago.fecha_maxima_original <= fecha_fin,
+            # Regla 6/9: lo ya pagado es historial y se conserva siempre; una
+            # cuota PENDIENTE de un crédito inactivo/saldado no debe sumar.
+            or_(
+                Pago.pagado == True,  # noqa: E712
+                credito_operativamente_abierto(),
+            ),
         )
     )
 
