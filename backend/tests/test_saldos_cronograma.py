@@ -12,8 +12,27 @@ from decimal import Decimal
 
 import pytest
 
+from app.models.credito import Credito, Periodicidad, TipoCredito
 from app.models.pago import DestinoExcedente, Pago, TipoCuota
 from app.services import credito_service
+
+
+def _credito(
+    tipo=TipoCredito.cuota_fija, capital="1000000", cuotas=10,
+    saldo_capital="0", saldo_intereses="0", activo=True,
+) -> Credito:
+    """Monthly credit at 3%: cuota_fija interest base = capital * 0.03 * cuotas."""
+    return Credito(
+        id=uuid.uuid4(), tipo_credito=tipo, capital_prestado=Decimal(capital),
+        tasa_interes_mensual=Decimal("0.0300"), periodicidad=Periodicidad.mensual,
+        numero_cuotas=cuotas if tipo == TipoCredito.cuota_fija else None,
+        saldo_capital=Decimal(saldo_capital), saldo_intereses=Decimal(saldo_intereses),
+        activo=activo,
+    )
+
+
+def _exacto() -> Pago:
+    return _pago("100000", "30000", "100000", "30000")
 
 
 def _pago(
@@ -69,3 +88,75 @@ class TestReduccionEfectiva:
     )
     def test_reduccion_efectiva(self, pago, esperado):
         assert credito_service.reduccion_efectiva(pago) == esperado
+
+
+class TestSaldosPorCronograma:
+    """R(paid): balances rebuilt as base - sum(reduccion_efectiva), floored at 0."""
+
+    def test_cuota_fija_sin_pagos_es_la_base(self):
+        # 1000000 capital; interest 1000000 * 0.03 * 10 cuotas
+        assert credito_service.saldos_por_cronograma(_credito(), []) == (
+            Decimal("1000000.00"), Decimal("300000.00"),
+        )
+
+    def test_cuota_fija_descuenta_la_reduccion_efectiva_de_cada_pago(self):
+        pagados = [
+            _exacto(),
+            _exacto(),
+            # Reported 100000/50000 (exc 20000) with destino intereses reduces 100000/50000.
+            _pago("100000", "30000", "100000", "50000", destino=DestinoExcedente.intereses),
+        ]
+        assert credito_service.saldos_por_cronograma(_credito(), pagados) == (
+            Decimal("700000.00"), Decimal("190000.00"),
+        )
+
+    def test_abono_capital_nunca_lleva_saldo_de_intereses(self):
+        credito = _credito(tipo=TipoCredito.abono_capital, capital="2000000")
+        pagado = _pago("200000", "60000", "200000", "60000")
+        assert credito_service.saldos_por_cronograma(credito, [pagado]) == (
+            Decimal("1800000.00"), Decimal("0.00"),
+        )
+
+    def test_piso_en_cero_cuando_lo_pagado_supera_la_base(self):
+        credito = _credito(capital="100000", cuotas=1)  # interest base 3000
+        pagados = [_pago("100000", "3000", "80000", "0"), _pago("100000", "3000", "60000", "4000")]
+        assert credito_service.saldos_por_cronograma(credito, pagados) == (
+            Decimal("0.00"), Decimal("0.00"),
+        )
+
+
+class TestSaldosTrasReversion:
+    """Design D2/D3: new = stored + (R(paid - {P}) - R(paid)); closed credit replays interest."""
+
+    def test_sin_drift_devuelve_los_saldos_previos_al_pago(self):
+        p1, p2 = _exacto(), _exacto()
+        credito = _credito(saldo_capital="800000", saldo_intereses="240000")
+        assert credito_service.saldos_tras_reversion(credito, [p1, p2], p2) == (
+            Decimal("900000.00"), Decimal("270000.00"),
+        )
+
+    def test_preserva_el_drift_almacenado(self):
+        # Stored balances carry +7777 capital / +500 interest of legacy drift: kept, not overwritten.
+        p1, p2 = _exacto(), _exacto()
+        credito = _credito(saldo_capital="807777", saldo_intereses="240500")
+        assert credito_service.saldos_tras_reversion(credito, [p1, p2], p2) == (
+            Decimal("907777.00"), Decimal("270500.00"),
+        )
+
+    def test_el_piso_absorbido_al_registrar_no_se_devuelve(self):
+        # P2 paid 40000 capital but only 20000 was left: reverting gives back 20000, not 40000.
+        credito = _credito(capital="100000", cuotas=1, saldo_capital="0", saldo_intereses="3000")
+        p1 = _pago("100000", "3000", "80000", "0")
+        p2 = _pago("100000", "3000", "40000", "0")
+        assert credito_service.saldos_tras_reversion(credito, [p1, p2], p2) == (
+            Decimal("20000.00"), Decimal("3000.00"),
+        )
+
+    def test_credito_cerrado_recompone_el_interes_por_replay_completo(self):
+        # Regla 14: closure zeroed saldo_intereses, so anchoring would give 0 + (6000 - 6000).
+        credito = _credito(capital="200000", cuotas=2, saldo_capital="0", saldo_intereses="0", activo=False)
+        p1 = _pago("100000", "6000", "100000", "6000")
+        p2 = _pago("100000", "6000", "100000", "0")  # partial: capital only
+        assert credito_service.saldos_tras_reversion(credito, [p1, p2], p2) == (
+            Decimal("100000.00"), Decimal("6000.00"),
+        )
