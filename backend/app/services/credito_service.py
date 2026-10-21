@@ -124,6 +124,21 @@ def cerrar_credito(credito: Credito) -> bool:
     return True
 
 
+def reabrir_credito(credito: Credito) -> bool:
+    """
+    Reversión de monto (design D7): ÚNICO escritor de la transición
+    `activo` False → True, espejo de `cerrar_credito`. NUNCA escribe saldos
+    (los recompone `saldos_tras_reversion`).
+
+    Idempotente: si el crédito ya estaba abierto no hace nada y retorna
+    `False`; retorna `True` solo cuando efectivamente reabre.
+    """
+    if credito.activo:
+        return False
+    credito.activo = True
+    return True
+
+
 def puede_cerrar_con_interes_pendiente(credito: Credito) -> bool:
     """
     Regla 14 (zero-balance-explicit-closure): true si y solo si el crédito

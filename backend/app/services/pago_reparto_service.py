@@ -92,6 +92,12 @@ async def _soft_delete_repartos_activos(db: AsyncSession, pago_id: uuid.UUID) ->
     return [_resumen_reparto(r) for r in result.scalars().all()]
 
 
+async def soft_delete_repartos_de_pago(db: AsyncSession, pago_id: uuid.UUID) -> list[dict]:
+    """Borra lógicamente todos los repartos activos de un pago (reversión de
+    monto). Devuelve el resumen de lo borrado, para auditoría."""
+    return await _soft_delete_repartos_activos(db, pago_id)
+
+
 async def reemplazar_por_cuenta_unica(db: AsyncSession, pago: Pago) -> tuple[list[dict], Optional[dict]]:
     """
     Sincroniza pago_repartos con el PATCH legacy `/pagos/{id}/cuenta-bancaria`:

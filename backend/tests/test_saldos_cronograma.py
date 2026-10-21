@@ -125,6 +125,23 @@ class TestSaldosPorCronograma:
         )
 
 
+class TestReabrirCredito:
+    """Design D7: the only writer of activo False -> True; never touches balances."""
+
+    def test_credito_cerrado_se_reabre_sin_tocar_saldos(self):
+        credito = _credito(saldo_capital="500", saldo_intereses="20", activo=False)
+
+        assert credito_service.reabrir_credito(credito) is True
+        assert credito.activo is True
+        assert (credito.saldo_capital, credito.saldo_intereses) == (Decimal("500"), Decimal("20"))
+
+    def test_credito_abierto_no_cambia(self):
+        credito = _credito(saldo_capital="500", saldo_intereses="20", activo=True)
+
+        assert credito_service.reabrir_credito(credito) is False
+        assert credito.activo is True
+
+
 class TestSaldosTrasReversion:
     """Design D2/D3: new = stored + (R(paid - {P}) - R(paid)); closed credit replays interest."""
 

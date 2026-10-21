@@ -223,6 +223,26 @@ class TestReemplazarPorCuentaUnica:
         assert activos[0].cuenta_bancaria_id == cuenta_b.id
 
 
+class TestSoftDeleteRepartosDePago:
+    """`soft_delete_repartos_de_pago` — wrapper público usado por la reversión
+    de monto (recaudo-registra-montos-registrador-supervisa, pago-repartos)."""
+
+    @pytest.mark.asyncio
+    async def test_borra_logicamente_solo_los_repartos_del_pago(self, db_session):
+        pago, _ = await _preparar_pago(db_session)
+        otro, _ = await _preparar_pago(db_session)
+        reparto = await pago_reparto_service.crear_reparto_por_defecto(db_session, pago)
+        reparto_otro = await pago_reparto_service.crear_reparto_por_defecto(db_session, otro)
+        assert len(await _repartos_activos(db_session, pago.id)) == 1
+
+        borrados = await pago_reparto_service.soft_delete_repartos_de_pago(db_session, pago.id)
+
+        assert [b["id"] for b in borrados] == [str(reparto.id)]
+        assert borrados[0]["monto"] == str(pago.capital_pagado + pago.interes_pagado)
+        assert await _repartos_activos(db_session, pago.id) == []
+        assert [r.id for r in await _repartos_activos(db_session, otro.id)] == [reparto_otro.id]
+
+
 # ─── PR2: reparto explícito multi-destinatario ──────────────────────────────
 
 
