@@ -18,7 +18,7 @@ from sqlalchemy import and_, or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.credito import Credito, TipoCredito, Periodicidad
-from app.models.pago import Pago, TipoCuota
+from app.models.pago import DestinoExcedente, Pago, TipoCuota
 from app.schemas.credito import CreditoCreate
 from app.utils.fechas import (
     siguiente_fecha_maxima,
@@ -1032,3 +1032,28 @@ async def recalcular_cuotas_futuras(
         cuota.fecha_maxima_original = fecha_actual
         cuota.momento = get_momento(fecha_actual)
         fecha_actual = siguiente_fecha_maxima(fecha_actual, credito)
+
+
+# ─── Reversión de monto: saldos recompuestos desde el cronograma ────────────
+
+
+def reduccion_efectiva(pago: Pago) -> tuple[Decimal, Decimal]:
+    """
+    (capital, interés) que el registro de `pago` descontó de los saldos del
+    crédito. Espeja `PagoService.confirmar_excedente`: con excedente el
+    `destino` es autoritativo (capital → `capital_a_pagar` + excedente;
+    intereses → `interes_a_pagar` + excedente) y NO lo que el usuario reportó
+    en `capital_pagado`/`interes_pagado`; sin excedente (exacto, parcial,
+    `no_programada`) la reducción es lo pagado.
+    """
+    if pago.es_excedente_a is None:
+        return pago.capital_pagado, pago.interes_pagado
+
+    excedente = (pago.capital_pagado + pago.interes_pagado - pago.monto_a_pagar).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    if pago.es_excedente_a == DestinoExcedente.capital:
+        capital = (pago.capital_a_pagar + excedente).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return capital, pago.interes_a_pagar
+    interes = (pago.interes_a_pagar + excedente).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return pago.capital_a_pagar, interes
