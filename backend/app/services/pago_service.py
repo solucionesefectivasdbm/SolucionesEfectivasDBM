@@ -14,8 +14,10 @@ DECISIÓN TÉCNICA: El flujo de excedente es un proceso en 2 pasos:
             y completa el pago.
 Esto evita estados intermedios inconsistentes en la DB.
 """
+import uuid
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
+from typing import NamedTuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,12 +30,36 @@ from app.services.credito_service import (
     cerrar_credito,
     esta_saldado,
     generar_siguiente_cuota,
+    reabrir_credito,
+    recalcular_cuota_actual_si_no_pagada,
+    saldos_tras_reversion,
 )
-from app.services.pago_reparto_service import crear_reparto_por_defecto
+from app.services.pago_reparto_service import crear_reparto_por_defecto, soft_delete_repartos_de_pago
+from app.utils.tz import ahora_bogota
 
 
 TOL = Decimal("0.01")
 _Q = Decimal("0.01")
+_CERO = Decimal("0.00")
+
+
+class CambioReversion(NamedTuple):
+    """Cambio de una entidad hecho por `revertir_monto`, para que el router lo audite:
+    `campos` ({campo: (anterior, nuevo)} como str) -> `registrar_actualizacion_campos`;
+    `eliminado` -> `registrar_eliminacion`."""
+    entidad: str
+    entidad_id: uuid.UUID
+    campos: dict[str, tuple[str, str]]
+    eliminado: bool = False
+
+
+class ResultadoReversion(NamedTuple):
+    cambios: list[CambioReversion]
+
+
+def _campos(*cambios: tuple[str, object, object]) -> dict[str, tuple[str, str]]:
+    """{campo: (anterior, nuevo)} como str, solo de los campos que cambian."""
+    return {campo: (str(a), str(n)) for campo, a, n in cambios if str(a) != str(n)}
 
 
 class PagoService:
@@ -472,3 +498,76 @@ class PagoService:
         await recalcular_cuota_actual_si_no_pagada(db, credito)
 
         return pago
+
+    @staticmethod
+    def cuotas_sucesoras(pago: Pago, pagos_credito: list[Pago]) -> list[Pago]:
+        """
+        Cuotas programadas pendientes y vigentes posteriores a `pago`: la que
+        generó su registro. Un pago `no_programada` no genera ninguna; una
+        cuota posterior ya pagada no es sucesora (es un asunto de LIFO).
+        """
+        if pago.tipo_cuota == TipoCuota.no_programada:
+            return []
+        return [
+            p for p in pagos_credito
+            if p.numero_cuota > pago.numero_cuota
+            and not p.pagado
+            and p.deleted_at is None
+            and p.tipo_cuota != TipoCuota.no_programada
+        ]
+
+    @staticmethod
+    async def revertir_monto(
+        db: AsyncSession,
+        pago: Pago,
+        credito: Credito,
+        pagos_credito: list[Pago],
+    ) -> ResultadoReversion:
+        """
+        Deshace el registro de montos de `pago` (design D2-D7). Sin commit ni
+        auditoría (la hace el router con `cambios`) y SIN validar: el router
+        garantiza que `pago` está pagado, es el último registrado (LIFO) y que
+        su cuota sucesora es única, impaga y sin montos.
+
+        Los saldos nuevos se calculan primero: leen los montos de `pago` y
+        `credito.activo`, que se modifican más abajo.
+        """
+        pagados = [p for p in pagos_credito if p.pagado and p.deleted_at is None]
+        capital, interes = saldos_tras_reversion(credito, pagados, pago)
+        es_no_programada = pago.tipo_cuota == TipoCuota.no_programada
+        ahora = ahora_bogota()
+
+        await soft_delete_repartos_de_pago(db, pago.id)
+        if es_no_programada:
+            # D6: nunca fue validada; una fila impaga contaminaría el cronograma.
+            pago.deleted_at = ahora
+            cambios = [CambioReversion("pagos", pago.id, {}, eliminado=True)]
+        else:
+            # D5: vuelve a validada-impaga con los montos esperados que ya tenía
+            # (registrar nunca los modifica), por eso no se recalcula la cuota.
+            cambios = [CambioReversion("pagos", pago.id, _campos(
+                ("pagado", pago.pagado, False),
+                ("capital_pagado", pago.capital_pagado, _CERO),
+                ("interes_pagado", pago.interes_pagado, _CERO),
+                ("fecha_pago_real", pago.fecha_pago_real, None),
+                ("es_excedente_a", pago.es_excedente_a.value if pago.es_excedente_a else None, None),
+            ))]
+            pago.pagado, pago.capital_pagado, pago.interes_pagado = False, _CERO, _CERO
+            pago.fecha_pago_real = pago.es_excedente_a = None
+
+        for sucesora in PagoService.cuotas_sucesoras(pago, pagos_credito):
+            sucesora.deleted_at = ahora
+            cambios.append(CambioReversion("pagos", sucesora.id, {}, eliminado=True))
+
+        capital_antes, interes_antes, activo_antes = credito.saldo_capital, credito.saldo_intereses, credito.activo
+        credito.saldo_capital, credito.saldo_intereses = capital, interes
+        reabrir_credito(credito)
+        cambios.append(CambioReversion("creditos", credito.id, _campos(
+            ("saldo_capital", capital_antes, capital),
+            ("saldo_intereses", interes_antes, interes),
+            ("activo", activo_antes, credito.activo),
+        )))
+        if es_no_programada:
+            # D6: inverso del camino de ida; re-deriva el arrastre de la cuota actual.
+            await recalcular_cuota_actual_si_no_pagada(db, credito)
+        return ResultadoReversion(cambios)
