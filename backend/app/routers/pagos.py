@@ -702,12 +702,12 @@ async def registrar_pago(
     pago_id: uuid.UUID,
     body: RegistrarPagoRequest,
     request: Request,
-    current_user: Usuario = Depends(require_role("admin", "registrador")),
+    current_user: Usuario = Depends(require_role("admin", "registrador", "recaudador")),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Registra el monto pagado de una cuota.
-    FLUJO: primero el recaudador valida (check), luego el registrador registra montos.
+    FLUJO: primero se valida el pago (check) y luego admin, registrador o recaudador registran montos.
     Si hay excedente, retorna requiere_decision=True para que el
     frontend muestre el modal de decisión.
     """
@@ -760,7 +760,7 @@ async def confirmar_excedente(
     pago_id: uuid.UUID,
     body: ConfirmarExcedenteBody,
     request: Request,
-    current_user: Usuario = Depends(require_role("admin", "registrador")),
+    current_user: Usuario = Depends(require_role("admin", "registrador", "recaudador")),
     db: AsyncSession = Depends(get_db),
 ):
     pago, credito = await _get_pago_con_credito(db, pago_id, lock=True)
@@ -1061,7 +1061,7 @@ async def registrar_pago_no_programado(
     credito_id: uuid.UUID,
     body: PagoNoProgramadoRequest,
     request: Request,
-    current_user: Usuario = Depends(require_role("admin", "registrador")),
+    current_user: Usuario = Depends(require_role("admin", "registrador", "recaudador")),
     db: AsyncSession = Depends(get_db),
 ):
     """
