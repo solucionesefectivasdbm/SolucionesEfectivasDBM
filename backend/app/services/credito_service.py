@@ -18,7 +18,7 @@ from sqlalchemy import and_, or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.credito import Credito, TipoCredito, Periodicidad
-from app.models.pago import Pago, TipoCuota
+from app.models.pago import DestinoExcedente, Pago, TipoCuota
 from app.schemas.credito import CreditoCreate
 from app.utils.fechas import (
     siguiente_fecha_maxima,
@@ -121,6 +121,21 @@ def cerrar_credito(credito: Credito) -> bool:
     if not credito.activo:
         return False
     credito.activo = False
+    return True
+
+
+def reabrir_credito(credito: Credito) -> bool:
+    """
+    Reversión de monto (design D7): ÚNICO escritor de la transición
+    `activo` False → True, espejo de `cerrar_credito`. NUNCA escribe saldos
+    (los recompone `saldos_tras_reversion`).
+
+    Idempotente: si el crédito ya estaba abierto no hace nada y retorna
+    `False`; retorna `True` solo cuando efectivamente reabre.
+    """
+    if credito.activo:
+        return False
+    credito.activo = True
     return True
 
 
@@ -1032,3 +1047,81 @@ async def recalcular_cuotas_futuras(
         cuota.fecha_maxima_original = fecha_actual
         cuota.momento = get_momento(fecha_actual)
         fecha_actual = siguiente_fecha_maxima(fecha_actual, credito)
+
+
+# ─── Reversión de monto: saldos recompuestos desde el cronograma ────────────
+
+
+def reduccion_efectiva(pago: Pago) -> tuple[Decimal, Decimal]:
+    """
+    (capital, interés) que el registro de `pago` descontó de los saldos del
+    crédito. Espeja `PagoService.confirmar_excedente`: con excedente el
+    `destino` es autoritativo (capital → `capital_a_pagar` + excedente;
+    intereses → `interes_a_pagar` + excedente) y NO lo que el usuario reportó
+    en `capital_pagado`/`interes_pagado`; sin excedente (exacto, parcial,
+    `no_programada`) la reducción es lo pagado.
+    """
+    if pago.es_excedente_a is None:
+        return pago.capital_pagado, pago.interes_pagado
+
+    excedente = (pago.capital_pagado + pago.interes_pagado - pago.monto_a_pagar).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    if pago.es_excedente_a == DestinoExcedente.capital:
+        capital = (pago.capital_a_pagar + excedente).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return capital, pago.interes_a_pagar
+    interes = (pago.interes_a_pagar + excedente).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return pago.capital_a_pagar, interes
+
+
+def _piso_cero(valor: Decimal) -> Decimal:
+    return max(Decimal("0.00"), valor.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def saldos_por_cronograma(credito: Credito, pagados: list[Pago]) -> tuple[Decimal, Decimal]:
+    """
+    R(pagados) (design D2): (saldo_capital, saldo_intereses) que tendría el
+    crédito si `pagados` (pagos pagados y no eliminados) fueran sus únicos
+    registros: base − Σ `reduccion_efectiva`, con piso en 0. Con reducciones no
+    negativas, el piso de la suma es igual al piso secuencial de
+    `_aplicar_reduccion_saldos`.
+
+    Base de capital: `capital_prestado`. Base de interés: solo `cuota_fija`,
+    capital × tasa × cuotas / pagos por mes (igual que
+    `recalcular_saldo_intereses`); 0 para `abono_capital` (regla 3).
+    """
+    reducciones = [reduccion_efectiva(p) for p in pagados]
+    capital = credito.capital_prestado - sum((c for c, _ in reducciones), Decimal("0.00"))
+    interes_base = Decimal("0.00")
+    if credito.tipo_credito == TipoCredito.cuota_fija and credito.numero_cuotas:
+        num_meses = Decimal(credito.numero_cuotas) / Decimal(_periodos_por_mes(credito.periodicidad))
+        interes_base = credito.capital_prestado * credito.tasa_interes_mensual * num_meses
+    interes = interes_base - sum((i for _, i in reducciones), Decimal("0.00"))
+    return _piso_cero(capital), _piso_cero(interes)
+
+
+def saldos_tras_reversion(
+    credito: Credito, pagados: list[Pago], pago: Pago
+) -> tuple[Decimal, Decimal]:
+    """
+    Saldos del crédito después de revertir `pago` (miembro de `pagados`). Se
+    debe llamar ANTES de `reabrir_credito`: lee `credito.activo`.
+
+    D2, delta anclado: nuevo = almacenado + (R(pagados − {pago}) − R(pagados)).
+    Conserva el drift que ya trae el saldo almacenado (los caminos de edición y
+    `recalcular_saldo_intereses` ignoran el excedente) y no "devuelve" lo que el
+    piso en 0 absorbió al registrar.
+
+    D3: con el crédito cerrado (`activo=False`, se reabrirá) el cierre regla 14
+    dejó `saldo_intereses` en 0, así que el interés se recompone con el replay
+    completo R(pagados − {pago}) en vez de anclarse al valor almacenado.
+    """
+    capital_con, interes_con = saldos_por_cronograma(credito, pagados)
+    capital_sin, interes_sin = saldos_por_cronograma(
+        credito, [p for p in pagados if p.id != pago.id]
+    )
+    capital = credito.saldo_capital + capital_sin - capital_con
+    interes = interes_sin
+    if credito.activo:
+        interes = credito.saldo_intereses + interes_sin - interes_con
+    return _piso_cero(capital), _piso_cero(interes)
