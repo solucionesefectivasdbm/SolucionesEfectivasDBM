@@ -868,6 +868,11 @@ def _rechazar_revertir_monto(pago_id: uuid.UUID, usuario: Usuario, motivo: str, 
     raise HTTPException(status_code=422, detail=detail)
 
 
+def _orden_registro(pago: Pago) -> tuple:
+    """Orden LIFO de los pagos registrados. Nunca por numero_cuota: un no programado toma max + 1."""
+    return (pago.fecha_pago_real or date.min, pago.created_at, pago.id)
+
+
 @router.post("/{pago_id}/revertir-monto", response_model=PagoResponse)
 async def revertir_monto(
     pago_id: uuid.UUID,
@@ -883,7 +888,8 @@ async def revertir_monto(
     lo había cerrado (PagoService.revertir_monto).
 
     Guardas, en orden, antes de cualquier escritura (422): la cuota debe estar
-    pagada (cubre la segunda llamada).
+    pagada (cubre la segunda llamada); LIFO, ningún pago registrado después
+    (incluye no programados); la cuota que generó debe ser única, impaga y sin montos.
     """
     pago, credito = await _get_pago_con_credito(db, pago_id, lock=True)
     # FOR UPDATE de los pagos del crédito: el lock del crédito ya serializa, esto
@@ -900,6 +906,34 @@ async def revertir_monto(
             pago_id, current_user, "no_pagado",
             "Esta cuota no tiene un monto registrado para revertir.",
         )
+
+    posteriores = [p for p in pagos_credito if p.pagado and _orden_registro(p) > _orden_registro(pago)]
+    if posteriores:
+        ultimo = max(posteriores, key=_orden_registro)
+        cual = (
+            "el pago no programado" if ultimo.tipo_cuota == TipoCuota.no_programada
+            else f"la cuota #{ultimo.numero_cuota}"
+        )
+        _rechazar_revertir_monto(
+            pago_id, current_user, "lifo",
+            f"Hay pagos posteriores registrados. Revierta primero {cual}.",
+        )
+
+    if pago.tipo_cuota != TipoCuota.no_programada:
+        siguientes = [
+            p for p in pagos_credito
+            if p.numero_cuota > pago.numero_cuota and p.tipo_cuota != TipoCuota.no_programada
+        ]
+        if any(p.pagado or p.capital_pagado > 0 or p.interes_pagado > 0 for p in siguientes):
+            _rechazar_revertir_monto(
+                pago_id, current_user, "sucesora_con_montos",
+                "La cuota siguiente ya tiene montos registrados.",
+            )
+        if len(PagoService.cuotas_sucesoras(pago, pagos_credito)) > 1:
+            _rechazar_revertir_monto(
+                pago_id, current_user, "sucesoras_multiples",
+                "El crédito tiene más de una cuota siguiente pendiente.",
+            )
 
     await PagoService.revertir_monto(db, pago, credito, pagos_credito)
     return PagoResponse.model_validate(pago)
