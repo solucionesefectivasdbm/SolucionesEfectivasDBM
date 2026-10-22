@@ -83,7 +83,10 @@ export const usePermissions = () => {
     canEdit: role === 'admin',
     canDelete: role === 'admin',
     canValidarPago: role === 'admin' || role === 'recaudador',
-    canRegistrarPago: role === 'admin' || role === 'registrador',
+    // El recaudador también registra montos; el registrador y el admin supervisan
+    // (revierten) lo registrado.
+    canRegistrarPago: role === 'admin' || role === 'registrador' || role === 'recaudador',
+    canRevertirMonto: role === 'admin' || role === 'registrador',
     canVerReportes: role === 'admin',
     canGestionarUsuarios: role === 'admin',
     canGestionarReceptores: role === 'admin',
