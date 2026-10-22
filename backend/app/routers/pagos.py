@@ -882,18 +882,16 @@ async def revertir_monto(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Deshace el registro de montos de una cuota pagada: vuelve a validada-impaga
-    (o borra lógicamente un pago no programado), borra la cuota que generó,
-    recompone los saldos del crédito desde el cronograma y lo reabre si ese pago
-    lo había cerrado (PagoService.revertir_monto).
+    Deshace el registro de montos de una cuota pagada (PagoService.revertir_monto):
+    vuelve a validada-impaga (un no programado se borra lógicamente), borra la cuota
+    que generó, recompone los saldos desde el cronograma y reabre el crédito.
 
-    Guardas, en orden, antes de cualquier escritura (422): la cuota debe estar
-    pagada (cubre la segunda llamada); LIFO, ningún pago registrado después
-    (incluye no programados); la cuota que generó debe ser única, impaga y sin montos.
+    Guardas en orden, 422 antes de cualquier escritura: cuota pagada (cubre la
+    segunda llamada); LIFO (ningún pago posterior, incluidos los no programados);
+    cuota generada única, impaga y sin montos.
     """
     pago, credito = await _get_pago_con_credito(db, pago_id, lock=True)
-    # FOR UPDATE de los pagos del crédito: el lock del crédito ya serializa, esto
-    # fija el conjunto que se evalúa y se pasa al servicio.
+    # FOR UPDATE: fija el conjunto de pagos que se evalúa y se pasa al servicio.
     pagos_credito = (await db.execute(
         select(Pago)
         .where(Pago.credito_id == credito.id, Pago.deleted_at == None)  # noqa: E711
@@ -901,41 +899,39 @@ async def revertir_monto(
         .with_for_update()
     )).scalars().all()
 
+    def rechazar(motivo: str, detail: str) -> NoReturn:
+        _rechazar_revertir_monto(pago_id, current_user, motivo, detail)
+
     if not pago.pagado:
-        _rechazar_revertir_monto(
-            pago_id, current_user, "no_pagado",
-            "Esta cuota no tiene un monto registrado para revertir.",
-        )
+        rechazar("no_pagado", "Esta cuota no tiene un monto registrado para revertir.")
 
     posteriores = [p for p in pagos_credito if p.pagado and _orden_registro(p) > _orden_registro(pago)]
     if posteriores:
         ultimo = max(posteriores, key=_orden_registro)
-        cual = (
-            "el pago no programado" if ultimo.tipo_cuota == TipoCuota.no_programada
-            else f"la cuota #{ultimo.numero_cuota}"
-        )
-        _rechazar_revertir_monto(
-            pago_id, current_user, "lifo",
-            f"Hay pagos posteriores registrados. Revierta primero {cual}.",
-        )
+        cual = ("el pago no programado" if ultimo.tipo_cuota == TipoCuota.no_programada
+                else f"la cuota #{ultimo.numero_cuota}")
+        rechazar("lifo", f"Hay pagos posteriores registrados. Revierta primero {cual}.")
 
     if pago.tipo_cuota != TipoCuota.no_programada:
-        siguientes = [
-            p for p in pagos_credito
-            if p.numero_cuota > pago.numero_cuota and p.tipo_cuota != TipoCuota.no_programada
-        ]
+        siguientes = [p for p in pagos_credito
+                      if p.numero_cuota > pago.numero_cuota and p.tipo_cuota != TipoCuota.no_programada]
         if any(p.pagado or p.capital_pagado > 0 or p.interes_pagado > 0 for p in siguientes):
-            _rechazar_revertir_monto(
-                pago_id, current_user, "sucesora_con_montos",
-                "La cuota siguiente ya tiene montos registrados.",
-            )
+            rechazar("sucesora_con_montos", "La cuota siguiente ya tiene montos registrados.")
         if len(PagoService.cuotas_sucesoras(pago, pagos_credito)) > 1:
-            _rechazar_revertir_monto(
-                pago_id, current_user, "sucesoras_multiples",
-                "El crédito tiene más de una cuota siguiente pendiente.",
-            )
+            rechazar("sucesoras_multiples", "El crédito tiene más de una cuota siguiente pendiente.")
 
-    await PagoService.revertir_monto(db, pago, credito, pagos_credito)
+    resultado = await PagoService.revertir_monto(db, pago, credito, pagos_credito)
+
+    motivo = body.motivo if body else None
+    ip = get_client_ip(request)
+    for c in resultado.cambios:
+        campos = dict(c.campos)
+        if motivo and c.entidad_id == pago.id:
+            campos["motivo_reversion"] = ("None", motivo)
+        if c.eliminado:
+            await audit_service.registrar_eliminacion(db, c.entidad, c.entidad_id, current_user.id, ip)
+        if campos:
+            await audit_service.registrar_actualizacion_campos(db, c.entidad, c.entidad_id, current_user.id, ip, campos)
     return PagoResponse.model_validate(pago)
 
 
