@@ -8,10 +8,13 @@ import RepartoPagoModal from '@/components/pagos/RepartoPagoModal'
 import { usePermissions } from '@/store/authStore'
 import { mensajeError, esErrorSesionExpirada, getErrorMessage } from '@/utils/apiErrors'
 import type { Pago, Receptor, Credito, Gestor } from '@/types'
-import { Check, Calendar, User, Plus, Search, DollarSign, CalendarDays, ArrowLeft, RotateCcw, ChevronUp, ChevronDown, X } from 'lucide-react'
+import { Check, Calendar, User, Plus, Search, DollarSign, CalendarDays, ArrowLeft, RotateCcw, Undo2, ChevronUp, ChevronDown, X } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 import { useNavigate } from 'react-router-dom'
+
+// Mismo tope que RevertirMontoRequest.motivo en el backend (max_length=500).
+const MOTIVO_REVERSION_MAX = 500
 
 interface PagosPageProps {
   variante?: 'regular' | 'semanal' | 'diario' | 'aplazados'
@@ -86,6 +89,10 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
   const [nuevaCuentaBancaria, setNuevaCuentaBancaria] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [pagoADesvalidar, setPagoADesvalidar] = useState<Pago | null>(null)
+  // Revertir monto: pago a revertir (abre el modal) y motivo opcional.
+  const [pagoARevertir, setPagoARevertir] = useState<Pago | null>(null)
+  const [motivoReversion, setMotivoReversion] = useState('')
+  const idMotivoReversion = `${useId()}-motivo-reversion`
 
   // En las variantes semanal, diario y aplazados, momento es opcional (o no
   // aplica) → filtros siempre completos.
@@ -373,6 +380,33 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
       cargarPagos(false)
     } catch (e: any) {
       const msg = mensajeError(e, 'No se pudo revertir el check')
+      if (msg) toast.error(msg)
+      if (e.response && !esErrorSesionExpirada(e)) cargarPagos(false)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const abrirRevertirMonto = (pago: Pago) => {
+    setMotivoReversion('')
+    setPagoARevertir(pago)
+  }
+
+  // Misma mecánica que handleDesvalidar. Los rechazos del backend (LIFO, cuota
+  // siguiente con montos, etc.) llegan como 422 con `detail` en texto y
+  // `mensajeError` lo devuelve tal cual. Tras un error con respuesta del
+  // servidor la fila pudo cambiar, así que también se recarga el listado. El
+  // modal sigue abierto ante un error para reintentar sin perder el motivo.
+  const handleRevertirMonto = async () => {
+    if (!pagoARevertir || submitting) return
+    setSubmitting(true)
+    try {
+      await pagosApi.revertirMonto(pagoARevertir.id, motivoReversion.trim())
+      toast.success('Monto revertido')
+      setPagoARevertir(null)
+      cargarPagos(false)
+    } catch (e: any) {
+      const msg = mensajeError(e, 'No se pudo revertir el monto')
       if (msg) toast.error(msg)
       if (e.response && !esErrorSesionExpirada(e)) cargarPagos(false)
     } finally {
@@ -805,6 +839,19 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
                                 <Plus size={14} />
                               </button>
                             )}
+                            {/* Revertir monto — solo filas ya pagadas y solo admin/
+                                registrador. El backend decide si procede (LIFO,
+                                cuota siguiente) y su mensaje se muestra tal cual. */}
+                            {!p.es_proyectada && perms.canRevertirMonto && p.pagado && (
+                              <button
+                                title="Revertir monto"
+                                onClick={() => abrirRevertirMonto(p)}
+                                disabled={submitting}
+                                className="p-1.5 bg-danger text-white rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50"
+                              >
+                                <Undo2 size={14} />
+                              </button>
+                            )}
                             {/* Modificar fecha */}
                             {!p.es_proyectada && perms.canValidarPago && !p.pagado && (
                               <button
@@ -1214,6 +1261,57 @@ export default function PagosPage({ variante = 'regular' }: PagosPageProps) {
           confirmLabel="Revertir"
           loadingLabel="Revirtiendo..."
         />
+      </Modal>
+
+      {/* Modal: Revertir monto. Confirmación con motivo opcional (mismo tope
+          de caracteres que el backend). */}
+      <Modal isOpen={pagoARevertir !== null} onClose={() => setPagoARevertir(null)} title="Revertir monto" size="md">
+        {pagoARevertir && (
+          <div className="space-y-4">
+            <div className="bg-primary-50 rounded-lg p-3 text-sm">
+              <p className="font-semibold text-primary-700">
+                Cuota #{pagoARevertir.numero_cuota} — {pagoARevertir.cliente_nombre || '—'}
+              </p>
+              <p className="text-gray-600">
+                Capital pagado: <strong>{formatCOP(pagoARevertir.capital_pagado)}</strong>
+                {' · '}
+                Interés pagado: <strong>{formatCOP(pagoARevertir.interes_pagado)}</strong>
+              </p>
+            </div>
+            <p className="text-sm text-gray-600">
+              {pagoARevertir.tipo_cuota === 'no_programada'
+                ? 'Se eliminará este pago no programado y se recalcularán los saldos del crédito.'
+                : 'La cuota volverá a quedar validada sin pagar y se recalcularán los saldos del crédito. '
+                  + 'La cuota siguiente que generó este pago, si existe, se elimina junto con su check o aplazamiento.'}
+            </p>
+            <div>
+              <label className="label" htmlFor={idMotivoReversion}>Motivo (opcional)</label>
+              <textarea
+                id={idMotivoReversion}
+                className="input"
+                rows={3}
+                maxLength={MOTIVO_REVERSION_MAX}
+                value={motivoReversion}
+                onChange={e => setMotivoReversion(e.target.value)}
+                disabled={submitting}
+                placeholder="Ej: monto digitado mal"
+              />
+              <p className="text-xs text-gray-500 mt-1 text-right">
+                {motivoReversion.length}/{MOTIVO_REVERSION_MAX}
+              </p>
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setPagoARevertir(null)} className="btn-ghost">Cancelar</button>
+              <button
+                onClick={handleRevertirMonto}
+                disabled={submitting}
+                className="btn-danger disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {submitting ? 'Revirtiendo...' : 'Revertir monto'}
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       <ConfirmarCierreInteresPendiente

@@ -129,6 +129,11 @@ export const pagosApi = {
   desvalidar: (pagoId: string) =>
     api.post<Pago>(`/pagos/${pagoId}/desvalidar`),
 
+  // Deshace el registro de montos de un pago (admin/registrador). `motivo` es
+  // opcional: solo viaja si trae texto (el backend lo limita a 500 caracteres).
+  revertirMonto: (pagoId: string, motivo?: string) =>
+    api.post<Pago>(`/pagos/${pagoId}/revertir-monto`, motivo ? { motivo } : {}),
+
   modificarFecha: (pagoId: string, fecha_maxima: string, es_aplazamiento = false) =>
     api.patch<Pago>(`/pagos/${pagoId}/fecha`, { fecha_maxima, es_aplazamiento }),
 
