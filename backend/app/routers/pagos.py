@@ -868,11 +868,6 @@ def _rechazar_revertir_monto(pago_id: uuid.UUID, usuario: Usuario, motivo: str, 
     raise HTTPException(status_code=422, detail=detail)
 
 
-def _orden_registro(pago: Pago) -> tuple:
-    """Orden LIFO de los pagos registrados. Nunca por numero_cuota: un no programado toma max + 1."""
-    return (pago.fecha_pago_real or date.min, pago.created_at, pago.id)
-
-
 @router.post("/{pago_id}/revertir-monto", response_model=PagoResponse)
 async def revertir_monto(
     pago_id: uuid.UUID,
@@ -882,13 +877,11 @@ async def revertir_monto(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Deshace el registro de montos de una cuota pagada (PagoService.revertir_monto):
-    vuelve a validada-impaga (un no programado se borra lógicamente), borra la cuota
-    que generó, recompone los saldos desde el cronograma y reabre el crédito.
+    Deshace el registro de montos de una cuota pagada (PagoService.revertir_monto): la deja validada-impaga
+    (un no programado se borra lógicamente), borra la cuota que generó, recompone saldos y reabre el crédito.
 
-    Guardas en orden, 422 antes de cualquier escritura: cuota pagada (cubre la
-    segunda llamada); LIFO (ningún pago posterior, incluidos los no programados);
-    cuota generada única, impaga y sin montos.
+    Guardas en orden, 422 antes de cualquier escritura: cuota pagada (cubre la segunda llamada); LIFO (ningún
+    pago posterior, incluidos los no programados); cuota generada única, impaga y sin montos.
     """
     pago, credito = await _get_pago_con_credito(db, pago_id, lock=True)
     # FOR UPDATE: fija el conjunto de pagos que se evalúa y se pasa al servicio.
@@ -905,9 +898,19 @@ async def revertir_monto(
     if not pago.pagado:
         rechazar("no_pagado", "Esta cuota no tiene un monto registrado para revertir.")
 
-    posteriores = [p for p in pagos_credito if p.pagado and _orden_registro(p) > _orden_registro(pago)]
+    # Orden LIFO por (fecha_pago_real, instante de registro, id), nunca por numero_cuota (un no programado
+    # toma max + 1). Un no programado se registra al crearse; una cuota programada nace al pagarse la anterior,
+    # así que se fecha con el nacimiento de su cuota siguiente (misma transacción) o, sin ella, con updated_at.
+    nacimiento = {p.numero_cuota: p.created_at for p in pagos_credito if p.tipo_cuota != TipoCuota.no_programada}
+
+    def orden(p: Pago) -> tuple:
+        if p.tipo_cuota == TipoCuota.no_programada:
+            return (p.fecha_pago_real or date.min, p.created_at, p.id)
+        return (p.fecha_pago_real or date.min, nacimiento.get(p.numero_cuota + 1, p.updated_at), p.id)
+
+    posteriores = [p for p in pagos_credito if p.pagado and orden(p) > orden(pago)]
     if posteriores:
-        ultimo = max(posteriores, key=_orden_registro)
+        ultimo = max(posteriores, key=orden)
         cual = ("el pago no programado" if ultimo.tipo_cuota == TipoCuota.no_programada
                 else f"la cuota #{ultimo.numero_cuota}")
         rechazar("lifo", f"Hay pagos posteriores registrados. Revierta primero {cual}.")

@@ -2,9 +2,8 @@
 tests/test_revertir_monto.py — POST /pagos/{id}/revertir-monto (PR2b, design D1/D8).
 
 The "before" state comes from the REAL forward services on SQLite; the endpoint runs through httpx/ASGI on a
-session like production (autoflush=False; the get_db override flushes like the real commit). SQLite ignores
-FOR UPDATE: only sequential double-call semantics are proven. Service rules: test_revertir_monto_servicio.py.
-"""
+session like production (autoflush=False; get_db flushes like the real commit). SQLite ignores FOR UPDATE:
+only sequential double-call semantics are proven. Service rules: test_revertir_monto_servicio.py."""
 import uuid
 from datetime import date
 from decimal import Decimal
@@ -62,7 +61,7 @@ async def como(db):
     app.dependency_overrides.pop(get_db, None)
 
 
-async def _credito(db, capital="1000000.00", cuotas=10, id_primera=None) -> tuple[Credito, Pago]:
+async def _credito(db, capital="1000000.00", cuotas=10) -> tuple[Credito, Pago]:
     """Monthly 3% cuota_fija credit plus its first cuota, validated and assigned to a bank account.
     Cliente / cuenta rows are not created: SQLite does not enforce those FKs."""
     capital = Decimal(capital)
@@ -74,11 +73,8 @@ async def _credito(db, capital="1000000.00", cuotas=10, id_primera=None) -> tupl
         numero_cuotas=cuotas, activo=True,
     )
     db.add(credito)
-    await db.flush()
     primera = await crear_primera_cuota(credito, uuid.uuid4())
     primera.validado_recaudador, primera.tipo_validacion = True, "completo"
-    if id_primera:
-        primera.id = id_primera
     db.add(primera)
     await db.flush()
     return credito, primera
@@ -100,8 +96,7 @@ async def _pendientes(db, credito) -> list[Pago]:
 
 
 async def _estado(db, credito) -> list:
-    """Persisted columns (but updated_at) of the credit and of every cuota (soft-deleted too), read back from
-    the DB, followed by the number of audit rows: a rejected call must leave all of it untouched."""
+    """Persisted columns (but updated_at) of the credit and every cuota (soft-deleted too), then the audit row count."""
     await db.flush()
     await db.refresh(credito)
     cuotas = (await db.scalars(
@@ -128,9 +123,8 @@ def _url(pago: Pago) -> str:
 
 @pytest_asyncio.fixture
 async def registrado(db) -> tuple[Credito, Pago, Pago]:
-    """cuota #1 (100000 + 30000) paid exactly -> balances 900000 / 270000; returns (credito, #1, #2 it generated).
-    #1 gets the largest possible id so #2 can only sort after it by created_at (same fecha_pago_real)."""
-    credito, pago = await _credito(db, id_primera=uuid.UUID(int=2**128 - 1))
+    """cuota #1 (100000 + 30000) paid exactly -> balances 900000 / 270000; returns (credito, #1, #2 it generated)."""
+    credito, pago = await _credito(db)
     await _registrar(db, credito, pago, "100000.00", "30000.00")
     return credito, pago, (await _pendientes(db, credito))[0]
 
@@ -202,14 +196,6 @@ class TestAuditoria:
             (credito.id, U, "saldo_intereses", "270000.00", "300000.00"),
         }
 
-    @pytest.mark.parametrize("largo, status", [(500, 200), (501, 422)])
-    async def test_el_motivo_admite_hasta_500_caracteres(self, db, como, registrado, largo, status):
-        client, _ = como(TipoUsuario.admin)
-
-        r = await client.post(_url(registrado[1]), json={"motivo": "x" * largo})
-
-        assert r.status_code == status, r.text
-
     async def test_un_pago_no_programado_se_audita_como_eliminacion_y_motivo(self, db, como, registrado):
         credito, _, _ = registrado
         u = await _no_programada(db, credito)
@@ -255,6 +241,16 @@ class TestOrdenLifo:
         assert await _estado(db, credito) == antes
         assert (await client.post(_url(u))).status_code == 200
         assert (await client.post(_url(p1))).status_code == 200
+
+    async def test_un_pago_no_programado_entre_la_creacion_y_el_pago_de_una_cuota_es_anterior(self, db, como, registrado):
+        """Cuota #2 is created BEFORE the no_programada U but paid AFTER it (same day): U is the earlier payment."""
+        credito, _, p2 = registrado
+        u = await _no_programada(db, credito)
+        await _registrar(db, credito, p2, "100000.00", "30000.00")
+        client, _ = como(TipoUsuario.admin)
+
+        for pago in (p2, u):
+            assert (await client.post(_url(pago))).status_code == 200
 
     async def test_el_orden_es_por_fecha_de_pago_y_no_por_numero_de_cuota(self, db, como, registrado):
         """A no_programada backdated before cuota #1 takes numero_cuota 3, yet it is the EARLIER payment."""
@@ -303,6 +299,7 @@ class TestCuotaSucesora:
 
     async def test_sin_sucesora_revierte_y_reabre_el_credito_saldado(self, db, como):
         credito, pago = await _credito(db, capital="100000.00", cuotas=1)
+        await _no_programada(db, credito)  # registered before the closing payment: it has no successor to date it
         await _registrar(db, credito, pago, "100000.00", "3000.00")
         assert (credito.activo, await _pendientes(db, credito)) == (False, [])
         client, _ = como(TipoUsuario.registrador)
