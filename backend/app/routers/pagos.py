@@ -43,6 +43,7 @@ from app.schemas.pago import (
     PagoResponse,
     RegistrarPagoRequest,
     RegistrarPagoResponse,
+    RevertirMontoRequest,
     ValidarPagoRequest,
 )
 from app.schemas.pago_reparto import ReemplazarRepartosRequest, RepartoResponse
@@ -855,6 +856,52 @@ async def desvalidar_pago(
         "DESVALIDAR OK — pago_id=%s usuario_id=%s rol=%s",
         pago_id, current_user.id, current_user.tipo_usuario.value,
     )
+    return PagoResponse.model_validate(pago)
+
+
+def _rechazar_revertir_monto(pago_id: uuid.UUID, usuario: Usuario, motivo: str, detail: str) -> NoReturn:
+    """Loguea el intento rechazado (WARNING) y lanza el 422. Siempre antes de cualquier escritura."""
+    logger.warning(
+        "REVERTIR MONTO RECHAZADO — pago_id=%s usuario_id=%s rol=%s motivo=%s",
+        pago_id, usuario.id, usuario.tipo_usuario.value, motivo,
+    )
+    raise HTTPException(status_code=422, detail=detail)
+
+
+@router.post("/{pago_id}/revertir-monto", response_model=PagoResponse)
+async def revertir_monto(
+    pago_id: uuid.UUID,
+    request: Request,
+    body: Optional[RevertirMontoRequest] = Body(default=None),
+    current_user: Usuario = Depends(require_role("admin", "registrador")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Deshace el registro de montos de una cuota pagada: vuelve a validada-impaga
+    (o borra lógicamente un pago no programado), borra la cuota que generó,
+    recompone los saldos del crédito desde el cronograma y lo reabre si ese pago
+    lo había cerrado (PagoService.revertir_monto).
+
+    Guardas, en orden, antes de cualquier escritura (422): la cuota debe estar
+    pagada (cubre la segunda llamada).
+    """
+    pago, credito = await _get_pago_con_credito(db, pago_id, lock=True)
+    # FOR UPDATE de los pagos del crédito: el lock del crédito ya serializa, esto
+    # fija el conjunto que se evalúa y se pasa al servicio.
+    pagos_credito = (await db.execute(
+        select(Pago)
+        .where(Pago.credito_id == credito.id, Pago.deleted_at == None)  # noqa: E711
+        .order_by(Pago.numero_cuota, Pago.id)
+        .with_for_update()
+    )).scalars().all()
+
+    if not pago.pagado:
+        _rechazar_revertir_monto(
+            pago_id, current_user, "no_pagado",
+            "Esta cuota no tiene un monto registrado para revertir.",
+        )
+
+    await PagoService.revertir_monto(db, pago, credito, pagos_credito)
     return PagoResponse.model_validate(pago)
 
 
