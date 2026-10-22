@@ -2,7 +2,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 from typing import Optional
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.credito import TipoCredito
 from app.models.pago import TipoCuota, DestinoExcedente
@@ -71,7 +71,7 @@ class PagoResponse(BaseModel):
 
 
 class RegistrarPagoRequest(BaseModel):
-    """Registrar monto pagado de una cuota (Registrador / Admin)."""
+    """Registrar monto pagado de una cuota (Registrador / Recaudador / Admin)."""
     capital_pagado: Decimal
     interes_pagado: Decimal
 
@@ -109,6 +109,11 @@ class PagoNoProgramadoRequest(BaseModel):
         if v <= 0:
             raise ValueError("El monto debe ser mayor a cero")
         return v
+
+
+class RevertirMontoRequest(BaseModel):
+    """Registrador / Admin: motivo opcional de la reversión de un monto registrado."""
+    motivo: Optional[str] = Field(default=None, max_length=500)
 
 
 class ValidarPagoRequest(BaseModel):
